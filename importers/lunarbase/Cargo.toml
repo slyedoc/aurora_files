@@ -1,0 +1,19 @@
+# Lunarbase importer: bake the KitBash3D Lunarbase glTF → `.cluster_mesh` + `.bsn`. A self-contained
+# PNG-textured `.glb` (like Bistro): geometry + textures + alpha-mode + glass transmission are
+# imported. Two source `.glb`s ship under `raw/lunarbase/`: `kb3d_lunarbase.glb` (decimated) and
+# `kb3d_lunarbase-native.glb` (full-res); pass whichever you want as the first arg.
+#
+#   cargo run --release -p lunarbase_import -- raw/lunarbase/kb3d_lunarbase.glb assets/lunarbase
+[package]
+name = "lunarbase_import"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "lunarbase_import"
+path = "src/main.rs"
+
+[dependencies]
+solari_bsn = { path = "../../crates/solari_bsn" }
+clap.workspace = true

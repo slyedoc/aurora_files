@@ -1,0 +1,17 @@
+# Bistro importer (scaffold). Proves `solari_bsn` is reusable across assets; the body is a TODO
+# until the Bistro source + any asset-specific quirks are wired in.
+#
+#   cargo run --release -p bistro_import -- <obj> <out_dir> [asset_prefix]
+[package]
+name = "bistro_import"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "bistro_import"
+path = "src/main.rs"
+
+[dependencies]
+solari_bsn = { path = "../../crates/solari_bsn" }
+clap.workspace = true

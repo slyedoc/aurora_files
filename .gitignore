@@ -1,0 +1,15 @@
+target
+crates/**/target
+benches/**/target
+tools/**/target
+
+assets
+
+# Python venv (Blender/tooling), logs, and debug dumps — machine-local artifacts.
+.venv/
+*.log
+*_dump.json
+
+# Keep the raw/ dir in the repo (placeholder tracked) but ignore its contents.
+raw/*
+!raw/.gitkeep

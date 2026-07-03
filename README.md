@@ -1,0 +1,100 @@
+# solari_files
+
+Download San Miguel from <https://casual-effects.com/data> and extract into `raw/` so the OBJ is at
+`raw/San_Miguel/san-miguel.obj`, then:
+
+```sh
+cargo run --release -p san_miguel_import -- raw/San_Miguel/san-miguel.obj assets/san_miguel san_miguel
+```
+
+Download Bistro (Amazon Lumberyard) from <https://developer.nvidia.com/orca/amazon-lumberyard-bistro>
+as a PNG-textured `.glb`/`.gltf`, then:
+
+```sh
+cargo run --release -p bistro_import -- raw/Bistro/Bistro.glb assets/bistro bistro
+```
+
+Baked meshes are cached; pass `--replace` to re-bake. San Miguel also has `--floor-only` and
+`--cutout-only` to emit a minimal single-object scene, and `--erode <px>` to tune the OMM cutout
+mask. Run an importer with `--help` for all options.
+
+
+# Trees (SpeedTree, NVIDIA ORCA)
+
+Source: <https://developer.nvidia.com/orca/speedtree>. Drop the pack under `raw/SpeedTree_v2/`
+(one dir per tree, each with `HighPoly/*.fbx` + `Textures/*.dds`). Two stages — the `gltf` crate
+can't read FBX and `image` can't read DDS, so Blender does both, then the Rust stage bakes clusters
++ an OMM on every leaf cutout.
+
+Stage A — FBX → glb (embedded PNG, base-color alpha preserved):
+
+```sh
+mkdir -p raw/SpeedTree_v2/_glb
+for d in raw/SpeedTree_v2/*/HighPoly; do
+  tree="$(basename "$(dirname "$d")")"
+  blender -b --python scripts/speedtree_to_glb.py -- \
+    "$d"/*.fbx "raw/SpeedTree_v2/_glb/${tree// /_}.glb"
+done
+```
+
+Stage B — glb → one `<Tree>.bsn` each + shared `meshes/`/`textures/`:
+
+```sh
+cargo run --release -p speedtree_import -- raw/SpeedTree_v2/_glb assets/speedtree
+```
+
+Foliage is classified from the base-color alpha histogram (not the glTF alpha mode), so leaf/frond
+materials get `AlphaMode::Mask` + a 2-state OMM (100% known → zero any-hit on leaves) while bark/caps
+stay opaque. `--replace` re-bakes meshes, `--scale`/`--erode`/`--level` tune size/OMM. FBX author
+units are cm; the baked entities carry a 0.01 scale so trees land metric (White Oak ≈ 7.6 m).
+
+
+# Viewer
+
+Run from the repo root, passing a tab-completed path (add `--features dlss` for DLSS):
+
+```sh
+cargo run --release -p solari_view -- assets/lunarbase/KB3D_LNB_Bench_A.bsn
+```
+
+Pass a glob to load several scenes at once — each match becomes a row in the bottom-left picker;
+click a row or press `[`/`]` to switch the live scene:
+
+```sh
+cargo run --release -p solari_view -- 'assets/lunarbase/KB3D_LNB_BldgLG*'
+```
+
+Quote the glob so the viewer expands it (an unquoted glob the shell already expanded works too). With
+many matches the picker can run taller than the window; `[`/`]` still cycle through every scene even
+when a row is clipped off-screen.
+
+Or install the `solari_view` binary and run it from here:
+
+```sh
+cargo install --path crates/viewer
+solari_view assets/lunarbase/KB3D_LNB_Bench_A.bsn
+```
+
+
+
+# Vulkan 
+
+To install lastest sdk
+```bash
+curl -L https://sdk.lunarg.com/sdk/download/1.4.350.1/linux/vulkansdk-linux-x86_64-1.4.350.1.tar.xz \
+  -o /tmp/vulkansdk-1.4.350.1.tar.xz
+sudo mkdir -p /opt/vulkan/1.4.350.1
+sudo tar -xf /tmp/vulkansdk-1.4.350.1.tar.xz -C /opt/vulkan/1.4.350.1 --strip-components=1
+```
+
+set in shell
+
+```bash
+source /opt/vulkan/1.4.350.1/setup-env.sh
+```
+
+test its working
+
+```bash
+echo "$VULKAN_SDK"   # should now read .../1.4.350.1/x86_64
+```

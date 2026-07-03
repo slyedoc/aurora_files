@@ -1,0 +1,32 @@
+# General bevy_solari `.bsn` scene viewer. Loads any importer-baked `.bsn` under full ray tracing
+# and flies a free camera through it — point it at an asset-relative `.bsn` path and set
+# `BEVY_ASSET_ROOT` to the directory holding `assets/` (this `solari_files` tree).
+#
+#   BEVY_ASSET_ROOT=/mnt/code/p/solari_files \
+#     cargo run --release -p solari_view -- san_miguel/SanMiguel.bsn
+[package]
+name = "solari_view"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "solari_view"
+path = "src/main.rs"
+
+[dependencies]
+# Inherits the workspace `bevy` (bevy_solari + cluster_processor); add the viewer's UI/camera/debug
+# features on top (cargo unions them with the workspace base set).
+bevy = { workspace = true, features = [
+  "bevy_camera_controller",
+  "free_camera",
+  "bevy_feathers",
+  "bevy_dev_tools",
+  "bevy_solari_debug",
+] }
+clap.workspace = true
+glob = "0.3"
+
+[features]
+# NVIDIA DLSS (ray reconstruction / upscaling). Off by default; needs the forked deps + runtime.
+dlss = ["bevy/dlss"]

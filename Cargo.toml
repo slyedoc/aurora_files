@@ -1,0 +1,30 @@
+# `.bsn` importer workspace: the `solari_bsn` library + per-asset importer binaries and a viewer.
+# Converts source OBJ/MTL or glTF into `bevy_solari` `.cluster_mesh` assets and a `.bsn` scene,
+# sidestepping glTF's lack of displacement/depth maps; `solari_view` renders the result.
+[workspace]
+resolver = "3"
+members = ["crates/*", "importers/*"]
+
+[workspace.dependencies]
+# Umbrella with defaults so `bevy::mesh` / `bevy::asset` / `bevy::solari` re-exports exist;
+# `cluster_processor` gates the `Mesh -> ClusterMesh` bake. Shared by solari_bsn and the importers.
+bevy = { path = "/mnt/code/f/bevy", features = [
+  "bevy_solari",
+  "cluster_processor",
+] }
+# CLI parsing for the importer binaries.
+clap = { version = "4", features = ["derive"] }
+
+# bevy_solari pulls forked wgpu/naga/ash; this workspace must mirror the bevy workspace's patch
+# table (the worktree's root Cargo.toml `[patch.crates-io]`). Patches only apply at the workspace
+# root, so they live here rather than in any member crate.
+[patch.crates-io]
+wgpu             = { git = "https://github.com/slyedoc/wgpu.git", branch = "solari-rt-naga" }
+wgpu-core        = { git = "https://github.com/slyedoc/wgpu.git", branch = "solari-rt-naga" }
+wgpu-hal         = { git = "https://github.com/slyedoc/wgpu.git", branch = "solari-rt-naga" }
+wgpu-types       = { git = "https://github.com/slyedoc/wgpu.git", branch = "solari-rt-naga" }
+wgpu-naga-bridge = { git = "https://github.com/slyedoc/wgpu.git", branch = "solari-rt-naga" }
+naga             = { git = "https://github.com/slyedoc/wgpu.git", branch = "solari-rt-naga" }
+naga_oil         = { git = "https://github.com/slyedoc/naga_oil.git", branch = "solari-ser" }
+ash              = { git = "https://github.com/ash-rs/ash.git", branch = "master" }
+gpu-allocator    = { git = "https://github.com/slyedoc/gpu-allocator.git", branch = "ash-push-rename" }

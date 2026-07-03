@@ -1,0 +1,24 @@
+# San Miguel importer: a thin wrapper over `solari_bsn::bake_scene` plus measurement/validation
+# helper bins (dup_scan, load_test, omm_test).
+#
+#   cargo run --release -p san_miguel_import -- raw/San_Miguel/san-miguel.obj assets/san_miguel san_miguel
+[package]
+name = "san_miguel_import"
+version = "0.1.0"
+edition = "2024"
+publish = false
+# `cargo run -p san_miguel_import` defaults to the importer; helper bins need `--bin`.
+default-run = "san_miguel_import"
+
+[[bin]]
+name = "san_miguel_import"
+path = "src/main.rs"
+
+[dependencies]
+solari_bsn = { path = "../../crates/solari_bsn" }
+clap.workspace = true
+# `load_test` spins up a headless bevy app to validate the `.bsn`; the importer itself only needs
+# solari_bsn. Shared one bevy definition via the workspace.
+bevy.workspace = true
+# `dup_scan` loads the OBJ directly to measure instance candidates.
+tobj = "4"

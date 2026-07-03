@@ -1,0 +1,17 @@
+# SpeedTree importer: stage-A `.glb` trees (see scripts/speedtree_to_glb.py) → per-tree `.bsn`
+# with an OMM baked on every leaf cutout.
+#
+#   cargo run --release -p speedtree_import -- raw/SpeedTree_v2/_glb assets/speedtree
+[package]
+name = "speedtree_import"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "speedtree_import"
+path = "src/main.rs"
+
+[dependencies]
+solari_bsn = { path = "../../crates/solari_bsn" }
+clap.workspace = true
