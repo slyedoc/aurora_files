@@ -35,6 +35,8 @@ pub struct LightSettings {
     /// Whether the ground plane is on the camera's render layer (visible). Toggled by moving the
     /// ground between layers, not `Visibility` — solari keeps hidden geometry in the AS otherwise.
     pub ground_enabled: bool,
+    /// Whether the 1 m reference cube is spawned (scale sanity check).
+    pub ref_cube_enabled: bool,
 }
 
 impl Default for LightSettings {
@@ -45,6 +47,7 @@ impl Default for LightSettings {
             sun_elevation: 63.0,
             emissive_boost: 1.0,
             ground_enabled: true,
+            ref_cube_enabled: false,
         }
     }
 }
@@ -173,6 +176,15 @@ fn settings_ui() -> impl Scene {
                     on(checkbox_self_update)
                     on(|change: On<ValueChange<bool>>, mut settings: ResMut<LightSettings>| {
                         settings.ground_enabled = change.value;
+                    })
+                ),
+                (
+                    @FeathersCheckbox {
+                        @caption: bsn! { Text("Ref cube (1m)") ThemedText }
+                    }
+                    on(checkbox_self_update)
+                    on(|change: On<ValueChange<bool>>, mut settings: ResMut<LightSettings>| {
+                        settings.ref_cube_enabled = change.value;
                     })
                 ),
                 (

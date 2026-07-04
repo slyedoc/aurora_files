@@ -148,6 +148,7 @@ pub fn main() {
     .insert_resource(WinitSettings::continuous())
     .insert_resource(UiTheme(create_dark_theme()))
     .init_resource::<GroundAssets>()
+    .init_resource::<RefCubeAssets>()
     .add_systems(Startup, setup)
     .add_systems(
         Update,
@@ -160,7 +161,7 @@ pub fn main() {
         )
             .chain(),
     )
-    .add_systems(Update, (send_scroll_events, apply_ground))
+    .add_systems(Update, (send_scroll_events, apply_ground, apply_ref_cube))
     .add_observer(on_scroll)
     .run();
 }
@@ -226,6 +227,68 @@ fn apply_ground(
         ));
     } else {
         for entity in &ground {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+/// The togglable 1 m reference cube (see [`apply_ref_cube`]).
+#[derive(Component)]
+struct RefCube;
+
+/// Baked-once reference cube mesh + material.
+#[derive(Resource)]
+struct RefCubeAssets {
+    mesh: Handle<ClusterMesh>,
+    material: Handle<StandardSolariMaterial>,
+}
+
+impl FromWorld for RefCubeAssets {
+    fn from_world(world: &mut World) -> Self {
+        let cube = Cuboid::from_length(1.0)
+            .mesh()
+            .build()
+            .with_generated_tangents()
+            .expect("ref cube tangents");
+        let mesh = world
+            .resource_mut::<Assets<ClusterMesh>>()
+            .add(ClusterMesh::try_from(&cube).expect("ref cube bake"));
+        let material = world.resource_mut::<Assets<StandardSolariMaterial>>().add(
+            StandardSolariMaterial {
+                base_color: Color::srgb(0.9, 0.2, 0.2),
+                perceptual_roughness: 0.6,
+                ..default()
+            },
+        );
+        Self { mesh, material }
+    }
+}
+
+/// Spawn or despawn the reference cube when the "Ref cube" checkbox flips.
+/// Base sits on the ground plane (y = 0), offset so it stands beside the scene.
+fn apply_ref_cube(
+    mut commands: Commands,
+    settings: Res<settings::LightSettings>,
+    assets: Res<RefCubeAssets>,
+    cube: Query<Entity, With<RefCube>>,
+    mut last: Local<Option<bool>>,
+) {
+    if *last == Some(settings.ref_cube_enabled) {
+        return;
+    }
+    *last = Some(settings.ref_cube_enabled);
+    if settings.ref_cube_enabled {
+        commands.spawn((
+            Name::new("RefCube1m"),
+            RefCube,
+            RaytracingMesh3d(assets.mesh.clone()),
+            SolariMaterial3d(assets.material.clone()),
+            Transform::from_xyz(3.0, 0.5, 0.0),
+            Visibility::Visible,
+            NoCpuCulling,
+        ));
+    } else {
+        for entity in &cube {
             commands.entity(entity).despawn();
         }
     }

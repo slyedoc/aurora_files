@@ -35,6 +35,14 @@ struct Args {
     /// Max OMM subdivision level.
     #[arg(long, default_value_t = 6)]
     level: u32,
+
+    /// Also bake `<Tree>_clump<K>.bsn`: K trees merged into one BLAS per material.
+    #[arg(long, default_value_t = 0)]
+    clump: u32,
+
+    /// Clump footprint radius in meters.
+    #[arg(long, default_value_t = 9.0)]
+    clump_radius: f32,
 }
 
 fn main() {
@@ -47,5 +55,7 @@ fn main() {
         scale: args.scale,
         erode_px: args.erode,
         omm_subdiv: args.level,
+        clump: args.clump,
+        clump_radius: args.clump_radius,
     });
 }
