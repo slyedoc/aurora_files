@@ -19,6 +19,21 @@ Baked meshes are cached; pass `--replace` to re-bake. San Miguel also has `--flo
 mask. Run an importer with `--help` for all options.
 
 
+# Terrain paint arrays (Poly Haven)
+
+Downloads material maps from <https://polyhaven.com> (CC0, cached in `raw/polyhaven/`) and bakes
+mipped KTX2 `texture_2d_array`s into `assets/terrain/` — albedo (sRGB) + normal + ARM, one layer
+per material. With no slugs it bakes the 24-layer set: 0..=10 index-aligned to zero's `BiomeType`
+(Ocean..Mountain), 11..=21 per-biome secondary variants (biome id + 11), 22 scree, 23 wet
+drainage mud; `terrain_layers.json` records the layer↔slug mapping.
+
+```sh
+cargo run --release -p polyhaven                    # 11-biome set at 1k
+cargo run --release -p polyhaven -- --res 2k        # same set, 2k
+cargo run --release -p polyhaven -- snow_02 ...     # custom layer list
+cp assets/terrain/terrain_*.ktx2 /mnt/code/p/zero/assets/terrain/
+```
+
 # Trees (SpeedTree, NVIDIA ORCA)
 
 Source: <https://developer.nvidia.com/orca/speedtree>. Drop the pack under `raw/SpeedTree_v2/`
