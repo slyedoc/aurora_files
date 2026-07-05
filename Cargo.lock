@@ -2800,6 +2800,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "g1_import"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "clap",
+ "serde",
+ "serde_json",
+ "solari_bsn",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

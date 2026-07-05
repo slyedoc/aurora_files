@@ -1,0 +1,20 @@
+# G1 rig importer: bake the MotionBricks G1 link glbs → `.cluster_mesh` + emit `g1.bsn`, a reusable
+# rig template (G1Rig root + one G1Link child per geom) driven by zero's `ai` BodyPlugin.
+#
+#   cargo run --release -p g1_import -- /mnt/code/p/zero/assets ai/motionbricks/g1
+[package]
+name = "g1_import"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "g1_import"
+path = "src/main.rs"
+
+[dependencies]
+solari_bsn = { path = "../../crates/solari_bsn" }
+bevy.workspace = true
+clap.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

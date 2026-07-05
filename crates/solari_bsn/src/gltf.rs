@@ -313,6 +313,33 @@ fn bake_primitive(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> O
     }
 }
 
+/// Bake a single `.glb`'s first triangle primitive into a `.cluster_mesh` at `out_file` — the stem
+/// is caller-controlled (unlike [`bake_gltf_scene`]'s `meshN_M`), so an articulated rig can name one
+/// file per link. Skips if `out_file` exists unless `replace`. `Ok(true)` baked, `Ok(false)` skipped.
+pub fn bake_glb_primitive(glb_path: &Path, out_file: &Path, replace: bool) -> Result<bool, String> {
+    if out_file.exists() && !replace {
+        return Ok(false);
+    }
+    let bytes = fs::read(glb_path).map_err(|e| format!("read {}: {e}", glb_path.display()))?;
+    let gltf = gltf::Gltf::from_slice(&bytes).map_err(|e| format!("parse gltf: {e}"))?;
+    let doc: &gltf::Document = &gltf;
+    let buffers = gltf::import_buffers(doc, glb_path.parent(), gltf.blob.clone())
+        .map_err(|e| format!("import buffers: {e}"))?;
+    let prim = doc
+        .meshes()
+        .flat_map(|m| m.primitives())
+        .find(|p| p.mode() == gltf::mesh::Mode::Triangles)
+        .ok_or_else(|| "no triangle primitive".to_string())?;
+    let mesh = build_primitive_mesh(&prim, &buffers).ok_or_else(|| "empty mesh".to_string())?;
+    let cm = ClusterMesh::try_from(&mesh).map_err(|e| format!("cluster bake: {e:?}"))?;
+    if let Some(parent) = out_file.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+    }
+    let w = BufWriter::new(File::create(out_file).map_err(|e| format!("create: {e}"))?);
+    write_cluster_mesh_sync(&cm, w).map_err(|e| format!("write cluster: {e:?}"))?;
+    Ok(true)
+}
+
 /// Build a bevy [`Mesh`] from a glTF primitive (positions in node-local space; the node's world
 /// `Transform` places it). Generates normals if absent; synthesizes a zero UV (+ identity tangent,
 /// to skip mikktspace) when the primitive has no texcoords.
