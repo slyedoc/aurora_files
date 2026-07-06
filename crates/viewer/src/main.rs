@@ -423,6 +423,9 @@ fn spawn_active_scene(commands: &mut Commands, asset_server: &AssetServer, path:
     commands.spawn((
         ActiveScene,
         ScenePatchInstance(asset_server.load(path.to_string())),
+        // The bsn no longer carries a root Transform (it would stomp placement) —
+        // the instance entity supplies it.
+        Transform::default(),
         Visibility::Visible,
     ));
 
