@@ -341,8 +341,9 @@ pub fn bake_glb_primitive(glb_path: &Path, out_file: &Path, replace: bool) -> Re
 }
 
 /// Build a bevy [`Mesh`] from a glTF primitive (positions in node-local space; the node's world
-/// `Transform` places it). Generates normals if absent; synthesizes a zero UV (+ identity tangent,
-/// to skip mikktspace) when the primitive has no texcoords.
+/// `Transform` places it). Loads only what the glTF carries — missing normals / UVs /
+/// tangents are synthesized downstream by `ClusterMesh::try_from`, so bare CAD/URDF
+/// primitives (POSITION only) still bake.
 pub(crate) fn build_primitive_mesh(prim: &gltf::Primitive, buffers: &[gltf::buffer::Data]) -> Option<Mesh> {
     let reader = prim.reader(|b| buffers.get(b.index()).map(|d| d.0.as_slice()));
     let positions: Vec<[f32; 3]> = reader.read_positions()?.collect();
@@ -354,31 +355,20 @@ pub(crate) fn build_primitive_mesh(prim: &gltf::Primitive, buffers: &[gltf::buff
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD);
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
 
-    let has_normals = if let Some(normals) = reader.read_normals() {
+    if let Some(normals) = reader.read_normals() {
         mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals.collect::<Vec<[f32; 3]>>());
-        true
-    } else {
-        false
-    };
-
-    let uvs: Option<Vec<[f32; 2]>> = reader.read_tex_coords(0).map(|t| t.into_f32().collect());
-    let has_uv = matches!(&uvs, Some(uv) if uv.len() == n);
-    if has_uv {
-        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs.unwrap());
-    } else {
-        // No real UVs: a zero UV + identity tangent keeps mikktspace from running on degenerate
-        // texcoords (these materials have no normal map, so the tangent is never sampled).
-        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0_f32, 0.0]; n]);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[1.0_f32, 0.0, 0.0, 1.0]; n]);
+    }
+    // Only accept UVs that cover every vertex; a partial/absent set is left to the bake
+    // to fill (zero UV + identity tangent), which is correct for these untextured meshes.
+    if let Some(uvs) = reader.read_tex_coords(0).map(|t| t.into_f32().collect::<Vec<[f32; 2]>>()) {
+        if uvs.len() == n {
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+        }
     }
 
     match reader.read_indices() {
         Some(idx) => mesh.insert_indices(Indices::U32(idx.into_u32().collect())),
         None => mesh.insert_indices(Indices::U32((0..n as u32).collect())),
-    }
-
-    if !has_normals {
-        mesh.compute_normals();
     }
 
     Some(mesh)
