@@ -41,7 +41,7 @@ impl Default for LightSettings {
             sun_azimuth: -23.0,
             sun_elevation: 63.0,
             ground_enabled: true,
-            ref_cube_enabled: false,
+            ref_cube_enabled: std::env::var_os("VIEWER_REF_CUBE").is_some(),
         }
     }
 }

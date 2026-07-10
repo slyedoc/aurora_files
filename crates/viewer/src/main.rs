@@ -142,6 +142,11 @@ pub fn main() {
         settings::LightSettingsPlugin,
     ))
     .insert_resource(GlobalAmbientLight::NONE)
+    // `VIEWER_CLUSTER_VIEW=1`: flat per-cluster raygen paint — "do primary rays
+    // hit anything at all", independent of shading/lights (debug).
+    .insert_resource(bevy::solari::render::rt_pipeline::SolariClusterView {
+        enabled: std::env::var_os("VIEWER_CLUSTER_VIEW").is_some(),
+    })
     .insert_resource(args.clone())
     .insert_resource(scenes)
     .insert_resource(ClearColor(Color::srgb(1.75, 1.9, 1.99)))
@@ -162,8 +167,162 @@ pub fn main() {
             .chain(),
     )
     .add_systems(Update, (send_scroll_events, apply_ground, apply_ref_cube))
+    .add_systems(Update, (auto_screenshot, auto_respawn, auto_switch, probe_world))
     .add_observer(on_scroll)
     .run();
+}
+
+/// Debug probe: `VIEWER_PROBE=1` logs world/scene state every ~2s — is the `.bsn`
+/// loaded, did the patch spawn entities, do they have transforms/visibility.
+fn probe_world(
+    time: Res<Time>,
+    asset_server: Res<AssetServer>,
+    entities: Query<Entity>,
+    meshes: Query<Entity, With<RaytracingMesh3d>>,
+    transforms: Query<Entity, With<Transform>>,
+    roots: Query<(Entity, &ScenePatchInstance, Option<&Children>), With<ActiveScene>>,
+    mesh_details: Query<(Entity, Option<&Name>, &Transform, Option<&GlobalTransform>), With<RaytracingMesh3d>>,
+    camera: Query<(&Transform, Option<&GlobalTransform>), With<SolariCamera>>,
+    mut last: Local<f64>,
+) {
+    if std::env::var_os("VIEWER_PROBE").is_none() {
+        return;
+    }
+    let now = time.elapsed_secs_f64();
+    if now - *last < 2.0 {
+        return;
+    }
+    *last = now;
+    let total = entities.iter().count();
+    let mesh_count = meshes.iter().count();
+    let transform_count = transforms.iter().count();
+    for (entity, patch, children) in &roots {
+        let state = asset_server.get_load_state(patch.0.id());
+        info!(
+            "probe t={now:.1}s: entities={total} rt_meshes={mesh_count} transforms={transform_count} \
+             root={entity} patch_state={state:?} children={}",
+            children.map_or(0, |c| c.len()),
+        );
+    }
+    for (tf, global) in &camera {
+        info!(
+            "  camera: local t=({:.3},{:.3},{:.3}) r=({:.4},{:.4},{:.4},{:.4}) | gpu t={:?} r={:?} s={:?}",
+            tf.translation.x, tf.translation.y, tf.translation.z,
+            tf.rotation.x, tf.rotation.y, tf.rotation.z, tf.rotation.w,
+            global.map(|g| g.translation()),
+            global.map(|g| g.rotation()),
+            global.map(|g| g.scale()),
+        );
+    }
+    for (entity, name, tf, global) in &mesh_details {
+        // GlobalTransform here is the GPU transform-table readback — what the
+        // ray tracer actually used, not a CPU propagation product.
+        let gscale = global.map(|g| g.scale());
+        let gt = global.map(|g| g.translation());
+        info!(
+            "  mesh {entity} {:?}: local t=({:.3},{:.3},{:.3}) s=({:.4},{:.4},{:.4}) | gpu t={:?} s={:?}",
+            name.map(|n| n.as_str()).unwrap_or("?"),
+            tf.translation.x, tf.translation.y, tf.translation.z,
+            tf.scale.x, tf.scale.y, tf.scale.z,
+            gt, gscale,
+        );
+    }
+}
+
+/// Debug repro: `AUTO_SWITCH="15000:1,35000:0"` sets `scenes.current` to the given
+/// index at each ms timestamp — drives the same path as clicking picker rows.
+fn auto_switch(time: Res<Time>, mut scenes: ResMut<Scenes>, mut done: Local<Vec<(f64, usize)>>, mut init: Local<bool>) {
+    if !*init {
+        *init = true;
+        if let Ok(spec) = std::env::var("AUTO_SWITCH") {
+            *done = spec
+                .split(',')
+                .filter_map(|pair| {
+                    let (ms, idx) = pair.split_once(':')?;
+                    Some((ms.parse::<f64>().ok()? / 1000.0, idx.parse().ok()?))
+                })
+                .collect();
+        }
+    }
+    let now = time.elapsed_secs_f64();
+    while let Some(&(at, idx)) = done.first() {
+        if now < at {
+            break;
+        }
+        done.remove(0);
+        if idx < scenes.paths.len() {
+            info!("auto-switch: scene -> {} ({})", idx, scenes.paths[idx]);
+            scenes.current = idx;
+        }
+    }
+}
+
+/// Debug repro: `AUTO_RESPAWN_MS=15000` despawns and respawns the live scene once,
+/// that long after startup — isolates "first spawn broken, respawn heals".
+fn auto_respawn(
+    mut commands: Commands,
+    time: Res<Time>,
+    asset_server: Res<AssetServer>,
+    scenes: Res<Scenes>,
+    active: Query<Entity, With<ActiveScene>>,
+    mut done: Local<bool>,
+) {
+    if *done {
+        return;
+    }
+    let Some(ms) = std::env::var("AUTO_RESPAWN_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    else {
+        *done = true;
+        return;
+    };
+    if time.elapsed_secs_f64() * 1000.0 >= ms as f64 {
+        *done = true;
+        info!("auto-respawn: despawning + respawning {}", scenes.current_path());
+        for entity in &active {
+            commands.entity(entity).despawn();
+        }
+        spawn_active_scene(&mut commands, &asset_server, scenes.current_path());
+    }
+}
+
+/// Headless/agent runs: `AUTO_SCREENSHOT_MS=8000` captures the primary window once,
+/// that long after startup, to `target/tmp/` (mirrors the furnace exam harness).
+fn auto_screenshot(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut pending: Local<Vec<f64>>,
+    mut init: Local<bool>,
+) {
+    if !*init {
+        *init = true;
+        if let Ok(spec) = std::env::var("AUTO_SCREENSHOT_MS") {
+            *pending = spec
+                .split(',')
+                .filter_map(|ms| Some(ms.parse::<f64>().ok()? / 1000.0))
+                .collect();
+        }
+    }
+    let now = time.elapsed_secs_f64();
+    while let Some(&at) = pending.first() {
+        if now < at {
+            break;
+        }
+        pending.remove(0);
+        use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+        let dir = std::path::Path::new("./target/tmp");
+        let _ = std::fs::create_dir_all(dir);
+        let path = dir.join(format!(
+            "viewer-shot-{}-{}s.png",
+            std::process::id(),
+            at as u64
+        ));
+        info!("Screenshot saving to {}", path.display());
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk(path));
+    }
 }
 
 #[derive(Component)]

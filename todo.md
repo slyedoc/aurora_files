@@ -1,0 +1,7 @@
+4. Fix the shutdown segfault instead of masking it. Furnace's hard process::exit(0) exists because "device-heavy shutdown otherwise segfaults after success." That's the same interop-lifetime class as the regen device-lost: raw-VK resources (sparse memory, AS handles, SBT) racing wgpu teardown. Ordered teardown — quiesce the queue under as_hal_locked, drop raw pools before the device — would also make exam exit codes trustworthy.
+
+5. A cold-start soak in CI. Everything we fixed today was timing-dependent — invisible in any single green run. A script that launches solari_view/furnace ~10× headless and greps the tripwires (full walk re-armed, repeated null-AS, frontier: bail, Xid in journalctl) would have caught both this session's bugs the day they landed. The exam harness already has all the plumbing.
+
+6. The June backlog's stability-adjacent items. Material/light buffers rebuilt per frame isn't just waste — transient buffers feeding the untracked trace is exactly the regen-crash pattern; Tier-2 persistence closes it structurally. Atmosphere bake caching and eviction are behind that.
+
+7. Shrink the fork surface where changes are generic. Queue::as_hal_locked and the upscaling warmup clear are both upstreamable to wgpu/bevy as-is. Every generic delta you upstream is one less thing the eventual ash-master rebase has to carry.
