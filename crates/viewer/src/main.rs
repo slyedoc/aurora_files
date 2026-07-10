@@ -167,7 +167,7 @@ pub fn main() {
             .chain(),
     )
     .add_systems(Update, (send_scroll_events, apply_ground, apply_ref_cube))
-    .add_systems(Update, (auto_screenshot, auto_respawn, auto_switch, probe_world))
+    .add_systems(Update, (auto_screenshot, auto_respawn, auto_switch, auto_exit, probe_world))
     .add_observer(on_scroll)
     .run();
 }
@@ -284,6 +284,27 @@ fn auto_respawn(
             commands.entity(entity).despawn();
         }
         spawn_active_scene(&mut commands, &asset_server, scenes.current_path());
+    }
+}
+
+/// Headless/agent/soak runs: `VIEWER_EXIT_MS=15000` exits cleanly (normal
+/// teardown — a shutdown regression fails the run's exit code) that long after
+/// startup. Interactive runs (env unset) never time out.
+fn auto_exit(time: Res<Time>, mut exit: MessageWriter<AppExit>, mut done: Local<bool>) {
+    if *done {
+        return;
+    }
+    let Some(ms) = std::env::var("VIEWER_EXIT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    else {
+        *done = true; // not requested — check the env var only once
+        return;
+    };
+    if time.elapsed_secs_f64() * 1000.0 >= ms as f64 {
+        *done = true;
+        info!("VIEWER_EXIT_MS reached, exiting");
+        exit.write(AppExit::Success);
     }
 }
 
