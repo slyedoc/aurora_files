@@ -144,8 +144,10 @@ pub fn main() {
     .insert_resource(GlobalAmbientLight::NONE)
     // `VIEWER_CLUSTER_VIEW=1`: flat per-cluster raygen paint — "do primary rays
     // hit anything at all", independent of shading/lights (debug).
-    .insert_resource(bevy::solari::render::rt_pipeline::SolariClusterView {
-        enabled: std::env::var_os("VIEWER_CLUSTER_VIEW").is_some(),
+    .insert_resource(if std::env::var_os("VIEWER_CLUSTER_VIEW").is_some() {
+        bevy::solari::render::rt_pipeline::SolariDebugView::Clusters
+    } else {
+        bevy::solari::render::rt_pipeline::SolariDebugView::None
     })
     .insert_resource(args.clone())
     .insert_resource(scenes)
