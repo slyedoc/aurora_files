@@ -25,6 +25,17 @@ struct Args {
     replace: bool,
 }
 
+/// Bistro emitters ship no `KHR_materials_emissive_strength`; assign physical nits by material name
+/// so signage, screens, lamps and firelight bake at correct relative brightness. View with exposure.
+fn emissive_nits_default(name: &str) -> f32 {
+    let n = name.to_ascii_lowercase();
+    if n.contains("sign") || n.contains("neon") || n.contains("letter") { 2000.0 }
+    else if n.contains("screen") || n.contains("monitor") || n.contains("display") || n.contains("tv") { 350.0 }
+    else if n.contains("lamp") || n.contains("bulb") || n.contains("light") { 20000.0 }
+    else if n.contains("candle") || n.contains("fire") || n.contains("ember") || n.contains("flame") { 6000.0 }
+    else { 100.0 }
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -35,6 +46,8 @@ fn main() {
         // Lowercase so the output is `bistro.bsn` (the path the bevy bistro example loads).
         scene_name: "bistro".to_string(),
         replace: args.replace,
+        root_components: String::new(),
+        emissive_nits: Some(emissive_nits_default),
     };
     bake_gltf_scene(&cfg);
 }

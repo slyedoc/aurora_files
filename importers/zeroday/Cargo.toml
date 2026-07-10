@@ -1,0 +1,22 @@
+# Zero-Day importer: bake a Zero-Day set's geometry glb → .cluster_mesh + a HIERARCHY-preserving
+# .bsn (first animated asset), and stage the meshless anim glb the runtime plays.
+#
+#   cargo run --release -p zeroday_import -- <geometry.glb> <out_dir> [asset_prefix] [--anim <glb>]
+[package]
+name = "zeroday_import"
+version = "0.1.0"
+edition = "2024"
+publish = false
+# `cargo run -p zeroday_import` defaults to the importer; the `load_test` bin needs `--bin`.
+default-run = "zeroday_import"
+
+[[bin]]
+name = "zeroday_import"
+path = "src/main.rs"
+
+[dependencies]
+solari_bsn = { path = "../../crates/solari_bsn" }
+clap.workspace = true
+# `load_test` spins up a headless bevy app to validate the hierarchy `.bsn`; the importer itself
+# only needs solari_bsn.
+bevy.workspace = true

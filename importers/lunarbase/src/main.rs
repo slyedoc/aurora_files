@@ -43,6 +43,8 @@ fn main() {
         // Unused in per-group mode — each top-level group names its own `.bsn`.
         scene_name: "lunarbase".to_string(),
         replace: args.replace,
+        root_components: String::new(),
+        emissive_nits: None,
     };
     bake_gltf_per_group(&cfg);
 }

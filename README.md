@@ -64,6 +64,37 @@ stay opaque. `--replace` re-bakes meshes, `--scale`/`--erode`/`--level` tune siz
 units are cm; the baked entities carry a 0.01 scale so trees land metric (White Oak ≈ 7.6 m).
 
 
+# Zero-Day (Beeple, NVIDIA ORCA) — the first ANIMATED asset
+
+Download from <https://developer.nvidia.com/orca/beeple-zero-day> and extract under `raw/ZeroDay_v1/`
+(`MEASURE_ONE/`, `MEASURE_SEVEN/`, each a `.fbx` + `tex/*.dds`). Two stages: Blender decodes the FBX +
+DXT `.dds` (the Rust crates can't), then `zeroday_import` bakes a **hierarchy-preserving** `.bsn`
+(this asset carries rigid TRS animation) plus a compact `.animclip`.
+
+```sh
+# Stage A — FBX → geometry glb + meshless anim glb (one run, matching node names)
+blender -b --python scripts/zeroday_to_glb.py -- \
+  raw/ZeroDay_v1/MEASURE_ONE/MEASURE_ONE.fbx raw/ZeroDay_v1/_glb/measure_one
+
+# Stage B — glb → assets/zeroday/{MeasureOne.bsn, MeasureOne.animclip, meshes/, textures/}
+cargo run --release -p zeroday_import -- \
+  raw/ZeroDay_v1/_glb/measure_one.glb assets/zeroday MeasureOne
+```
+
+Optional checks: `python3 scripts/glb_json.py <file.glb>` (inspect a glb),
+`cargo run --release -p zeroday_import --bin load_test -- "$PWD/assets" zeroday/MeasureOne.bsn`
+(headless `.bsn` load, no GPU).
+
+Render in zero (solari_files is just the asset factory — copy the output over, then run the example):
+
+```sh
+cp -r assets/zeroday /mnt/code/p/zero/assets/
+cd /mnt/code/p/zero && cargo run --example zero_day
+```
+
+Deferred: DirectX normal green-flip, opacity/transmission, emissive nit tuning.
+
+
 # Viewer
 
 Run from the repo root, passing a tab-completed path (add `--features dlss` for DLSS):

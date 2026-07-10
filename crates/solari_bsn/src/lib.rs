@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use bevy::solari::geometry::{write_cluster_mesh_sync, ClusterMesh};
 
+pub mod animclip;
 pub mod bsn;
 pub mod dedup;
 pub mod discovery;
@@ -21,7 +22,8 @@ pub mod mesh;
 pub mod omm;
 pub mod speedtree;
 
-pub use gltf::{bake_gltf_per_group, bake_gltf_scene, GltfConfig};
+pub use animclip::transcode_gltf_to_animclip;
+pub use gltf::{bake_gltf_hierarchy, bake_gltf_per_group, bake_gltf_scene, GltfConfig};
 pub use speedtree::{bake_speedtree, SpeedTreeConfig};
 
 /// Per-submesh facts a [`SubmeshFilter`] can decide on (e.g. keep only floor surfaces, or only

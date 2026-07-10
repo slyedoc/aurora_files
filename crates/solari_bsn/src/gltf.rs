@@ -32,6 +32,12 @@ pub struct GltfConfig {
     pub scene_name: String,
     /// Re-bake `.cluster_mesh` files even when they already exist (overwrite).
     pub replace: bool,
+    /// Extra component patch lines emitted on the scene ROOT entity (before its `Children`). Used by
+    /// [`bake_gltf_hierarchy`] to stamp e.g. an animation marker on the root. Empty for none.
+    pub root_components: String,
+    /// Per-scene fallback for emissive magnitude (nits), keyed on material name, used only when a
+    /// material ships no `KHR_materials_emissive_strength`. `None` keeps the glTF value (×1).
+    pub emissive_nits: Option<fn(&str) -> f32>,
 }
 
 /// Bake the scene described by `cfg`: extract textures, bake each unique primitive's
@@ -66,6 +72,7 @@ pub fn bake_gltf_scene(cfg: &GltfConfig) {
         meshes_dir: &meshes_dir,
         asset_prefix: &cfg.asset_prefix,
         replace: cfg.replace,
+        emissive_nits: cfg.emissive_nits,
         baked: HashMap::new(),
         entities: String::new(),
         emitted: 0,
@@ -130,6 +137,7 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
         meshes_dir: &meshes_dir,
         asset_prefix: &cfg.asset_prefix,
         replace: cfg.replace,
+        emissive_nits: cfg.emissive_nits,
         baked: HashMap::new(),
         entities: String::new(),
         emitted: 0,
@@ -222,6 +230,7 @@ struct Ctx<'a> {
     meshes_dir: &'a Path,
     asset_prefix: &'a str,
     replace: bool,
+    emissive_nits: Option<fn(&str) -> f32>,
     /// `(mesh index, primitive index) → owner stem`, so shared meshes bake once and instance nodes
     /// reuse the baked `.cluster_mesh`. `None` marks a primitive whose bake failed (entities skipped).
     baked: HashMap<(usize, usize), Option<String>>,
@@ -282,6 +291,164 @@ fn walk(node: &gltf::Node, parent: Mat4, ctx: &mut Ctx) {
     for child in node.children() {
         walk(&child, world, ctx);
     }
+}
+
+/// Bake the glTF **preserving the node hierarchy** — the animation-capable analogue of
+/// [`bake_gltf_scene`]. Instead of flattening every primitive to a world transform, this emits a
+/// nested `Children[]` tree: each node is one entity carrying its `Name` + LOCAL `Transform` (and,
+/// if it has geometry, `RaytracingMesh3d` + inline `SolariMaterial3d`). Keeping the tree + the Names
+/// is what lets a runtime `AnimationPlayer` bind clips to nodes by name-path (`AnimationTargetId`)
+/// and drive them — the GPU transform table propagates an animated parent to its mesh children.
+/// Meshes/textures bake into shared `meshes/`/`textures/`, deduped by (mesh, primitive) index.
+pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
+    let meshes_dir = cfg.out_dir.join("meshes");
+    let textures_dir = cfg.out_dir.join("textures");
+    fs::create_dir_all(&meshes_dir).expect("create meshes dir");
+    fs::create_dir_all(&textures_dir).expect("create textures dir");
+
+    println!("loading {}", cfg.gltf_path.display());
+    let bytes = fs::read(&cfg.gltf_path).expect("read gltf");
+    let gltf = gltf::Gltf::from_slice(&bytes).expect("parse gltf");
+    let base = cfg.gltf_path.parent();
+    let doc: &gltf::Document = &gltf;
+    let buffers = gltf::import_buffers(doc, base, gltf.blob.clone()).expect("import buffers");
+    println!(
+        "{} nodes, {} meshes, {} materials, {} textures",
+        doc.nodes().count(),
+        doc.meshes().count(),
+        doc.materials().count(),
+        doc.textures().count(),
+    );
+
+    let image_files = extract_images(doc, &buffers, base, &textures_dir);
+    println!("extracted {} textures -> {}", image_files.len(), textures_dir.display());
+
+    let mut ctx = Ctx {
+        buffers: &buffers,
+        image_files: &image_files,
+        meshes_dir: &meshes_dir,
+        asset_prefix: &cfg.asset_prefix,
+        replace: cfg.replace,
+        emissive_nits: cfg.emissive_nits,
+        baked: HashMap::new(),
+        entities: String::new(),
+        emitted: 0,
+        baked_count: 0,
+        failed_count: 0,
+    };
+
+    let scene = doc
+        .default_scene()
+        .or_else(|| doc.scenes().next())
+        .expect("gltf has no scene");
+
+    let mut root_children = String::new();
+    for node in scene.nodes() {
+        emit_node(&node, &mut ctx, &mut root_children, 1);
+    }
+
+    let bsn = bsn::scene_with_root(&cfg.scene_name, &cfg.root_components, &root_children);
+    let bsn_path = cfg.out_dir.join(format!("{}.bsn", cfg.scene_name));
+    fs::write(&bsn_path, bsn).expect("write .bsn");
+
+    println!(
+        "baked {} meshes ({} failed) -> {}",
+        ctx.baked_count, ctx.failed_count, meshes_dir.display()
+    );
+    println!("wrote {} node entities (hierarchy) -> {}", ctx.emitted, bsn_path.display());
+}
+
+/// Emit one node as a `.bsn` entity block (comma-terminated) at `depth`, recursing into children.
+/// Every node carries a `Name` (the animation binds to it) + its LOCAL `Transform`. A single-primitive
+/// mesh is inlined on the node; extra primitives and the node's glTF children become nested `Children`.
+fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
+    let pad = "    ".repeat(depth);
+    let (t, r, s) = node.transform().decomposed();
+
+    // Name — MUST match the anim glb's node name (same Blender export) so the runtime's
+    // `AnimationTargetId::from_names` resolves this entity. Unnamed nodes fall back to `node<idx>`.
+    let name = node
+        .name()
+        .map(|n| n.replace('"', "'"))
+        .unwrap_or_else(|| format!("node{}", node.index()));
+
+    // Triangle primitives of this node's mesh (baked once, cached by (mesh, prim) index).
+    let mut prims: Vec<String> = Vec::new();
+    if let Some(mesh) = node.mesh() {
+        for prim in mesh.primitives() {
+            if prim.mode() != gltf::mesh::Mode::Triangles {
+                continue;
+            }
+            let key = (mesh.index(), prim.index());
+            let stem = if let Some(cached) = ctx.baked.get(&key) {
+                cached.clone()
+            } else {
+                let result = bake_primitive(&mesh, &prim, ctx);
+                ctx.baked.insert(key, result.clone());
+                result
+            };
+            if let Some(stem) = stem {
+                prims.push(stem);
+            }
+        }
+    }
+    let mat_fields = node
+        .mesh()
+        .and_then(|m| m.primitives().find(|p| p.mode() == gltf::mesh::Mode::Triangles))
+        .map(|p| material_fields(&p.material(), ctx))
+        .unwrap_or_default();
+
+    let _ = write!(out, "{pad}bevy_ecs::name::Name(\"{name}\")\n");
+    let _ = write!(
+        out,
+        "{pad}bevy_transform::components::transform::Transform {{ \
+         translation: glam::DVec3 {{ x: {}, y: {}, z: {} }}, \
+         rotation: glam::DQuat {{ x: {}, y: {}, z: {}, w: {} }}, \
+         scale: glam::DVec3 {{ x: {}, y: {}, z: {} }} }}\n",
+        bsn::f(t[0]), bsn::f(t[1]), bsn::f(t[2]),
+        bsn::f(r[0]), bsn::f(r[1]), bsn::f(r[2]), bsn::f(r[3]),
+        bsn::f(s[0]), bsn::f(s[1]), bsn::f(s[2]),
+    );
+    // Single-primitive mesh: inline it on the node (the common case). Extra primitives drop to
+    // identity-transform children below so this entity keeps the node's Name for animation.
+    if let Some(stem) = prims.first() {
+        let _ = write!(
+            out,
+            "{pad}bevy_solari::bindings::types::RaytracingMesh3d(\"{}/meshes/{stem}.cluster_mesh\")\n\
+             {pad}bevy_solari::material::SolariMaterial3d(bevy_solari::material::StandardSolariMaterial {{{mat_fields}}})\n",
+            ctx.asset_prefix,
+        );
+        ctx.emitted += 1;
+    } else {
+        ctx.emitted += 1; // empty/camera anchor node (Name + Transform only)
+    }
+
+    // Nested children: extra primitives (index > 0) as identity entities, then the glTF child nodes.
+    let mut kids = String::new();
+    for (i, stem) in prims.iter().enumerate().skip(1) {
+        let cpad = "    ".repeat(depth + 1);
+        let mat = node
+            .mesh()
+            .and_then(|m| m.primitives().nth(i))
+            .map(|p| material_fields(&p.material(), ctx))
+            .unwrap_or_default();
+        let _ = write!(
+            kids,
+            "{cpad}bevy_ecs::name::Name(\"{name}#{i}\")\n\
+             {cpad}bevy_transform::components::transform::Transform {{ translation: glam::DVec3 {{ x: 0.0, y: 0.0, z: 0.0 }}, rotation: glam::DQuat {{ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }}, scale: glam::DVec3 {{ x: 1.0, y: 1.0, z: 1.0 }} }}\n\
+             {cpad}bevy_solari::bindings::types::RaytracingMesh3d(\"{}/meshes/{stem}.cluster_mesh\")\n\
+             {cpad}bevy_solari::material::SolariMaterial3d(bevy_solari::material::StandardSolariMaterial {{{mat}}}),\n",
+            ctx.asset_prefix,
+        );
+        ctx.emitted += 1;
+    }
+    for child in node.children() {
+        emit_node(&child, ctx, &mut kids, depth + 1);
+    }
+    if !kids.is_empty() {
+        let _ = write!(out, "{pad}bevy_ecs::hierarchy::Children [\n{kids}{pad}]\n");
+    }
+    let _ = write!(out, "{pad},\n");
 }
 
 /// Bake one primitive into a `.cluster_mesh` (skipping the bake if the file already exists from a
@@ -393,6 +560,28 @@ fn material_fields(material: &gltf::Material, ctx: &Ctx) -> String {
     if let Some(nt) = material.normal_texture() {
         if let Some(p) = tex_file(nt.texture(), ctx) {
             let _ = write!(fields, " normal_map_texture: \"{p}\",");
+        }
+    }
+
+    // Emissive: factor × KHR_materials_emissive_strength as linear radiance. When the asset ships no
+    // strength, fall back to the per-scene `emissive_nits` resolver (keyed on material name) so
+    // relative emitter brightness bakes in physically. `None` keeps the glTF value. View with exposure.
+    let ef = material.emissive_factor();
+    let strength = material.emissive_strength().unwrap_or_else(|| {
+        ctx.emissive_nits.map_or(1.0, |f| f(material.name().unwrap_or("")))
+    });
+    let emissive_tex = material.emissive_texture().and_then(|info| tex_file(info.texture(), ctx));
+    if emissive_tex.is_some() || ef != [0.0, 0.0, 0.0] {
+        // A textured emissive with a zero factor would be invisible (emissive = factor × texture);
+        // default such a material to unit factor so the texture shows.
+        let [r, g, b] = if emissive_tex.is_some() && ef == [0.0, 0.0, 0.0] { [1.0, 1.0, 1.0] } else { ef };
+        let _ = write!(
+            fields,
+            " emissive: bevy_color::linear_rgba::LinearRgba {{ red: {}, green: {}, blue: {}, alpha: 1.0 }},",
+            bsn::f(r * strength), bsn::f(g * strength), bsn::f(b * strength),
+        );
+        if let Some(p) = emissive_tex {
+            let _ = write!(fields, " emissive_texture: \"{p}\",");
         }
     }
 

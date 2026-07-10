@@ -9,7 +9,7 @@ use bevy::asset::AssetApp;
 use bevy::prelude::*;
 use bevy::scene::{ScenePatch, ScenePatchInstance, ScenePlugin};
 use bevy::solari::geometry::{ClusterMesh, ClusterMeshLoader};
-use bevy::solari::material::SolariMaterial;
+use bevy::solari::material::StandardSolariMaterial;
 use bevy::solari::prelude::{RaytracingMesh3d, SolariMaterial3d};
 
 fn main() {
@@ -39,13 +39,16 @@ fn main() {
     // Register exactly what `SanMiguel.bsn` names (normally done by SolariPlugin, which needs a GPU).
     app.register_type::<RaytracingMesh3d>()
         .register_type::<SolariMaterial3d>()
-        .register_type::<SolariMaterial>()
+        .register_type::<StandardSolariMaterial>()
         // `SolariMaterial.alpha_mode`'s enum, named in the `.bsn` as
         // `bevy_material::alpha::AlphaMode::Mask(..)` — must be registered to resolve (the GPU app
         // gets this from `SolariMaterialPlugin`; this headless harness registers types by hand).
         .register_type::<AlphaMode>()
-        .init_asset::<SolariMaterial>()
-        .register_asset_reflect::<SolariMaterial>()
+        // `bevy_ecs::name::Name` — importers emit it per entity; the GPU app gets it from
+        // DefaultPlugins, this headless harness must register it or Name scenes `type mismatch`.
+        .register_type::<Name>()
+        .init_asset::<StandardSolariMaterial>()
+        .register_asset_reflect::<StandardSolariMaterial>()
         .init_asset::<ClusterMesh>()
         .init_asset_loader::<ClusterMeshLoader>()
         .register_asset_reflect::<ClusterMesh>()
@@ -107,7 +110,7 @@ fn main() {
         .query::<(&GlobalTransform, &RaytracingMesh3d)>()
         .iter(app.world())
         .take(3)
-        .map(|(gt, _)| gt.translation())
+        .map(|(gt, _)| gt.translation().as_vec3())
         .collect();
     println!("ClusterMesh assets loaded:          {cluster_meshes_loaded} / {meshes}");
     println!("sample entity world translations:   {sample_world:?}");
@@ -123,14 +126,14 @@ fn main() {
         .world_mut()
         .query::<&SolariMaterial3d>()
         .iter(app.world())
-        .filter_map(|m| app.world().resource::<Assets<SolariMaterial>>().get(&m.0))
+        .filter_map(|m| app.world().resource::<Assets<StandardSolariMaterial>>().get(&m.0))
         .any(|mat| mat.base_color_texture.is_some());
 
     let masked = app
         .world_mut()
         .query::<&SolariMaterial3d>()
         .iter(app.world())
-        .filter_map(|m| app.world().resource::<Assets<SolariMaterial>>().get(&m.0))
+        .filter_map(|m| app.world().resource::<Assets<StandardSolariMaterial>>().get(&m.0))
         .filter(|mat| matches!(mat.alpha_mode, AlphaMode::Mask(_)))
         .count();
 

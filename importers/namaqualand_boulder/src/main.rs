@@ -35,6 +35,8 @@ fn main() {
         // Lowercase so the output is `namaqualand_boulder.bsn`.
         scene_name: "namaqualand_boulder".to_string(),
         replace: args.replace,
+        root_components: String::new(),
+        emissive_nits: None,
     };
     bake_gltf_scene(&cfg);
 }

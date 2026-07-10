@@ -19,12 +19,16 @@ clap = { version = "4", features = ["derive"] }
 # table (the worktree's root Cargo.toml `[patch.crates-io]`). Patches only apply at the workspace
 # root, so they live here rather than in any member crate.
 [patch.crates-io]
-wgpu             = { git = "https://github.com/slyedoc/wgpu.git", branch = "solari-rt-naga" }
-wgpu-core        = { git = "https://github.com/slyedoc/wgpu.git", branch = "solari-rt-naga" }
-wgpu-hal         = { git = "https://github.com/slyedoc/wgpu.git", branch = "solari-rt-naga" }
-wgpu-types       = { git = "https://github.com/slyedoc/wgpu.git", branch = "solari-rt-naga" }
-wgpu-naga-bridge = { git = "https://github.com/slyedoc/wgpu.git", branch = "solari-rt-naga" }
-naga             = { git = "https://github.com/slyedoc/wgpu.git", branch = "solari-rt-naga" }
-naga_oil         = { git = "https://github.com/slyedoc/naga_oil.git", branch = "solari-ser" }
+# Mirror zero's patch table: the bevy fork moved to the LOCAL wgpu fork (has COOPERATIVE_VECTOR);
+# the old `solari-rt-naga` git branch predates coopvec and no longer builds bevy_solari.
+wgpu             = { path = "/mnt/code/f/wgpu/wgpu" }
+wgpu-core        = { path = "/mnt/code/f/wgpu/wgpu-core" }
+wgpu-hal         = { path = "/mnt/code/f/wgpu/wgpu-hal" }
+wgpu-types       = { path = "/mnt/code/f/wgpu/wgpu-types" }
+wgpu-naga-bridge = { path = "/mnt/code/f/wgpu/wgpu-naga-bridge" }
+naga             = { path = "/mnt/code/f/wgpu/naga" }
+# Local naga_oil: the git `solari-ser` head (b9480dd) predates naga's CooperativeVectorStore variant;
+# the local checkout (56c4302) adds the redirect arms. Matches the active coopvec work.
+naga_oil         = { path = "/mnt/code/f/naga_oil" }
 ash              = { git = "https://github.com/ash-rs/ash.git", branch = "master" }
 gpu-allocator    = { git = "https://github.com/slyedoc/gpu-allocator.git", branch = "ash-push-rename" }

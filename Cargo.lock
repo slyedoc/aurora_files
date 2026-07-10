@@ -3756,7 +3756,6 @@ checksum = "bc0287524726960e07b119cebd01678f852f147742ae0d925e6a520dca956126"
 [[package]]
 name = "naga"
 version = "29.0.3"
-source = "git+https://github.com/slyedoc/wgpu.git?branch=solari-rt-naga#d5c0aebc459c0689f40d96d5a5ac0738db8899e4"
 dependencies = [
  "arrayvec",
  "bit-set",
@@ -3782,7 +3781,6 @@ dependencies = [
 [[package]]
 name = "naga_oil"
 version = "0.22.0"
-source = "git+https://github.com/slyedoc/naga_oil.git?branch=solari-ser#b9480dd99ed6f2d098c2b7ef4a84d770e6c0c06d"
 dependencies = [
  "codespan-reporting 0.12.0",
  "data-encoding",
@@ -5958,7 +5956,6 @@ dependencies = [
 [[package]]
 name = "wgpu"
 version = "29.0.3"
-source = "git+https://github.com/slyedoc/wgpu.git?branch=solari-rt-naga#d5c0aebc459c0689f40d96d5a5ac0738db8899e4"
 dependencies = [
  "arrayvec",
  "bitflags 2.13.0",
@@ -5985,7 +5982,6 @@ dependencies = [
 [[package]]
 name = "wgpu-core"
 version = "29.0.3"
-source = "git+https://github.com/slyedoc/wgpu.git?branch=solari-rt-naga#d5c0aebc459c0689f40d96d5a5ac0738db8899e4"
 dependencies = [
  "arrayvec",
  "bit-set",
@@ -6017,7 +6013,6 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-apple"
 version = "29.0.3"
-source = "git+https://github.com/slyedoc/wgpu.git?branch=solari-rt-naga#d5c0aebc459c0689f40d96d5a5ac0738db8899e4"
 dependencies = [
  "wgpu-hal",
 ]
@@ -6025,7 +6020,6 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-wasm"
 version = "29.0.3"
-source = "git+https://github.com/slyedoc/wgpu.git?branch=solari-rt-naga#d5c0aebc459c0689f40d96d5a5ac0738db8899e4"
 dependencies = [
  "wgpu-hal",
 ]
@@ -6033,7 +6027,6 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-windows-linux-android"
 version = "29.0.3"
-source = "git+https://github.com/slyedoc/wgpu.git?branch=solari-rt-naga#d5c0aebc459c0689f40d96d5a5ac0738db8899e4"
 dependencies = [
  "wgpu-hal",
 ]
@@ -6041,7 +6034,6 @@ dependencies = [
 [[package]]
 name = "wgpu-hal"
 version = "29.0.3"
-source = "git+https://github.com/slyedoc/wgpu.git?branch=solari-rt-naga#d5c0aebc459c0689f40d96d5a5ac0738db8899e4"
 dependencies = [
  "android_system_properties",
  "arrayvec",
@@ -6094,7 +6086,6 @@ dependencies = [
 [[package]]
 name = "wgpu-naga-bridge"
 version = "29.0.3"
-source = "git+https://github.com/slyedoc/wgpu.git?branch=solari-rt-naga#d5c0aebc459c0689f40d96d5a5ac0738db8899e4"
 dependencies = [
  "naga",
  "wgpu-types",
@@ -6103,7 +6094,6 @@ dependencies = [
 [[package]]
 name = "wgpu-types"
 version = "29.0.3"
-source = "git+https://github.com/slyedoc/wgpu.git?branch=solari-rt-naga#d5c0aebc459c0689f40d96d5a5ac0738db8899e4"
 dependencies = [
  "bitflags 2.13.0",
  "bytemuck",
@@ -6601,6 +6591,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "zeroday_import"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "clap",
+ "solari_bsn",
 ]
 
 [[package]]

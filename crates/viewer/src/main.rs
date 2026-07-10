@@ -17,7 +17,7 @@
 use std::{f32::consts::PI as PI_f32, f64::consts::PI};
 
 use bevy::{
-    camera::{CameraMainTextureUsages, Hdr, visibility::NoCpuCulling},
+    camera::{CameraMainTextureUsages, Exposure, Hdr, visibility::NoCpuCulling},
     camera_controller::free_camera::{FreeCamera, FreeCameraPlugin, FreeCameraState},
     dev_tools::{
         fps_overlay::{FpsOverlayConfig, FpsOverlayPlugin, FrameTimeGraphConfig},
@@ -668,6 +668,7 @@ pub fn setup(mut commands: Commands, args: Res<Args>, scenes: Res<Scenes>) {
         Msaa::Off,
         Camera3d::default(),
         Hdr,
+        Exposure::default(),
         Transform::from_xyz(12.0, 2.0, 12.0).looking_at(DVec3::new(0.0, 2.5, 0.0), Vec3::Y),
         Projection::Perspective(PerspectiveProjection {
             fov: PI_f32 / 3.0,
