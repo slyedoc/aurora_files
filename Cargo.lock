@@ -1488,6 +1488,7 @@ dependencies = [
  "bytemuck",
  "derive_more",
  "dlss_wgpu",
+ "half",
  "lz4_flex",
  "meshopt",
  "naga",

@@ -168,8 +168,13 @@ pub fn main() {
     )
     .add_systems(Update, (send_scroll_events, apply_ground, apply_ref_cube))
     .add_systems(Update, (auto_screenshot, auto_respawn, auto_switch, auto_exit, probe_world))
-    .add_observer(on_scroll)
-    .run();
+    .add_observer(on_scroll);
+    // `VIEWER_FPS=1`: log frame-time diagnostics every second (perf
+    // comparisons; the frame-time overlay already adds the diagnostics source).
+    if std::env::var_os("VIEWER_FPS").is_some() {
+        app.add_plugins(bevy::diagnostic::LogDiagnosticsPlugin::default());
+    }
+    app.run();
 }
 
 /// Debug probe: `VIEWER_PROBE=1` logs world/scene state every ~2s — is the `.bsn`
@@ -844,7 +849,7 @@ pub fn setup(mut commands: Commands, args: Res<Args>, scenes: Res<Scenes>) {
     // Camera: driven by the ray tracer. `STORAGE_BINDING` lets the RT compute pass write the view's
     // main texture; `ClusterConfig::None` skips raster light clustering; `SolariAtmosphere`'s
     // metres-scale defaults supply the sky (background + IBL on ray miss).
-    commands.spawn((
+    let mut camera = commands.spawn((
         Msaa::Off,
         Camera3d::default(),
         Hdr,
@@ -864,6 +869,16 @@ pub fn setup(mut commands: Commands, args: Res<Args>, scenes: Res<Scenes>) {
         ClusterConfig::None,
         CameraMainTextureUsages::default().with(TextureUsages::STORAGE_BINDING),
     ));
+    // Debug lever: `VIEWER_NRC_GI=1` terminates GI paths into the neural
+    // radiance cache (estimator bit 20) on the realtime per-frame estimator
+    // (`accumulate: false` keeps reference accumulation out of it).
+    if std::env::var_os("VIEWER_NRC_GI").is_some() {
+        camera.insert(SolariReference {
+            nrc_gi: true,
+            accumulate: false,
+            ..Default::default()
+        });
+    }
 
     if !args.hide_frame_time {
         commands

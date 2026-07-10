@@ -1,7 +1,8 @@
-4. Fix the shutdown segfault instead of masking it. Furnace's hard process::exit(0) exists because "device-heavy shutdown otherwise segfaults after success." That's the same interop-lifetime class as the regen device-lost: raw-VK resources (sparse memory, AS handles, SBT) racing wgpu teardown. Ordered teardown — quiesce the queue under as_hal_locked, drop raw pools before the device — would also make exam exit codes trustworthy.
+Noted, low value — fine to leave:
+- asset.rs has two "TODO: use async and get rid of this adapter" block_on shims — upstream bevy's meshlet asset has the identical pattern; not worth diverging.
+- The SOLARI_* debug env levers (PTLAS_VALIDATE, VALIDATE, XFORM_DEBUG, CAMERA_DEBUG, TESS_SCALE, OMM_GATE-era ones are gone) are few enough now; a one-place inventory in a module doc would be nice-to-have only.
+- The exam harness isn't duplicated after all — only furnace carries ExamAppExt, so nothing to extract.
 
-5. A cold-start soak in CI. Everything we fixed today was timing-dependent — invisible in any single green run. A script that launches solari_view/furnace ~10× headless and greps the tripwires (full walk re-armed, repeated null-AS, frontier: bail, Xid in journalctl) would have caught both this session's bugs the day they landed. The exam harness already has all the plumbing.
-
-6. The June backlog's stability-adjacent items. Material/light buffers rebuilt per frame isn't just waste — transient buffers feeding the untracked trace is exactly the regen-crash pattern; Tier-2 persistence closes it structurally. Atmosphere bake caching and eviction are behind that.
-
-7. Shrink the fork surface where changes are generic. Queue::as_hal_locked and the upscaling warmup clear are both upstreamable to wgpu/bevy as-is. Every generic delta you upstream is one less thing the eventual ash-master rebase has to carry.
+Already parked from earlier:
+- The intermittent vkAcquireNextImageKHR semaphore VUID (~2 in 20 launches, in memory as a follow-up; worth re-checking with a long soak since the teardown fixes landed).
+- The June backlog proper: per-frame material/light buffer rebuilds → Tier-2 persistence, atmosphere bake caching, arena eviction (which is also what turns MeshOmm's teardown-only Drop into a deferred retire).
