@@ -1,0 +1,28 @@
+# The solari exam harness (moved out of bevy's example gallery — it's a tool).
+# Furnace/closed-form validation scenes + probe readback for the reference path
+# tracer: the ReSTIR curriculum's referee, and the accuracy half of
+# `solari_grader`.
+#
+#   cargo run --release -p solari_furnace -- --scene room --recipe restir-gi
+[package]
+name = "solari_furnace"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "solari_furnace"
+path = "src/main.rs"
+
+[dependencies]
+# Inherits the workspace `bevy` (bevy_solari + cluster_processor); add the
+# harness's UI/camera/debug features on top. `bevy_solari_debug` also carries
+# the shared camera CLI (`SolariCameraArgs`).
+bevy = { workspace = true, features = [
+  "bevy_camera_controller",
+  "free_camera",
+  "bevy_feathers",
+  "bevy_dev_tools",
+  "bevy_solari_debug",
+] }
+clap.workspace = true

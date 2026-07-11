@@ -1,0 +1,11 @@
+# Repo task runner: `cargo xtask <task>` (aliased in .cargo/config.toml).
+# A thin orchestrator over the solari tools — it shells out with the right
+# profile and working directory, so the underlying binaries stay plain.
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+clap.workspace = true

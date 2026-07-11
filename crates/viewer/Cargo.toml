@@ -22,11 +22,8 @@ bevy = { workspace = true, features = [
   "free_camera",
   "bevy_feathers",
   "bevy_dev_tools",
+  # Debug UI + the shared camera CLI (`SolariCameraArgs`, furnace levers).
   "bevy_solari_debug",
 ] }
 clap.workspace = true
 glob = "0.3"
-
-[features]
-# NVIDIA DLSS (ray reconstruction / upscaling). Off by default; needs the forked deps + runtime.
-dlss = ["bevy/dlss"]

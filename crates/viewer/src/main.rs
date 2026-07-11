@@ -70,6 +70,28 @@ pub struct Args {
     /// Don't show the frame-time text overlay.
     #[arg(long)]
     pub hide_frame_time: bool,
+
+    /// Moving-camera benchmark: once the scene has loaded and `--bench-warmup` has passed, orbit
+    /// the camera for N seconds, print frame-time stats, write a per-frame CSV to
+    /// `target/tmp/solari_view_bench.csv`, and exit.
+    #[arg(long)]
+    pub bench: Option<f32>,
+
+    /// Seconds between the scene finishing its cluster load and benchmark motion starting
+    /// (pipeline warmup, NRC cache maturity).
+    #[arg(long, default_value_t = 12.0)]
+    pub bench_warmup: f32,
+
+    /// Benchmark orbit radius (m): the camera circles a pivot this far along its initial view
+    /// direction. Match it to the scene's scale.
+    #[arg(long, default_value_t = 8.0)]
+    pub bench_radius: f64,
+
+    /// The camera estimator levers, shared with `solari_furnace` (fresh-frame
+    /// reference by default; `--accum` = converging exam mode,
+    /// `--recipe default` = the shipped realtime stack).
+    #[command(flatten)]
+    pub camera: SolariCameraArgs,
 }
 
 pub fn main() {
@@ -89,7 +111,6 @@ pub fn main() {
 
     let mut app = App::new();
 
-    #[cfg(feature = "dlss")]
     app.insert_resource(bevy::anti_alias::dlss::DlssProjectId(
         bevy::asset::uuid::uuid!("b1f7d9e3-2a4c-4d6b-8f1e-3c5a7b9d0f2e"),
     ));
@@ -142,13 +163,6 @@ pub fn main() {
         settings::LightSettingsPlugin,
     ))
     .insert_resource(GlobalAmbientLight::NONE)
-    // `VIEWER_CLUSTER_VIEW=1`: flat per-cluster raygen paint — "do primary rays
-    // hit anything at all", independent of shading/lights (debug).
-    .insert_resource(if std::env::var_os("VIEWER_CLUSTER_VIEW").is_some() {
-        bevy::solari::render::rt_pipeline::SolariDebugView::Clusters
-    } else {
-        bevy::solari::render::rt_pipeline::SolariDebugView::None
-    })
     .insert_resource(args.clone())
     .insert_resource(scenes)
     .insert_resource(ClearColor(Color::srgb(1.75, 1.9, 1.99)))
@@ -176,7 +190,126 @@ pub fn main() {
     if std::env::var_os("VIEWER_FPS").is_some() {
         app.add_plugins(bevy::diagnostic::LogDiagnosticsPlugin::default());
     }
+    if let Some(duration) = args.bench {
+        app.insert_resource(MovingBench {
+            warmup: args.bench_warmup as f64,
+            duration: duration as f64,
+            radius: args.bench_radius,
+            ready_at: None,
+            orbit: None,
+            frames: Vec::new(),
+        })
+        .add_systems(Update, moving_bench);
+    }
     app.run();
+}
+
+/// One full benchmark orbit takes this long; a 30 s bench is ~1.25 revolutions.
+const BENCH_ORBIT_PERIOD: f64 = 24.0;
+
+/// `--bench N`: scripted moving-camera benchmark. The camera pose is a pure function of
+/// bench-elapsed time (an orbit around a pivot ahead of the start pose, with a slow vertical bob),
+/// so the flight is identical across runs and settings for the same scene and start pose.
+#[derive(Resource)]
+struct MovingBench {
+    warmup: f64,
+    duration: f64,
+    radius: f64,
+    /// When the cluster loading screen cleared; warmup counts from here, not process start.
+    ready_at: Option<f64>,
+    /// Captured at motion start: (pivot, camera offset from pivot).
+    orbit: Option<(DVec3, DVec3)>,
+    frames: Vec<f64>,
+}
+
+impl MovingBench {
+    fn report(&self) {
+        let n = self.frames.len();
+        if n == 0 {
+            println!("bench: no frames recorded");
+            return;
+        }
+        let mut sorted = self.frames.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let total: f64 = sorted.iter().sum();
+        let avg = total / n as f64;
+        let pct = |p: f64| sorted[((n as f64 * p) as usize).min(n - 1)];
+        let worst = (n / 100).max(1);
+        let one_percent_worst = sorted.iter().rev().take(worst).sum::<f64>() / worst as f64;
+        println!("bench: moving camera, {n} frames over {:.1}s", total / 1000.0);
+        println!("{:>8.2}ms avg ({:.1} fps)", avg, 1000.0 / avg);
+        println!("{:>8.2}ms median", pct(0.5));
+        println!("{:>8.2}ms p95", pct(0.95));
+        println!("{:>8.2}ms p99", pct(0.99));
+        println!("{:>8.2}ms avg 1% worst", one_percent_worst);
+
+        let dir = std::path::Path::new("./target/tmp");
+        let _ = std::fs::create_dir_all(dir);
+        let path = dir.join("solari_view_bench.csv");
+        let mut csv = String::from("frame,ms\n");
+        for (i, ms) in self.frames.iter().enumerate() {
+            csv.push_str(&format!("{i},{ms:.4}\n"));
+        }
+        match std::fs::write(&path, csv) {
+            Ok(()) => println!("bench: per-frame times -> {}", path.display()),
+            Err(e) => println!("bench: failed to write csv: {e}"),
+        }
+    }
+}
+
+fn moving_bench(
+    time: Res<Time>,
+    mut bench: ResMut<MovingBench>,
+    loading: Query<(), With<LoadingScreen>>,
+    mut camera: Query<&mut Transform, With<SolariCamera>>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    let Ok(mut tf) = camera.single_mut() else {
+        return;
+    };
+    let now = time.elapsed_secs_f64();
+    let Some(ready_at) = bench.ready_at else {
+        if loading.is_empty() {
+            bench.ready_at = Some(now);
+        }
+        return;
+    };
+    let since_ready = now - ready_at;
+    if since_ready < bench.warmup {
+        return;
+    }
+    let run = since_ready - bench.warmup;
+    let (pivot, offset0) = match bench.orbit {
+        Some(orbit) => {
+            // The frame where motion started still measured the static warmup pose;
+            // record from the second moving frame on.
+            bench.frames.push(time.delta_secs_f64() * 1000.0);
+            orbit
+        }
+        None => {
+            let forward = tf.rotation * DVec3::NEG_Z;
+            let pivot = tf.translation + forward * bench.radius;
+            let orbit = (pivot, tf.translation - pivot);
+            bench.orbit = Some(orbit);
+            // capture.sh waits on this marker: a tracy capture started here covers
+            // only the moving segment, load-free.
+            println!("CAPTURE_READY");
+            println!("bench: warmup done, {:.0}s orbit flythrough", bench.duration);
+            orbit
+        }
+    };
+    if run >= bench.duration {
+        bench.report();
+        exit.write(AppExit::Success);
+        return;
+    }
+    use std::f64::consts::TAU;
+    let azimuth = TAU * run / BENCH_ORBIT_PERIOD;
+    let offset = DQuat::from_rotation_y(azimuth) * offset0;
+    // Incommensurate-period bob so no two orbits sample identical poses.
+    let bob = bench.radius * 0.05 * (TAU * run / (BENCH_ORBIT_PERIOD * 0.37)).sin();
+    let position = pivot + offset + DVec3::Y * bob;
+    *tf = Transform::from_translation(position).looking_at(pivot, Vec3::Y);
 }
 
 /// Debug probe: `VIEWER_PROBE=1` logs world/scene state every ~2s — is the `.bsn`
@@ -848,10 +981,29 @@ pub fn setup(mut commands: Commands, args: Res<Args>, scenes: Res<Scenes>) {
         settings::Sun,
     ));
 
+    // The shared estimator levers (furnace dialect): fresh-frame reference by
+    // default, `--recipe default` for the shipped realtime stack. Env-var
+    // compat levers override the CLI block:
+    // - `VIEWER_NRC_GI=1`: fresh-frame reference estimator terminating GI
+    //   paths into the neural radiance cache (estimator bit 20).
+    // - `VIEWER_CLUSTER_VIEW=1`: flat per-cluster raygen paint — "do primary
+    //   rays hit anything at all", independent of shading/lights (debug).
+    let mut solari_camera = args.camera.camera();
+    if std::env::var_os("VIEWER_NRC_GI").is_some() {
+        solari_camera.mode = SolariLighting::Reference(SolariReference {
+            nrc_gi: true,
+            accumulate: false,
+            ..Default::default()
+        });
+    }
+    if std::env::var_os("VIEWER_CLUSTER_VIEW").is_some() {
+        solari_camera.debug = SolariDebugView::Clusters;
+    }
+
     // Camera: driven by the ray tracer. `STORAGE_BINDING` lets the RT compute pass write the view's
     // main texture; `ClusterConfig::None` skips raster light clustering; `SolariAtmosphere`'s
     // metres-scale defaults supply the sky (background + IBL on ray miss).
-    let mut camera = commands.spawn((
+    commands.spawn((
         Msaa::Off,
         Camera3d::default(),
         Hdr,
@@ -866,21 +1018,11 @@ pub fn setup(mut commands: Commands, args: Res<Args>, scenes: Res<Scenes>) {
         }),
         FreeCamera::default(),
         Spin,
-        SolariCamera::default(),
+        solari_camera,
         SolariAtmosphere::default(),
         ClusterConfig::None,
         CameraMainTextureUsages::default().with(TextureUsages::STORAGE_BINDING),
     ));
-    // Debug lever: `VIEWER_NRC_GI=1` terminates GI paths into the neural
-    // radiance cache (estimator bit 20) on the realtime per-frame estimator
-    // (`accumulate: false` keeps reference accumulation out of it).
-    if std::env::var_os("VIEWER_NRC_GI").is_some() {
-        camera.insert(SolariReference {
-            nrc_gi: true,
-            accumulate: false,
-            ..Default::default()
-        });
-    }
 
     if !args.hide_frame_time {
         commands

@@ -1,0 +1,4 @@
+# `cargo xtask <task>` — the repo task runner (crates/xtask). Tasks wrap the
+# solari tools with the right profiles/cwd: furnace, grade, view, report, soak.
+[alias]
+xtask = "run --quiet -p xtask --"

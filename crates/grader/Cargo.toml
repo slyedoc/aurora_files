@@ -1,0 +1,23 @@
+# Accuracy × speed grader for the solari estimator recipes.
+#
+# Runs `solari_furnace` (same workspace) once per recipe (equal wall-clock
+# accumulation time), scores each run's EXR dump against a cached converged
+# truth with NVIDIA HDR-FLIP (https://github.com/NVlabs/flip), collects frame
+# times, and prints a comparison table.
+#
+#   cargo run -p solari_grader -- --scene room --time 20
+#
+# Needs the FLIP CLI built (cmake in <flip>/src/cpp); point `--flip` or
+# `FLIP_BIN` at the binary (default: /mnt/code/f/flip/src/cpp/build/tool/flip).
+[package]
+name = "solari_grader"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+clap.workspace = true
+# Tonemapped PNG renders of every EXR dump (report visuals): exr reads the
+# dumps, png writes the 8-bit sRGB result.
+exr = "1.74"
+png = "0.17"
