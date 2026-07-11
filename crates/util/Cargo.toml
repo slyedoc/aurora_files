@@ -1,0 +1,16 @@
+# Shared rig for the solari tools (modeled on zero's crates/util): the
+# inspector-driven sun controls, and the common log filter. Furnace and the
+# viewer keep their identities; what they'd otherwise duplicate lives here.
+[package]
+name = "util"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+bevy = { workspace = true, features = [
+  "bevy_camera_controller",
+  "free_camera",
+  "bevy_feathers",
+  "bevy_solari_debug",
+] }

@@ -3,9 +3,9 @@
 //! Every task runs from the workspace root regardless of where it's invoked,
 //! and pass-through args flow to the underlying tool unchanged:
 //!
-//!   cargo xtask furnace --scene room --recipe restir-gi --taps 3
+//!   cargo xtask furnace --scene room --camera '(mode: Reference((di: Restir(()))))'
 //!   cargo xtask grade --scene lamps --time 20 --label baseline
-//!   cargo xtask view assets/san_miguel/SanMiguel.bsn --recipe production --bench 30
+//!   cargo xtask view assets/san_miguel/SanMiguel.bsn --camera '(mode: Realtime(()))' --bench 30
 //!   cargo xtask soak 10
 //!
 //! The grader rebuilds the HTML report itself after every run; for a one-off
@@ -84,7 +84,7 @@ fn truth(root: &Path, args: &[String]) -> i32 {
     let scenes: &[&str] = if args.iter().any(|a| a == "--scene") {
         &[""]
     } else {
-        &["furnace", "room", "yard"]
+        &["furnace", "room", "yard", "bistro"]
     };
     for scene in scenes {
         let mut forwarded = vec!["--truth-only".to_string()];

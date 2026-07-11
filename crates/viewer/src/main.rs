@@ -14,11 +14,11 @@
 //! transform, `Space` toggles the fly-through, `B` runs the benchmark. Generalized from bevy's
 //! `san_miguel` example.
 
-use std::{f32::consts::PI as PI_f32, f64::consts::PI};
+use std::f32::consts::PI as PI_f32;
 
 use bevy::{
-    camera::{CameraMainTextureUsages, Exposure, Hdr, visibility::NoCpuCulling},
-    camera_controller::free_camera::{FreeCamera, FreeCameraPlugin, FreeCameraState},
+    camera::{CameraMainTextureUsages, Exposure, Hdr},
+    camera_controller::free_camera::{FreeCamera, FreeCameraPlugin},
     dev_tools::{
         fps_overlay::{FpsOverlayConfig, FpsOverlayPlugin, FrameTimeGraphConfig},
         render_debug::RenderDebugOverlayPlugin,
@@ -27,7 +27,7 @@ use bevy::{
     feathers::{FeathersPlugins, dark_theme::create_dark_theme, theme::UiTheme},
     image::{ImageAddressMode, ImageSamplerDescriptor},
     input::mouse::{MouseScrollUnit, MouseWheel},
-    light::{cluster::ClusterConfig, light_consts::lux},
+    light::cluster::ClusterConfig,
     log::LogPlugin,
     math::{DQuat, DVec3},
     picking::{Pickable, hover::HoverMap},
@@ -44,13 +44,7 @@ use clap::Parser;
 mod settings;
 
 /// Log filter: silence noisy startup INFO lines (keep warn/error).
-pub const LOG_FILTER: &str = concat!(
-    "bevy_camera_controller=off",
-    ",bevy_winit=warn",
-    ",bevy_render=warn",
-    ",wgpu_hal=warn",
-    ",bevy_diagnostic::system_information_diagnostics_plugin=warn",
-);
+pub use util::LOG_FILTER;
 
 #[derive(Parser, Resource, Clone)]
 #[command(about = "bevy_solari .bsn scene viewer")]
@@ -89,7 +83,7 @@ pub struct Args {
 
     /// The camera estimator levers, shared with `solari_furnace` (fresh-frame
     /// reference by default; `--accum` = converging exam mode,
-    /// `--recipe default` = the shipped realtime stack).
+    /// `--camera '(mode: Realtime(()))'` = the shipped realtime stack).
     #[command(flatten)]
     pub camera: SolariCameraArgs,
 }
@@ -164,6 +158,10 @@ pub fn main() {
         },
         SolariPlugin,
         settings::LightSettingsPlugin,
+        util::sun::SunPlugin,
+        util::park::HoverParkPlugin,
+        // F1: reflection-driven world inspector.
+        bevy::feathers_inspector::WorldInspectorPlugin::new().with_toggle_key(KeyCode::F1),
     ))
     .insert_resource(GlobalAmbientLight::NONE)
     .insert_resource(args.clone())
@@ -180,7 +178,6 @@ pub fn main() {
             handle_input,
             switch_scene,
             highlight_scene_buttons,
-            ensure_visibility,
             update_loading_screen,
         )
             .chain(),
@@ -546,7 +543,6 @@ fn apply_ground(
             SolariMaterial3d(assets.material.clone()),
             Transform::default(),
             Visibility::Visible,
-            NoCpuCulling,
         ));
     } else {
         for entity in &ground {
@@ -608,7 +604,6 @@ fn apply_ref_cube(
             SolariMaterial3d(assets.material.clone()),
             Transform::from_xyz(3.0, 0.5, 0.0),
             Visibility::Visible,
-            NoCpuCulling,
         ));
     } else {
         for entity in &cube {
@@ -669,17 +664,6 @@ fn update_loading_screen(
         } else {
             format!("Loading clusters: {loaded}/{total}")
         };
-    }
-}
-
-/// `.bsn` entities arrive with no visibility components (`RaytracingMesh3d` doesn't require them);
-/// give the RT meshes the visibility chain so the instance extract / hierarchy is well-formed.
-fn ensure_visibility(
-    mut commands: Commands,
-    query: Query<Entity, (With<RaytracingMesh3d>, Without<Visibility>)>,
-) {
-    for entity in &query {
-        commands.entity(entity).insert(Visibility::Visible);
     }
 }
 
@@ -747,9 +731,9 @@ fn spawn_active_scene(commands: &mut Commands, asset_server: &AssetServer, path:
         ActiveScene,
         ScenePatchInstance(asset_server.load(path.to_string())),
         // The bsn no longer carries a root Transform (it would stomp placement) —
-        // the instance entity supplies it.
+        // the instance entity supplies it. No Visibility — a raster concept
+        // the RT extraction ignores.
         Transform::default(),
-        Visibility::Visible,
     ));
 
     commands
@@ -817,16 +801,6 @@ fn spawn_scene_picker(commands: &mut Commands, scenes: &Scenes) {
                 ScrollPosition::default(),
                 BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
             ))
-            .observe(
-                |_: On<Pointer<Over>>, mut state: Single<&mut FreeCameraState>| {
-                    state.enabled = false;
-                },
-            )
-            .observe(
-                |_: On<Pointer<Out>>, mut state: Single<&mut FreeCameraState>| {
-                    state.enabled = true;
-                },
-            )
             .with_children(|panel| {
                 for (i, path) in scenes.paths.iter().enumerate() {
                     let label = std::path::Path::new(path)
@@ -968,24 +942,19 @@ pub fn setup(mut commands: Commands, args: Res<Args>, scenes: Res<Scenes>) {
 
     // Sun: a `SolariDirectionLight` (own light type, direction resolved from the GPU transform
     // table). Shadows/cascades are raster concepts — the ray tracer traces shadow rays directly.
-    // The light-settings panel (top right) steers it via the `Sun` marker.
+    // The shared sun inspector card (`util::sun`) steers it; settings stamp
+    // direction + illuminance on spawn, the warm color is rig-owned.
     commands.spawn((
-        Transform::from_rotation(DQuat::from_euler(
-            EulerRot::XYZ,
-            PI * -0.35f64,
-            PI * -0.13,
-            0.0,
-        )),
+        util::sun::Sun,
+        Transform::default(),
         SolariDirectionLight {
             color: Color::srgb(1.0, 0.87, 0.78),
-            illuminance: lux::FULL_DAYLIGHT,
             ..default()
         },
-        settings::Sun,
     ));
 
     // The shared estimator levers (furnace dialect): fresh-frame reference by
-    // default, `--recipe default` for the shipped realtime stack. Env-var
+    // default, `--camera '(mode: Realtime(()))'` for the realtime stack. Env-var
     // compat levers override the CLI block:
     // - `VIEWER_NRC_GI=1`: fresh-frame reference estimator terminating GI
     //   paths into the neural radiance cache (estimator bit 20).
@@ -994,7 +963,7 @@ pub fn setup(mut commands: Commands, args: Res<Args>, scenes: Res<Scenes>) {
     let mut solari_camera = args.camera.camera();
     if std::env::var_os("VIEWER_NRC_GI").is_some() {
         solari_camera.mode = SolariLighting::Reference(SolariReference {
-            nrc_gi: true,
+            gi: Some(GiArm { nrc: true, ..Default::default() }),
             accumulate: false,
             ..Default::default()
         });

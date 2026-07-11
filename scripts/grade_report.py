@@ -191,7 +191,7 @@ pre.mono { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; white-spac
 <body>
 <div id="app" class="wrap">
   <h1>solari grade report</h1>
-  <p class="sub">accuracy (HDR-FLIP vs converged truth) &times; speed, per estimator recipe</p>
+  <p class="sub">accuracy (FLIP vs converged truth) &times; speed, per camera config — names derive from the config (rows carry their exact RON)</p>
 
   <div class="controls">
     <div><label>scene</label>
@@ -269,7 +269,7 @@ pre.mono { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; white-spac
     <pre class="mono" v-if="defaultDrift">baseline: {{ base.default_config }}
 current:  {{ run.default_config }}</pre>
     <table>
-      <thead><tr><th>recipe</th><th class="num">FLIP</th><th class="num">&Delta;</th>
+      <thead><tr><th>config</th><th class="num">FLIP</th><th class="num">&Delta;</th>
         <th class="num">avg ms</th><th class="num">&Delta;</th>
         <th class="num">FLIP&middot;ms</th><th class="num">&Delta;</th></tr></thead>
       <tbody>
@@ -287,7 +287,7 @@ current:  {{ run.default_config }}</pre>
   </div>
 
   <div class="card" v-if="run">
-    <h2>FLIP by recipe</h2>
+    <h2>FLIP by config</h2>
     <p class="note">equal-time accuracy; sorted best first (realtime rows are per-frame — see the scatter note)</p>
     <svg :view-box.camel="'0 0 ' + W + ' ' + barH(sortedRows.length)" style="width:100%">
       <g v-for="(r, i) in sortedRows" :key="r.recipe" class="bar-hit"
@@ -301,7 +301,7 @@ current:  {{ run.default_config }}</pre>
   </div>
 
   <div class="card" v-if="run">
-    <h2>avg frame time by recipe</h2>
+    <h2>avg frame time by config</h2>
     <p class="note">median steady-state frame time over the run (ms)</p>
     <svg :view-box.camel="'0 0 ' + W + ' ' + barH(msRows.length)" style="width:100%">
       <g v-for="(r, i) in msRows" :key="r.recipe" class="bar-hit"
@@ -329,13 +329,14 @@ current:  {{ run.default_config }}</pre>
     <h2>results</h2>
     <p class="note" v-if="renders.length">click a render or flip map to send it to the compare slider below (alternates left / right)</p>
     <table>
-      <thead><tr><th>recipe</th><th class="num">FLIP</th><th class="num">avg ms</th>
-        <th class="num">FLIP&middot;ms</th><th class="num">spp</th>
+      <thead><tr><th>config</th><th class="num">FLIP</th><th class="num">flicker</th>
+        <th class="num">avg ms</th><th class="num">FLIP&middot;ms</th><th class="num">spp</th>
         <th v-if="renders.length">render</th><th v-if="maps.length">flip</th></tr></thead>
       <tbody>
         <tr v-if="run.truth_render">
           <td>truth</td>
           <td class="num">0</td>
+          <td class="num">—</td>
           <td class="num">—</td>
           <td class="num">—</td>
           <td class="num">{{ run.truth_spp }}</td>
@@ -346,6 +347,7 @@ current:  {{ run.default_config }}</pre>
         <tr v-for="r in sortedRows" :key="r.recipe">
           <td>{{ r.recipe }}</td>
           <td class="num">{{ fmt(r.flip, 4) }}</td>
+          <td class="num">{{ fmt(r.flicker, 4) }}</td>
           <td class="num">{{ fmt(r.frame_ms, 2) }}</td>
           <td class="num">{{ fmt(r.flip != null && r.frame_ms != null ? r.flip * r.frame_ms : null, 3) }}</td>
           <td class="num">{{ r.spp ?? '—' }}</td>

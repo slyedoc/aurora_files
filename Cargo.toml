@@ -11,9 +11,11 @@ members = ["crates/*", "importers/*"]
 bevy = { path = "/mnt/code/f/bevy", features = [
   "bevy_solari",
   "cluster_processor",
-  # Always on: the whole stack is NVIDIA-only anyway, and recipe behavior
+  # Always on: the whole stack is NVIDIA-only anyway, and camera behavior
   # UNDER DLSS RR is what any meaningful test measures.
   "dlss",
+  # F1 world inspector in every tool.
+  "experimental_bevy_feathers_inspector",
 ] }
 # CLI parsing for the importer binaries.
 clap = { version = "4", features = ["derive"] }

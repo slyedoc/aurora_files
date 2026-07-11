@@ -1,0 +1,51 @@
+name: Publish baseline report
+
+# Manual only. This runs on a self-hosted runner (the GPU box) — do NOT add a
+# pull_request trigger while this repo is public: a fork PR could then run
+# arbitrary code on your machine.
+on:
+  workflow_dispatch:
+    inputs:
+      scene:
+        description: Scene to grade
+        default: lamps
+      time:
+        description: Seconds per recipe
+        default: "20"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race; queue instead of cancelling a live baseline.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  baseline:
+    runs-on: [self-hosted, gpu] # the 5090 box
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run baseline
+        run: cargo xtask grade --scene "${{ inputs.scene }}" --time "${{ inputs.time }}" --label baseline
+
+      - name: Regenerate self-contained report
+        run: python3 scripts/grade_report.py --embed-maps
+
+      - name: Stage site
+        run: |
+          rm -rf public && mkdir -p public
+          cp target/solari_grader/report.html public/index.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

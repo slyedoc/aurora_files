@@ -63,6 +63,9 @@ enum Scene {
     /// open yard: sun (directional/NEE) + a lamp cluster (reservoir) over one
     /// ground — the directional-vs-reservoir bookkeeping exam
     Yard,
+    /// the importer-baked bistro `.bsn` under sun + atmosphere — real content
+    /// (glass, foliage cutouts, dense geometry) graded with the same protocols
+    Bistro,
 }
 
 #[derive(Parser)]
@@ -74,10 +77,6 @@ struct Args {
     /// which scene to render
     #[arg(long, value_enum, default_value_t = Scene::Furnace)]
     scene: Scene,
-
-    /// rung-0 self-test: freeze at 4s, dump EXR at 5s, diff view on at 6s
-    #[arg(long)]
-    rung0: bool,
 
     /// force uniform light picking (rung-1 A/B: must converge to the same image
     /// as power-weighted, just noisier)
@@ -98,6 +97,12 @@ struct Args {
     /// pair with --no-ui or the panels are in the shot)
     #[arg(long)]
     shot_at_secs: Option<f32>,
+
+    /// capture this many CONSECUTIVE frames when --shot-at-secs fires (a
+    /// burst): pairwise FLIP between neighbors is the flicker metric —
+    /// temporally-sticky error DLSS preserves scores low, per-frame flux high
+    #[arg(long, default_value_t = 1)]
+    shot_frames: u32,
 
     /// also screenshot when the --dump-at-spp EXR lands (converged truth gets
     /// a display-referred twin for the per-frame protocol to grade against)
@@ -126,10 +131,12 @@ struct Args {
     #[arg(long)]
     fps: bool,
 
-    /// soak: sway/yaw the camera for N seconds, then snap back to the start
-    /// pose and hold — churns reservoir history with motion + disocclusion
-    #[arg(long, default_value_t = 0.0)]
-    orbit: f32,
+    /// sway/yaw the camera for N FRAMES, then snap back to the start pose
+    /// and hold. Frame-indexed, not time-based: frame k renders the same pose
+    /// at any frame rate, so motion captures compare equal across recipes.
+    /// Large N = continuous motion (the grader's --orbit mode)
+    #[arg(long, default_value_t = 0)]
+    orbit: u32,
 
     /// room-grid power law: `pilot` (a few floods over a sea of pilots — global
     /// flux weighting wins) or `equal` (identical lamps — the receiver-locality
@@ -145,16 +152,47 @@ struct Args {
 /// Uniform sky radiance (cd/m²) for the furnace scene.
 const SKY_NITS: f32 = 1000.0;
 
+/// Fingerprint of this file's source — scene geometry lives here, so any edit
+/// changes the fingerprint and the grader knows its cached truths may show a
+/// different scene (dims alone can't tell). Coarse on purpose: a needless
+/// rebake after an unrelated edit costs minutes; a stale truth silently
+/// poisons every number.
+const SCENE_FP: u64 = fnv1a(include_bytes!("main.rs"));
+
+const fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+        i += 1;
+    }
+    hash
+}
+
 fn main() {
     let mut args = Args::parse();
     // The shipped default IS the production config; every run states it so
     // the grader can snapshot what "default" meant at run time.
     println!("solari_default: {:?}", SolariLighting::default());
-    // Accumulation instruments imply --accum: an spp-threshold dump can never
-    // fire on fresh frames, and rung-0 grades the accumulated mean.
-    if (args.rung0 || args.dump_at_spp > 0) && !args.camera.accum {
+    // The spp-threshold dump implies --accum: it can never fire on fresh
+    // frames.
+    if args.dump_at_spp > 0 && !args.camera.accum {
         args.camera.accum = true;
-        println!("furnace: --rung0/--dump-at-spp imply --accum; accumulation enabled");
+        println!("furnace: --dump-at-spp implies --accum; accumulation enabled");
+    }
+    // The effective camera as RON — feed it back through `--camera` to replay
+    // or hand-tweak this exact run — and its derived name (grader row identity).
+    let camera = args.camera.camera();
+    println!("solari_camera: {}", bevy::solari::cli::camera_ron(&camera));
+    println!("solari_camera_name: {}", camera.name());
+    println!("solari_scene_fp: {:016x}-{:?}", SCENE_FP, args.scene);
+    if let Ok(cwd) = std::env::current_dir() {
+        // The bistro scene loads assets/bistro/bistro.bsn relative to the
+        // working directory (the solari_files root under xtask/grader runs).
+        // SAFETY: set before any threads are spawned (AssetPlugin reads it
+        // during plugin build).
+        unsafe { std::env::set_var("BEVY_ASSET_ROOT", cwd) };
     }
     let mut app = App::new();
     // Exams time frames from logs: never let the unfocused 60 Hz throttle
@@ -166,7 +204,7 @@ fn main() {
     app.insert_resource(DlssProjectId(bevy::asset::uuid::uuid!(
         "d5580e3b-691b-4fef-8dcd-58c0ae6df08e"
     )));
-    app.insert_resource(OrbitSoak { secs: args.orbit, start: None });
+    app.insert_resource(OrbitSoak { frames: args.orbit, start: None });
     if let Some(secs) = args.dump_at_secs {
         app.add_systems(
             Update,
@@ -184,10 +222,7 @@ fn main() {
         ..Default::default()
     });
     if args.fps {
-        app.add_plugins((
-            bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
-            bevy::diagnostic::LogDiagnosticsPlugin::default(),
-        ));
+        app.add_plugins(bevy::diagnostic::LogDiagnosticsPlugin::default());
     }
     if args.dlss {
         app.insert_resource(SolariDlssMode::Dlaa);
@@ -196,11 +231,15 @@ fn main() {
         app.insert_resource(SolariDebugUi(false));
     }
     if let Some(secs) = args.shot_at_secs {
+        let burst = args.shot_frames.max(1);
         app.add_systems(
             Update,
-            move |time: Res<Time>, mut commands: Commands, mut done: Local<bool>| {
-                if !*done && time.elapsed_secs() >= secs {
-                    *done = true;
+            move |time: Res<Time>, mut commands: Commands, mut taken: Local<u32>| {
+                // One screenshot per frame once the settle window elapses,
+                // until the burst is captured (consecutive frames — the
+                // flicker metric's raw material).
+                if *taken < burst && time.elapsed_secs() >= secs {
+                    *taken += 1;
                     take_shot(&mut commands);
                 }
             },
@@ -211,7 +250,7 @@ fn main() {
     }
     app.add_systems(Update, (orbit_soak, announce_window_size));
     // The debug panels are off in graded runs — the title says what's rendering.
-    let mut title = format!("Furnace — {}", args.camera.recipe.name());
+    let mut title = format!("Furnace — {}", camera.name());
     if args.dlss {
         title.push_str(" +DLSS");
     }
@@ -219,7 +258,6 @@ fn main() {
         .add_screenshot(KeyCode::F12)
         .insert_resource(SceneArgs {
             scene: args.scene,
-            rung0: args.rung0,
             equal_lamps: args.lamp_law == "equal",
             camera: args.camera,
         })
@@ -257,6 +295,25 @@ fn main() {
             FreeCameraPlugin,
             SolariPlugin,
             FeathersPlugins,
+            util::sun::SunPlugin,
+            util::park::HoverParkPlugin,
+            bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
+            // The bevy_city-style FPS overlay + frame-time graph. Hidden in
+            // graded runs — screenshots capture the full window surface.
+            bevy::dev_tools::fps_overlay::FpsOverlayPlugin {
+                config: bevy::dev_tools::fps_overlay::FpsOverlayConfig {
+                    enabled: !args.no_ui,
+                    frame_time_graph_config: bevy::dev_tools::fps_overlay::FrameTimeGraphConfig {
+                        enabled: !args.no_ui,
+                        target_fps: 240.0,
+                        min_fps: 60.0,
+                    },
+                    ..default()
+                },
+            },
+            // F1: reflection-driven world inspector (whole-world escape hatch;
+            // the per-camera card covers SolariCamera).
+            bevy::feathers_inspector::WorldInspectorPlugin::new().with_toggle_key(KeyCode::F1),
         ))
         .insert_resource(UiTheme(create_dark_theme()))
         .init_resource::<Probes>()
@@ -264,7 +321,8 @@ fn main() {
         .add_systems(Startup, setup_furnace.run_if(|a: Res<SceneArgs>| a.scene == Scene::Furnace))
         .add_systems(Startup, setup_room.run_if(|a: Res<SceneArgs>| a.scene == Scene::Room))
         .add_systems(Startup, setup_yard.run_if(|a: Res<SceneArgs>| a.scene == Scene::Yard))
-        .add_systems(Update, (rung0_keys, rung0_selftest));
+        .add_systems(Startup, setup_bistro.run_if(|a: Res<SceneArgs>| a.scene == Scene::Bistro))
+        .add_systems(Update, freeze_diff_keys);
     app.sub_app_mut(RenderApp)
         .add_systems(Render, probe_readback.in_set(RenderSystems::Cleanup));
     app.run();
@@ -273,14 +331,13 @@ fn main() {
 #[derive(Resource)]
 struct SceneArgs {
     scene: Scene,
-    rung0: bool,
     equal_lamps: bool,
     /// The shared estimator levers; `camera_mode` turns them into components.
     camera: SolariCameraArgs,
 }
 
 /// The camera the CLI levers select: the reference exam harness by default,
-/// the realtime ReSTIR stack under `--recipe production`.
+/// the realtime ReSTIR stack under `--camera '(mode: Realtime(()))'`.
 fn camera_mode(args: &SceneArgs) -> SolariCamera {
     args.camera.camera()
 }
@@ -598,11 +655,9 @@ fn setup_room(
     spawn("wall_z+".into(), Vec3::new(16.4, 6.4, 0.2), at(DVec3::new(0.0, 0.0, 8.1)), &grey);
     // Upright boxes (footprint, height) sitting on the floor — vertical faces +
     // flat tops (normal/depth breaks) that cast shadows (occlusion boundaries).
-    // (The back-left box that used to stand at (-3, -2) is now the taller occluder
-    // pillar below — it sits on the camera→corner-ball ray to hide the rough ball.)
     let boxes = [
         (Vec3::new(1.5, 1.0, 1.5), DVec3::new(2.6, 0.0, 1.2)),
-        (Vec3::new(1.0, 3.0, 1.0), DVec3::new(0.2, 0.0, 3.0)),
+        (Vec3::new(1.0, 2.2, 1.0), DVec3::new(0.2, 0.0, 3.0)),
         (Vec3::new(2.2, 0.6, 1.1), DVec3::new(-2.2, 0.0, 2.4)),
         (Vec3::new(0.8, 1.8, 0.8), DVec3::new(3.2, 0.0, -3.0)),
         (Vec3::new(1.3, 1.4, 1.3), DVec3::new(-4.2, 0.0, 3.6)),
@@ -623,23 +678,16 @@ fn setup_room(
         at(DVec3::new(-1.2, f + 0.9, -3.8)).with_rotation(DQuat::from_rotation_x(0.55)),
         &grey,
     );
-    // Two spheres raised on grey pillars. The glossy metal ball stands visible up
-    // front-right; the rough diffuse ball sits on a pillar in the back-LEFT corner,
-    // hidden by default behind a tall grey occluder pillar planted on the camera→
-    // corner ray. The high look-down camera sees over short boxes, so only a tall
-    // occluder dead on the sightline hides it — the --orbit soak then swings the
-    // corner open (disocclusion: the reuse stack must repopulate the curved receiver,
-    // not smear). Each ball center sits at y = f + pillar_height + BALL_R; xz +
-    // pillar height are reused for the spheres + probes below.
+    // Two spheres raised on grey pillars, side by side at the same depth: the rough
+    // diffuse ball on the left, the glossy metal ball on the right — curved diffuse +
+    // glossy receivers standing above the box clutter. Each ball center sits at
+    // y = f + pillar_height + BALL_R; xz + height reused for the spheres + probes.
     const BALL_R: f64 = 0.7;
-    let (dx, dz, d_ph) = (-5.8f64, -5.8f64, 1.4f64); // diffuse: back-left corner
-    let (mx, mz, m_ph) = (2.0f64, -1.0f64, 1.8f64); //   metal: front-right pillar
+    let (dx, dz, d_ph) = (-1.5f64, -1.0f64, 1.8f64); // diffuse: left of the pair
+    let (mx, mz, m_ph) = (0.5f64, -1.0f64, 1.8f64); //  metal: right of the pair
     for (label, x, z, ph) in [("diffuse", dx, dz, d_ph), ("metal", mx, mz, m_ph)] {
         spawn(format!("pillar_{label}"), Vec3::new(0.7, ph as f32, 0.7), at(DVec3::new(x, f + ph * 0.5, z)), &grey);
     }
-    // Occluder: tall thin pillar on the camera→diffuse-ball ray (x ≈ -3), sized to
-    // cover the corner ball's whole screen extent from the default pose.
-    spawn("occluder".into(), Vec3::new(1.6, 3.6, 1.6), at(DVec3::new(-3.0, f + 1.8, -2.0)), &grey);
     // Equal-lamp 4×4 ceiling grid (uniform lighting isolates the spatial bias from
     // power variance); `--lamp-law pilot` keeps the flood/pilot mix if wanted.
     for k in 0..16u32 {
@@ -771,13 +819,47 @@ fn setup_yard(
 }
 
 
-/// F = freeze reference snapshot, V = toggle |current-frozen| diff view, P = dump EXR,
-/// R = toggle ReSTIR temporal reuse (rung-3 live A/B against a frozen reference).
-fn rung0_keys(
-    input: Res<ButtonInput<KeyCode>>,
-    mut fd: ResMut<SolariFreezeDiff>,
-    mut cameras: Query<&mut SolariCamera>,
-) {
+/// Real-content exam: the importer-baked bistro `.bsn` (glass, foliage
+/// cutouts, dense geometry) under sun + atmosphere. No probes — this scene is
+/// graded purely by FLIP vs its own truth.
+fn setup_bistro(mut commands: Commands, asset_server: Res<AssetServer>, args: Res<SceneArgs>) {
+    // Entities arrive carrying `RaytracingMesh3d` + inline `SolariMaterial`;
+    // the root supplies the Transform. No Visibility anywhere — that's a
+    // raster concept; RT extraction ignores it and hiding an instance is
+    // removing its `RaytracingMesh3d` (or a `RenderLayers` cull-mask edit).
+    commands.spawn((
+        Name::new("bistro"),
+        ScenePatchInstance(asset_server.load("bistro/bistro.bsn".to_string())),
+        Transform::default(),
+    ));
+    // Sun: steered by the inspector card ([`util::sun::SunSettings`] stamps
+    // direction + illuminance on spawn); the warm color is scene-owned.
+    commands.spawn((
+        Name::new("sun"),
+        util::sun::Sun,
+        Transform::default(),
+        SolariDirectionLight {
+            color: Color::srgb(1.0, 0.87, 0.78),
+            ..default()
+        },
+    ));
+    commands.spawn((
+        Name::new("camera"),
+        Camera3d::default(),
+        CameraMainTextureUsages::default().with(TextureUsages::STORAGE_BINDING),
+        Msaa::Off,
+        camera_mode(&args),
+        SolariAtmosphere::default(),
+        NoGpuGlobalTransformReadback,
+        FreeCamera::default(),
+        Transform::from_translation(DVec3::new(-10.0, 2.0, 0.0))
+            .looking_at(DVec3::new(0.0, 0.0, 0.0), Vec3::Y),
+    ));
+}
+
+/// F = freeze reference snapshot, V = toggle |current-frozen| diff view,
+/// P = dump EXR (estimator edits live in the camera inspector panel).
+fn freeze_diff_keys(input: Res<ButtonInput<KeyCode>>, mut fd: ResMut<SolariFreezeDiff>) {
     if input.just_pressed(KeyCode::KeyF) {
         fd.freeze_epoch += 1;
     }
@@ -787,55 +869,6 @@ fn rung0_keys(
     }
     if input.just_pressed(KeyCode::KeyP) {
         fd.dump_epoch += 1;
-    }
-    if input.just_pressed(KeyCode::KeyR) {
-        for mut camera in &mut cameras {
-            if let SolariLighting::Reference(r) = &mut camera.mode {
-                r.di = match r.di {
-                    DiEstimator::Restir { ris_candidates, .. } => {
-                        DiEstimator::Nee { ris_candidates }
-                    }
-                    DiEstimator::Nee { ris_candidates } => DiEstimator::Restir {
-                        ris_candidates,
-                        m_cap: 20.0,
-                        spatial: None,
-                    },
-                    DiEstimator::BsdfOnly => DiEstimator::Restir {
-                        ris_candidates: 4,
-                        m_cap: 20.0,
-                        spatial: None,
-                    },
-                };
-                info!("restir temporal: {}", r.di_restir());
-            }
-        }
-    }
-}
-
-/// `--rung0`: scripted freeze(4s) -> dump(5s) -> diff-on(6s) for headless validation.
-fn rung0_selftest(
-    time: Res<Time>,
-    args: Res<SceneArgs>,
-    mut fd: ResMut<SolariFreezeDiff>,
-    mut stage: Local<u32>,
-) {
-    if !args.rung0 {
-        return;
-    }
-    let t = time.elapsed_secs();
-    if *stage == 0 && t > 4.0 {
-        fd.freeze_epoch += 1;
-        *stage = 1;
-    } else if *stage == 1 && t > 5.0 {
-        fd.dump_epoch += 1;
-        *stage = 2;
-    } else if *stage == 2 && t > 6.0 {
-        fd.diff = true;
-        info!("diff view: on (self-test)");
-        *stage = 3;
-    } else if *stage == 3 && t > 30.0 {
-        fd.dump_epoch += 1; // late dump = converged ground truth for RMSE
-        *stage = 4;
     }
 }
 
@@ -997,14 +1030,7 @@ fn probe_readback(
 // ---- Exam-harness plumbing (self-contained; no deps outside bevy) ----
 
 /// Log filter: silence noisy startup INFO lines (keep warn/error).
-const LOG_FILTER: &str = concat!(
-    "bevy_camera_controller=off",
-    ",bevy_winit=warn",
-    ",bevy_render=warn",
-    ",wgpu_hal=warn",
-    ",bevy_diagnostic::system_information_diagnostics_plugin=warn",
-    ",bevy_solari::gpu::allocator=warn",
-);
+use util::LOG_FILTER;
 
 #[derive(Resource)]
 struct Timeout(Timer);
@@ -1140,10 +1166,10 @@ impl ExamAppExt for App {
     }
 }
 
-/// Motion soak: sway + yaw around the spawn pose, snap back exactly at `secs`.
+/// Motion soak: sway + yaw around the spawn pose, snap back after `frames`.
 #[derive(Resource)]
 struct OrbitSoak {
-    secs: f32,
+    frames: u32,
     start: Option<Transform>,
 }
 
@@ -1164,11 +1190,11 @@ fn announce_window_size(
 }
 
 fn orbit_soak(
-    time: Res<Time>,
+    frames: Res<bevy::diagnostic::FrameCount>,
     mut orbit: ResMut<OrbitSoak>,
     mut cams: Query<&mut Transform, With<SolariCamera>>,
 ) {
-    if orbit.secs <= 0.0 {
+    if orbit.frames == 0 {
         return;
     }
     let Ok(mut tf) = cams.single_mut() else {
@@ -1178,22 +1204,27 @@ fn orbit_soak(
         orbit.start = Some(*tf);
     }
     let start = orbit.start.unwrap();
-    let t = time.elapsed_secs();
-    if t >= orbit.secs + 1.0 {
+    // Frame-indexed: pose is a pure function of the frame number, so frame k
+    // is the same pose at any frame rate — motion captures compare equal
+    // across recipes. (The old time-based sway made faster recipes sweep less
+    // per frame.) Rates assume a nominal 60 fps worth of the old feel.
+    let f = frames.0;
+    if f >= orbit.frames + 60 {
         *tf = start;
         return;
     }
     // Settle phase: near-final pose while motion-contaminated history heals
     // (m-cap frames), then the exact pose forces one clean accumulation restart.
-    if t >= orbit.secs {
+    if f >= orbit.frames {
         *tf = start;
         tf.translation += start.rotation * DVec3::new(1.0e-4, 0.0, 0.0);
         return;
     }
-    let sway = (t * 0.9).sin() as f64 * 1.0;
-    let bob = (t * 1.3).sin() as f64 * 0.25;
+    let t = f as f64 / 60.0;
+    let sway = (t * 0.9).sin() * 1.0;
+    let bob = (t * 1.3).sin() * 0.25;
     *tf = start;
     let offset = start.rotation * DVec3::new(sway, bob, 0.0);
     tf.translation += offset;
-    tf.rotate_y(((t * 0.55).sin() * 0.15) as f64);
+    tf.rotate_y((t * 0.55).sin() * 0.15);
 }

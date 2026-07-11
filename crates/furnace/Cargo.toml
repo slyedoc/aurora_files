@@ -26,3 +26,4 @@ bevy = { workspace = true, features = [
   "bevy_solari_debug",
 ] }
 clap.workspace = true
+util = { path = "../util" }
