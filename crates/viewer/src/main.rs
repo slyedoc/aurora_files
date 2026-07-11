@@ -36,7 +36,7 @@ use bevy::{
     prelude::*,
     render::render_resource::TextureUsages,
     solari::prelude::*,
-    window::WindowResolution,
+    window::{PresentMode, WindowResolution},
     winit::WinitSettings,
 };
 use clap::Parser;
@@ -120,7 +120,10 @@ pub fn main() {
             .set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "Solari Viewer".into(),
-                    resolution: WindowResolution::default(),
+                    resolution: WindowResolution::new(1600, 900),
+                    // Uncapped presentation — --bench frame times must measure
+                    // the renderer, not the display's refresh interval.
+                    present_mode: PresentMode::AutoNoVsync,
                     ..default()
                 }),
                 ..default()

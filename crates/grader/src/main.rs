@@ -45,9 +45,30 @@ struct Args {
     #[arg(long, default_value = "all", value_delimiter = ',')]
     recipes: Vec<String>,
 
-    /// equal-time budget: seconds each recipe accumulates before its dump
+    /// seconds each recipe runs before its dump — per-frame: the settle
+    /// window (temporal chains + NRC maturity); --accum: the equal-time
+    /// accumulation budget
     #[arg(long, default_value_t = 20.0)]
     time: f32,
+
+    /// grade accumulated convergence exams (the correctness protocol,
+    /// pre-RR EXR + HDR-FLIP) instead of the default per-frame protocol,
+    /// which screenshots one fresh 1-spp frame through DLSS-RR and the
+    /// display transform after the settle window — what the user sees
+    #[arg(long)]
+    accum: bool,
+
+    /// per-frame protocol only: grade the raw estimator without DLSS-RR
+    /// (the with/without denoiser A/B)
+    #[arg(long)]
+    no_dlss: bool,
+
+    /// extra settle seconds for NRC-bearing recipes (nrc, default) before a
+    /// per-frame dump: the cache trains from random weights every launch, so
+    /// steady-state quality needs the weights matured, not just the bit-20
+    /// gate open
+    #[arg(long, default_value_t = 40.0)]
+    nrc_warmup: f32,
 
     /// truth convergence target in samples per pixel
     #[arg(long, default_value_t = 8192)]
@@ -62,10 +83,6 @@ struct Args {
     #[arg(long)]
     truth_only: bool,
 
-    /// also write FLIP error-map heatmaps next to the report
-    #[arg(long)]
-    maps: bool,
-
     /// path to the FLIP CLI binary (or set FLIP_BIN)
     #[arg(long)]
     flip: Option<PathBuf>,
@@ -75,6 +92,11 @@ struct Args {
     /// the report's compare view diffs labeled runs
     #[arg(long, default_value = "")]
     label: String,
+
+    /// extra furnace args appended to every graded run (estimator lever A/Bs,
+    /// e.g. --extra --mcap --extra 1); pair with --label to name the variant
+    #[arg(long, allow_hyphen_values = true)]
+    extra: Vec<String>,
 
 }
 
@@ -102,11 +124,17 @@ fn main() {
         args.recipes.iter().map(String::as_str).collect()
     };
 
-    // Truth: reference accumulation to --truth-spp, cached per scene.
+    // Truth: reference accumulation to --truth-spp, cached per scene. Two
+    // captures: the EXR (HDR-FLIP reference for exams) and the screenshot
+    // twin (LDR-FLIP reference for per-frame runs — same converged image
+    // through the same display transform the candidates ship through).
     let truth_exr = out_dir.join(format!("truth-{}spp.exr", args.truth_spp));
+    let truth_shot = out_dir.join(format!("truth-{}spp.shot.png", args.truth_spp));
     // The dims sidecar doubles as the cache-format marker: caches from the old
     // PFM-converting grader lack it (and their EXRs crash FLIP) — rebake.
-    let truth_valid = truth_exr.is_file() && out_dir.join("truth.dims").is_file();
+    // Pre-screenshot caches lack the shot twin — rebake those too.
+    let truth_valid =
+        truth_exr.is_file() && truth_shot.is_file() && out_dir.join("truth.dims").is_file();
     if args.rebake_truth || !truth_valid {
         println!(
             "baking truth: {} @ {} spp (cached at {})",
@@ -122,13 +150,19 @@ fn main() {
                 "32".into(),
                 "--dump-at-spp".into(),
                 args.truth_spp.to_string(),
+                "--shot-on-dump".into(),
+                "--no-ui".into(),
             ],
             // Truth bakes until the spp threshold fires the dump; generous cap.
+            // The truth DEFINES the dims, so no expected size to enforce.
             3600.0,
             true,
+            None,
         );
         let dump = run.dump.expect("truth run produced no dump — see its output above");
         std::fs::copy(&dump, &truth_exr).expect("cache truth exr");
+        let shot = run.shot.expect("truth run produced no screenshot — see its output above");
+        std::fs::copy(&shot, &truth_shot).expect("cache truth shot");
         std::fs::write(out_dir.join("truth.dims"), dump_dims(&dump).unwrap_or_default())
             .expect("record truth dims");
     } else {
@@ -147,58 +181,108 @@ fn main() {
     }
     let truth_dims = std::fs::read_to_string(out_dir.join("truth.dims")).unwrap_or_default();
 
-    // Candidates: equal-time accumulation per recipe, then FLIP vs truth.
+    // Candidates: one capture per recipe after --time seconds, then FLIP vs
+    // truth. The protocol is pinned here, not inherited from CLI defaults:
+    // per-frame = one fresh 1-spp frame once temporal chains and caches have
+    // settled, captured as a SCREENSHOT — post-DLSS-RR, post-tonemap, what the
+    // user sees — graded LDR-FLIP vs the truth's shot twin; --accum =
+    // equal-time accumulation at 16 spp/frame dumped pre-RR as EXR and graded
+    // HDR-FLIP (the convergence exam, exposure-independent precision).
     let mut rows = Vec::new();
     let mut default_config = String::new();
     for recipe in &recipes {
-        println!("grading: --recipe {recipe} ({}s)", args.time);
-        let run = run_furnace(
-            &args,
-            // The accuracy protocol is pinned here, not inherited from CLI
-            // defaults: equal-time ACCUMULATION at 16 spp/frame.
-            &[
-                "--recipe".into(),
-                (*recipe).into(),
+        // NRC recipes need their per-frame settle extended: the cache's
+        // steady state is a training outcome, not a frame count.
+        let uses_nrc = matches!(*recipe, "nrc" | "default");
+        let dump_secs = if !args.accum && uses_nrc {
+            args.time + args.nrc_warmup
+        } else {
+            args.time
+        };
+        println!("grading: --recipe {recipe} ({dump_secs}s)");
+        let mut furnace_args: Vec<String> =
+            vec!["--recipe".into(), (*recipe).into(), "--no-ui".into()];
+        if args.accum {
+            furnace_args.extend([
                 "--accum".into(),
                 "--spp".into(),
                 "16".into(),
                 "--dump-at-secs".into(),
-                args.time.to_string(),
-                "--fps".into(),
-            ],
-            args.time + 4.0,
-            false,
-        );
+                dump_secs.to_string(),
+            ]);
+        } else {
+            furnace_args.extend([
+                "--spp".into(),
+                "1".into(),
+                "--shot-at-secs".into(),
+                dump_secs.to_string(),
+            ]);
+            if !args.no_dlss {
+                furnace_args.push("--dlss".into());
+            }
+        }
+        furnace_args.push("--fps".into());
+        furnace_args.extend(args.extra.iter().cloned());
+        // A wrongly-tiled window is detected from the size announcement and
+        // aborted within seconds — relaunch a few times before giving up.
+        let expect = (!truth_dims.is_empty()).then_some(truth_dims.as_str());
+        let mut run = run_furnace(&args, &furnace_args, dump_secs + 4.0, false, expect);
+        for attempt in 2..=3 {
+            if !run.wrong_size {
+                break;
+            }
+            println!("  retrying ({attempt}/3) — free the workspace so the window tiles at {truth_dims}");
+            run = run_furnace(&args, &furnace_args, dump_secs + 4.0, false, expect);
+        }
         if default_config.is_empty()
             && let Some(config) = &run.default_config
         {
             default_config = config.clone();
         }
-        let Some(dump) = run.dump else {
-            eprintln!("  {recipe}: no dump produced — skipped");
-            continue;
-        };
-        // FLIP needs identical resolutions; the window size decides the dump's.
-        // A mismatch means the truth was baked at a different window size.
-        let dims = dump_dims(&dump).unwrap_or_default();
-        if !truth_dims.is_empty() && dims != truth_dims {
-            eprintln!(
-                "  {recipe}: dump is {dims} but the truth is {truth_dims} — keep the window \
-                 size consistent (or --rebake-truth); skipped"
-            );
-            continue;
-        }
-        let exr = out_dir.join(format!("{recipe}.exr"));
-        std::fs::copy(&dump, &exr).expect("copy candidate exr");
+        // FLIP needs identical resolutions; the window size decides the
+        // capture's. A mismatch means the truth was baked at a different
+        // window size.
         let render = format!("{recipe}.render.png");
-        write_render_png(&out_dir.join(&render), &read_exr(&exr), exposure);
-        let flip_mean = run_flip(&flip, &truth_exr, &exr, args.maps.then_some((&out_dir, *recipe)));
+        let (flip_mean, spp) = if args.accum {
+            let Some(dump) = run.dump else {
+                eprintln!("  {recipe}: no dump produced — skipped");
+                continue;
+            };
+            let dims = dump_dims(&dump).unwrap_or_default();
+            if !truth_dims.is_empty() && dims != truth_dims {
+                eprintln!(
+                    "  {recipe}: dump is {dims} but the truth is {truth_dims} — keep the \
+                     window size consistent (or --rebake-truth); skipped"
+                );
+                continue;
+            }
+            let exr = out_dir.join(format!("{recipe}.exr"));
+            std::fs::copy(&dump, &exr).expect("copy candidate exr");
+            write_render_png(&out_dir.join(&render), &read_exr(&exr), exposure);
+            (run_flip(&flip, &truth_exr, &exr, &out_dir, recipe), run.dump_spp)
+        } else {
+            let Some(shot) = run.shot else {
+                eprintln!("  {recipe}: no screenshot produced — skipped");
+                continue;
+            };
+            let dims = png_dims(&shot).unwrap_or_default();
+            if !truth_dims.is_empty() && dims != truth_dims {
+                eprintln!(
+                    "  {recipe}: shot is {dims} but the truth is {truth_dims} — keep the \
+                     window size consistent (or --rebake-truth); skipped"
+                );
+                continue;
+            }
+            // The screenshot IS the render — PNG in, LDR-FLIP.
+            std::fs::copy(&shot, out_dir.join(&render)).expect("copy candidate shot");
+            (run_flip(&flip, &truth_shot, &out_dir.join(&render), &out_dir, recipe), None)
+        };
         rows.push(Row {
             recipe: (*recipe).to_string(),
             flip: flip_mean,
             frame_ms: median(&run.frame_ms),
-            spp: run.dump_spp,
-            map: args.maps.then(|| format!("{recipe}.png")),
+            spp,
+            map: Some(format!("{recipe}.png")),
             render: Some(render),
         });
     }
@@ -214,7 +298,15 @@ fn main() {
             .status()
             .is_ok_and(|s| s.success());
         if ok && let Ok(abs) = std::fs::canonicalize("target/solari_grader/report.html") {
-            println!("open: file://{}", abs.display());
+            let url = format!("file://{}", abs.display());
+            println!("open: {url}");
+            // Open in the default browser directly — terminal link handlers
+            // (VS Code's) route file:// links to the editor instead.
+            // SOLARI_GRADER_NO_OPEN suppresses it for batch sweeps (one tab
+            // at the end beats one per scene).
+            if std::env::var_os("SOLARI_GRADER_NO_OPEN").is_none() {
+                let _ = Command::new("xdg-open").arg(&url).spawn();
+            }
         }
     } else {
         eprintln!("html report skipped: {} not found (run from the workspace root)", script.display());
@@ -226,7 +318,7 @@ struct Row {
     flip: Option<f64>,
     frame_ms: Option<f64>,
     spp: Option<u32>,
-    /// FLIP error-map filename in the scene dir (with `--maps`).
+    /// FLIP error-map filename in the scene dir.
     map: Option<String>,
     /// Tonemapped render filename in the scene dir.
     render: Option<String>,
@@ -240,8 +332,15 @@ fn report(args: &Args, out_dir: &Path, rows: &mut [Row], default_config: &str) {
             .total_cmp(&b.flip.unwrap_or(f64::INFINITY))
     });
     println!();
+    let protocol = if args.accum {
+        "equal-time exam"
+    } else if args.no_dlss {
+        "per-frame"
+    } else {
+        "per-frame+dlss"
+    };
     println!(
-        "scene {} | {}s equal-time | truth {} spp | FLIP·ms = error × cost (lower is better on every column)",
+        "scene {} | {}s {protocol} | truth {} spp | FLIP·ms = error × cost (lower is better on every column)",
         args.scene, args.time, args.truth_spp
     );
     println!(
@@ -285,14 +384,27 @@ fn report(args: &Args, out_dir: &Path, rows: &mut [Row], default_config: &str) {
     } else {
         format!("{stamp}-{}.json", args.label.replace(['/', ' '], "_"))
     };
+    // Per-frame runs show the truth's screenshot twin (same display transform
+    // as their candidates); exams show the ACES render of the truth EXR.
+    let truth_render_name = if args.accum {
+        format!("truth-{}spp.render.png", args.truth_spp)
+    } else {
+        format!("truth-{}spp.shot.png", args.truth_spp)
+    };
     let mut json = format!(
-        "{{\n  \"scene\": \"{}\",\n  \"label\": \"{}\",\n  \"time_secs\": {},\n  \"truth_spp\": {},\n  \"timestamp\": {stamp},\n  \"default_config\": \"{}\",\n  \"truth_render\": \"truth-{}spp.render.png\",\n  \"rows\": [",
+        "{{\n  \"scene\": \"{}\",\n  \"label\": \"{}\",\n  \"protocol\": \"{}\",\n  \"time_secs\": {},\n  \"truth_spp\": {},\n  \"timestamp\": {stamp},\n  \"default_config\": \"{}\",\n  \"truth_render\": \"{truth_render_name}\",\n  \"rows\": [",
         args.scene,
         args.label.replace('"', ""),
+        if args.accum {
+            "exam"
+        } else if args.no_dlss {
+            "per-frame"
+        } else {
+            "per-frame+dlss"
+        },
         args.time,
         args.truth_spp,
         default_config.replace('\\', "\\\\").replace('"', "\\\""),
-        args.truth_spp,
     );
     for (i, row) in rows.iter().enumerate() {
         let sep = if i == 0 { "" } else { "," };
@@ -320,14 +432,27 @@ struct FurnaceRun {
     dump: Option<PathBuf>,
     /// Accumulated spp at dump time (parsed from the dump log line).
     dump_spp: Option<u32>,
+    /// Path of the PNG screenshot the run captured, if any (post-DLSS-RR,
+    /// post-tonemap — the per-frame protocol's capture).
+    shot: Option<PathBuf>,
     /// Per-second `frame_time` averages (ms) from `--fps` diagnostics.
     frame_ms: Vec<f64>,
+    /// The run was killed early: the window settled at a size other than the
+    /// truth's (tiling WMs deal their own) — relaunch instead of wasting the
+    /// full budget on a dump FLIP can't compare.
+    wrong_size: bool,
 }
 
 /// Launch `solari_furnace` with the scene + `extra` args, stream its output,
 /// and return the parsed results. `kill_on_dump` ends the run the moment the
 /// dump lands (truth bakes have no natural timeout).
-fn run_furnace(args: &Args, extra: &[String], timeout: f32, kill_on_dump: bool) -> FurnaceRun {
+fn run_furnace(
+    args: &Args,
+    extra: &[String],
+    timeout: f32,
+    kill_on_dump: bool,
+    expect_dims: Option<&str>,
+) -> FurnaceRun {
     let mut child = Command::new("cargo")
         .args(["run", "--release", "-p", "solari_furnace", "--"])
         .args(["--scene", &args.scene, "-t", &timeout.to_string()])
@@ -347,11 +472,25 @@ fn run_furnace(args: &Args, extra: &[String], timeout: f32, kill_on_dump: bool) 
         std::thread::spawn(move || forward_lines(stderr, &tx2)),
     ];
 
-    let mut run = FurnaceRun { default_config: None, dump: None, dump_spp: None, frame_ms: Vec::new() };
+    let mut run = FurnaceRun {
+        default_config: None,
+        dump: None,
+        dump_spp: None,
+        shot: None,
+        frame_ms: Vec::new(),
+        wrong_size: false,
+    };
+    // Latest `solari window: WxH` announcement; enforced at each frame_time
+    // tick (by then the WM has settled the size), not on first sight — a
+    // tiler may deal a transient size before the final one.
+    let mut window_dims = String::new();
     for line in rx {
         let line = strip_ansi(&line);
         if let Some(config) = line.split("solari_default: ").nth(1) {
             run.default_config = Some(config.trim().to_string());
+        }
+        if let Some(dims) = line.split("solari window: ").nth(1) {
+            window_dims = dims.trim().to_string();
         }
         // `solari dump: wrote target/tmp/solari-WxH-Nspp-E.exr (N spp)`
         if let Some(rest) = line.split("solari dump: wrote ").nth(1) {
@@ -364,9 +503,18 @@ fn run_furnace(args: &Args, extra: &[String], timeout: f32, kill_on_dump: bool) 
                     .and_then(|s| s.split(' ').next())
                     .and_then(|s| s.parse().ok());
             }
-            if kill_on_dump {
-                let _ = child.kill();
-            }
+        }
+        // `solari shot: wrote target/tmp/solari-shot-MS.png`
+        if let Some(path) = line.split("solari shot: wrote ").nth(1) {
+            run.shot = Some(PathBuf::from(path.trim()));
+        }
+        // Truth bakes run until their captures land: the EXR dump, plus the
+        // display-referred shot twin when `--shot-on-dump` is among the args.
+        if kill_on_dump
+            && run.dump.is_some()
+            && (run.shot.is_some() || !extra.iter().any(|a| a == "--shot-on-dump"))
+        {
+            let _ = child.kill();
         }
         // `frame_time   :   8.123456ms (avg 8.234567ms)`
         if line.contains("frame_time")
@@ -375,6 +523,15 @@ fn run_furnace(args: &Args, extra: &[String], timeout: f32, kill_on_dump: bool) 
             && let Ok(value) = ms.trim().parse::<f64>()
         {
             run.frame_ms.push(value);
+            if let Some(expect) = expect_dims
+                && !window_dims.is_empty()
+                && window_dims != expect
+                && !run.wrong_size
+            {
+                eprintln!("  window is {window_dims}, truth is {expect} — aborting for retry");
+                run.wrong_size = true;
+                let _ = child.kill();
+            }
         }
         if line.contains("panicked") || line.contains("DEVICE_LOST") {
             eprintln!("  furnace: {line}");
@@ -435,24 +592,26 @@ fn dump_dims(path: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Run HDR-FLIP and parse the mean; `map` = (dir, basename) also writes the
-/// error-map heatmap PNG there.
+/// A PNG's "WxH", from its header (same shape as the truth.dims sidecar).
+fn png_dims(path: &Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let info = png::Decoder::new(std::io::BufReader::new(file)).read_info().ok()?;
+    let (w, h) = info.info().size();
+    Some(format!("{w}x{h}"))
+}
+
+/// Run HDR-FLIP: parse the mean and write the error-map heatmap PNG
+/// (`<recipe>.png`) into the scene dir for the report's flip column.
 fn run_flip(
     flip: &Path,
     reference: &Path,
     test: &Path,
-    map: Option<(&PathBuf, &str)>,
+    dir: &Path,
+    base: &str,
 ) -> Option<f64> {
     let mut cmd = Command::new(flip);
     cmd.arg("-r").arg(reference).arg("-t").arg(test);
-    match map {
-        Some((dir, base)) => {
-            cmd.args(["-v", "1", "-b", base, "--no-exposure-map", "-d"]).arg(dir);
-        }
-        None => {
-            cmd.args(["-v", "1", "--no-error-map", "--no-exposure-map"]);
-        }
-    };
+    cmd.args(["-v", "1", "-b", base, "--no-exposure-map", "-d"]).arg(dir);
     let output = cmd.output().expect("run flip");
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !output.status.success() {

@@ -8,8 +8,8 @@
 Scans target/solari_grader/<scene>/runs/*.json (written by `solari_grader`,
 one per run) and emits a single publishable HTML file: run/scene pickers, a
 KPI row, an accuracy-vs-speed Pareto scatter, FLIP + frame-time bars, a
-critcmp-style baseline diff, FLIP error maps (when the run was graded with
---maps), and the full table. Vue is inlined from scripts/vendor/, data is
+critcmp-style baseline diff, FLIP error maps, and the full table (renders +
+flip thumbnails). Vue is inlined from scripts/vendor/, data is
 embedded — the file has no external references, so it can be published as-is.
 
     uv run scripts/grade_report.py                 # -> target/solari_grader/report.html
@@ -204,7 +204,7 @@ pre.mono { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; white-spac
   </div>
 
   <div class="kpis" v-if="run">
-    <div class="tile"><div class="label">best accuracy (exam)</div>
+    <div class="tile"><div class="label">best accuracy ({{ run.protocol || 'exam' }})</div>
       <div class="value">{{ fmt(best.flip?.flip, 4) }}</div>
       <div class="who">{{ best.flip?.recipe || '—' }} · FLIP</div></div>
     <div class="tile"><div class="label">fastest frame</div>
@@ -225,13 +225,20 @@ pre.mono { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; white-spac
 
   <div class="card" v-if="run">
     <h2>accuracy vs speed</h2>
-    <p class="note">lower-left is better; the two populations answer different questions —
-      exam points are {{ run.time_secs }}s accumulations, realtime points are single pre-DLSS-RR frames.</p>
-    <div class="legend">
+    <p class="note" v-if="(run.protocol || 'exam') === 'exam'">up and to the left is better (accurate and fast);
+      the two populations answer different questions — exam points are {{ run.time_secs }}s accumulations,
+      realtime points are single pre-DLSS-RR frames.</p>
+    <p class="note" v-else>up and to the left is better (accurate and fast); every point is a screenshot of one
+      fresh 1-spp frame after a {{ run.time_secs }}s settle window — post-{{ run.protocol === 'per-frame+dlss'
+      ? 'DLSS-RR and ' : '' }}display-transform, what the user sees.</p>
+    <div class="legend" v-if="points.some(p => !p.prod)">
       <span class="key"><span class="swatch" style="background: var(--series-1)"></span>accumulated exam</span>
       <span class="key"><span class="swatch" style="background: var(--series-2)"></span>per-frame realtime</span>
     </div>
-    <svg :viewBox="'0 0 ' + W + ' ' + H" style="width:100%">
+    <!-- in-DOM template: the HTML parser lowercases `:viewBox`, and SVG ignores
+         a lowercase `viewbox` (no scaling box = the chart clips to the card).
+         `.camel` restores the casing on the rendered attribute. -->
+    <svg :view-box.camel="'0 0 ' + W + ' ' + H" style="width:100%">
       <line v-for="t in xTicks" :key="'x'+t" :x1="X(t)" :x2="X(t)" :y1="pad.t" :y2="H - pad.b" stroke="var(--grid)" stroke-width="1"/>
       <line v-for="t in yTicks" :key="'y'+t" :x1="pad.l" :x2="W - pad.r" :y1="Y(t)" :y2="Y(t)" stroke="var(--grid)" stroke-width="1"/>
       <line :x1="pad.l" :x2="W - pad.r" :y1="H - pad.b" :y2="H - pad.b" stroke="var(--axis)" stroke-width="1"/>
@@ -255,6 +262,9 @@ pre.mono { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; white-spac
   <div class="card" v-if="base">
     <h2>compare vs baseline</h2>
     <p class="note">{{ runName(base) }} &rarr; {{ runName(run) }} — green is an improvement (lower), red a regression.</p>
+    <p class="warn" v-if="(base.protocol || 'exam') !== (run.protocol || 'exam')">&#9888; protocol mismatch —
+      {{ base.protocol || 'exam' }} vs {{ run.protocol || 'exam' }}: accumulated exams and per-frame dumps are
+      not accuracy-comparable.</p>
     <p class="warn" v-if="defaultDrift">&#9888; the shipped default changed between these runs — the <b>default</b> row compares different configs:</p>
     <pre class="mono" v-if="defaultDrift">baseline: {{ base.default_config }}
 current:  {{ run.default_config }}</pre>
@@ -279,7 +289,7 @@ current:  {{ run.default_config }}</pre>
   <div class="card" v-if="run">
     <h2>FLIP by recipe</h2>
     <p class="note">equal-time accuracy; sorted best first (realtime rows are per-frame — see the scatter note)</p>
-    <svg :viewBox="'0 0 ' + W + ' ' + barH(sortedRows.length)" style="width:100%">
+    <svg :view-box.camel="'0 0 ' + W + ' ' + barH(sortedRows.length)" style="width:100%">
       <g v-for="(r, i) in sortedRows" :key="r.recipe" class="bar-hit"
          @pointermove="tipRow($event, r)" @pointerleave="tip.show = false">
         <rect :x="0" :y="i * 28" :width="W" height="26" fill="transparent"/>
@@ -293,7 +303,7 @@ current:  {{ run.default_config }}</pre>
   <div class="card" v-if="run">
     <h2>avg frame time by recipe</h2>
     <p class="note">median steady-state frame time over the run (ms)</p>
-    <svg :viewBox="'0 0 ' + W + ' ' + barH(msRows.length)" style="width:100%">
+    <svg :view-box.camel="'0 0 ' + W + ' ' + barH(msRows.length)" style="width:100%">
       <g v-for="(r, i) in msRows" :key="r.recipe" class="bar-hit"
          @pointermove="tipRow($event, r)" @pointerleave="tip.show = false">
         <rect :x="0" :y="i * 28" :width="W" height="26" fill="transparent"/>
@@ -387,8 +397,11 @@ const { createApp } = Vue;
 createApp({
   data() {
     const scenes = [...new Set(RUNS.map(r => r.scene))].sort();
+    // Open on the scene of the newest run (RUNS is timestamp-sorted); the
+    // created() hook then selects that scene's newest run.
+    const newest = RUNS.length ? RUNS[RUNS.length - 1].scene : null;
     return {
-      scenes, scene: scenes[0], runIdx: 0, baseIdx: -1,
+      scenes, scene: newest ?? scenes[0], runIdx: 0, baseIdx: -1,
       W: 1620, H: 420, pad: { l: 60, r: 150, t: 12, b: 40 }, barL: 170,
       tip: { show: false, x: 0, y: 0, title: '', rows: [] },
       juxtaA: 0, juxtaB: 1, juxtaPos: 50, juxtaDown: false, pickNext: 'A',
@@ -418,8 +431,11 @@ createApp({
         .map(r => ({ ...r, prod: !r.spp }));
     },
     best() {
+      // Exam rows (accumulated, spp > 0) when the run has them; a per-frame
+      // run is one population, so best-accuracy ranges over everything.
       const exam = this.points.filter(p => !p.prod);
-      const flip = exam.length ? exam.reduce((a, b) => (a.flip < b.flip ? a : b)) : null;
+      const pool = exam.length ? exam : this.points;
+      const flip = pool.length ? pool.reduce((a, b) => (a.flip < b.flip ? a : b)) : null;
       const ms = this.points.length ? this.points.reduce((a, b) => (a.frame_ms < b.frame_ms ? a : b)) : null;
       const eff = this.points.length
         ? this.points.reduce((a, b) => (a.flip * a.frame_ms < b.flip * b.frame_ms ? a : b)) : null;
@@ -491,7 +507,10 @@ createApp({
     runName(r) {
       const d = new Date(r.timestamp * 1000);
       const when = d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      return r.label ? `${r.label} (${when})` : when;
+      // Pre-protocol run records were all accumulation exams.
+      const proto = r.protocol || 'exam';
+      const name = r.label ? `${r.label} (${when})` : when;
+      return `${name} · ${proto}`;
     },
     fmt(v, digits) { return v == null ? '—' : v.toFixed(digits); },
     X(ms) {
@@ -500,8 +519,10 @@ createApp({
       return this.pad.l + f * (this.W - this.pad.l - this.pad.r);
     },
     Y(flip) {
+      // Inverted: FLIP 0 (perfect) at the top, so the chart reads the usual
+      // way — up and to the left is better.
       const f = flip / this.maxFlipPts;
-      return this.H - this.pad.b - f * (this.H - this.pad.t - this.pad.b);
+      return this.pad.t + f * (this.H - this.pad.t - this.pad.b);
     },
     barW(v, max) { return v == null ? 0 : (v / max) * (this.W - this.barL - 80); },
     barH(n) { return n * 28 + 4; },

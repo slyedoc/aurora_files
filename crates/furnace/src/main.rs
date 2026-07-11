@@ -1,14 +1,15 @@
-//! Furnace validation for the reference path tracer. Two scenes:
+//! Furnace validation for the reference path tracer. Three scenes:
 //! `furnace` (default): spheres in a uniform white environment — a white sphere of
 //! ANY roughness must converge to exactly the sky's radiance (ratio 1.0) or the
-//! BRDF creates/destroys energy. `room`: a closed grey box lit by an emissive
-//! panel — run with and without `--no-nee`; both must converge to the same means.
+//! BRDF creates/destroys energy. `room`: a static grey box of boxes, ramps, and
+//! spheres-on-pillars under a lamp grid — the spatial-bias study. `yard`: an open
+//! sun + lamp-cluster ground — the directional-vs-reservoir exam.
 //! Probe pixels are read back from the RT output buffer and logged as numbers.
 
 use bevy::prelude::*;
 
 use bevy::{
-    window::PresentMode,
+    window::{PresentMode, PrimaryWindow, WindowResolution},
     asset::RenderAssetUsages,
     camera::CameraMainTextureUsages,
     camera_controller::free_camera::{FreeCamera, FreeCameraPlugin},
@@ -29,7 +30,7 @@ use bevy::{
         },
         renderer::{RenderDevice, RenderQueue},
         view::{
-            screenshot::{save_to_disk, Screenshot},
+            screenshot::{save_to_disk, Screenshot, ScreenshotCaptured},
             ExtractedView,
         },
         Render, RenderApp, RenderSystems,
@@ -40,7 +41,7 @@ use bevy::{
     },
     transform::TransformPlugin,
 };
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 
 // The full-RT path supplies its own DLSS Ray Reconstruction internally; the SDK
 // only needs the project id inserted before `RenderPlugin`.
@@ -50,17 +51,29 @@ use bevy::anti_alias::dlss::DlssProjectId;
 /// zero/docs/restir_roadmap.md for the rung-by-rung curriculum this drives).
 /// The estimator levers live in the shared [`SolariCameraArgs`] block, so
 /// every solari tool speaks the same camera dialect.
+/// The exam scenes. `--help` lists these; anything else is a clap error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum Scene {
+    /// uniform white sky + spheres — any-roughness white sphere must converge to
+    /// the sky's radiance (ratio 1.0) or the BRDF is creating/destroying energy
+    Furnace,
+    /// static grey box: boxes, tilted ramps, and spheres-on-pillars under a lamp
+    /// grid — the spatial-bias study (nothing moves, so temporal reuse stays clean)
+    Room,
+    /// open yard: sun (directional/NEE) + a lamp cluster (reservoir) over one
+    /// ground — the directional-vs-reservoir bookkeeping exam
+    Yard,
+}
+
 #[derive(Parser)]
 struct Args {
     /// exit after this many seconds (agent runs default to 10)
     #[arg(long, short = 't')]
     timeout: Option<f32>,
 
-    /// scene: `furnace` (uniform sky + spheres), `room` (emissive panel in a grey box),
-    /// `lamps` (many lamps, power spanning 4 decades — the rung-1 exam), `yard`
-    /// (sun + lamps), or `cell` (static boxes under lamps — the spatial-bias study)
-    #[arg(long, default_value = "furnace")]
-    scene: String,
+    /// which scene to render
+    #[arg(long, value_enum, default_value_t = Scene::Furnace)]
+    scene: Scene,
 
     /// rung-0 self-test: freeze at 4s, dump EXR at 5s, diff view on at 6s
     #[arg(long)]
@@ -79,6 +92,25 @@ struct Args {
     /// accuracy protocol; pair with `-t` slightly larger to exit after)
     #[arg(long)]
     dump_at_secs: Option<f32>,
+
+    /// screenshot the final window surface after N seconds — post-DLSS-RR,
+    /// post-tonemap, the image the user sees (the grader's per-frame capture;
+    /// pair with --no-ui or the panels are in the shot)
+    #[arg(long)]
+    shot_at_secs: Option<f32>,
+
+    /// also screenshot when the --dump-at-spp EXR lands (converged truth gets
+    /// a display-referred twin for the per-frame protocol to grade against)
+    #[arg(long)]
+    shot_on_dump: bool,
+
+    /// run DLSS Ray Reconstruction (DLAA) — the production denoiser
+    #[arg(long)]
+    dlss: bool,
+
+    /// don't spawn the solari debug panels (screenshot capture runs)
+    #[arg(long)]
+    no_ui: bool,
 
     /// terminate GI paths via an inline coopvec MLP query in raygen instead
     /// of the batched query→infer→composite path
@@ -99,9 +131,9 @@ struct Args {
     #[arg(long, default_value_t = 0.0)]
     orbit: f32,
 
-    /// lamps-scene power law: `pilot` (4 floods + 60 pilots) or `equal`
-    /// (64 identical lamps — the receiver-locality exam where global picking
-    /// is uninformative and RIS must find the lamps overhead)
+    /// room-grid power law: `pilot` (a few floods over a sea of pilots — global
+    /// flux weighting wins) or `equal` (identical lamps — the receiver-locality
+    /// exam where global picking is uninformative and RIS must find the lamps overhead)
     #[arg(long, default_value = "pilot")]
     lamp_law: String,
 
@@ -124,10 +156,6 @@ fn main() {
         args.camera.accum = true;
         println!("furnace: --rung0/--dump-at-spp imply --accum; accumulation enabled");
     }
-    let scene_room = args.scene == "room";
-    let scene_lamps = args.scene == "lamps";
-    let scene_yard = args.scene == "yard";
-    let scene_cell = args.scene == "cell";
     let mut app = App::new();
     // Exams time frames from logs: never let the unfocused 60 Hz throttle
     // (WinitSettings::game default) poison the clock.
@@ -161,17 +189,36 @@ fn main() {
             bevy::diagnostic::LogDiagnosticsPlugin::default(),
         ));
     }
-    app.add_systems(Update, orbit_soak);
-    if args.camera.recipe == SolariRecipe::Default {
+    if args.dlss {
         app.insert_resource(SolariDlssMode::Dlaa);
+    }
+    if args.no_ui {
+        app.insert_resource(SolariDebugUi(false));
+    }
+    if let Some(secs) = args.shot_at_secs {
+        app.add_systems(
+            Update,
+            move |time: Res<Time>, mut commands: Commands, mut done: Local<bool>| {
+                if !*done && time.elapsed_secs() >= secs {
+                    *done = true;
+                    take_shot(&mut commands);
+                }
+            },
+        );
+    }
+    if args.shot_on_dump {
+        app.add_systems(Update, shot_on_dump);
+    }
+    app.add_systems(Update, (orbit_soak, announce_window_size));
+    // The debug panels are off in graded runs — the title says what's rendering.
+    let mut title = format!("Furnace — {}", args.camera.recipe.name());
+    if args.dlss {
+        title.push_str(" +DLSS");
     }
     app.add_timeout_exit(args.timeout, 10.0)
         .add_screenshot(KeyCode::F12)
         .insert_resource(SceneArgs {
-            room: scene_room,
-            lamps: scene_lamps,
-            yard: scene_yard,
-            cell: scene_cell,
+            scene: args.scene,
             rung0: args.rung0,
             equal_lamps: args.lamp_law == "equal",
             camera: args.camera,
@@ -182,8 +229,11 @@ fn main() {
             DefaultPlugins
                 .set(WindowPlugin {
                     primary_window: Some(Window {
-                        title: "Furnace".into(),
+                        title,
                         present_mode: PresentMode::AutoNoVsync,
+                        // Requested render size — tiling WMs deal their own, so
+                        // the grader verifies the announced size and retries.
+                        resolution: WindowResolution::new(1600, 900),
                         ..default()
                     }),
                     ..default()
@@ -211,11 +261,9 @@ fn main() {
         .insert_resource(UiTheme(create_dark_theme()))
         .init_resource::<Probes>()
         .add_plugins(ExtractResourcePlugin::<Probes>::default())
-        .add_systems(Startup, setup_furnace.run_if(|a: Res<SceneArgs>| !a.room && !a.lamps && !a.yard && !a.cell))
-        .add_systems(Startup, setup_room.run_if(|a: Res<SceneArgs>| a.room))
-        .add_systems(Startup, setup_lamps.run_if(|a: Res<SceneArgs>| a.lamps))
-        .add_systems(Startup, setup_yard.run_if(|a: Res<SceneArgs>| a.yard))
-        .add_systems(Startup, setup_cell.run_if(|a: Res<SceneArgs>| a.cell))
+        .add_systems(Startup, setup_furnace.run_if(|a: Res<SceneArgs>| a.scene == Scene::Furnace))
+        .add_systems(Startup, setup_room.run_if(|a: Res<SceneArgs>| a.scene == Scene::Room))
+        .add_systems(Startup, setup_yard.run_if(|a: Res<SceneArgs>| a.scene == Scene::Yard))
         .add_systems(Update, (rung0_keys, rung0_selftest));
     app.sub_app_mut(RenderApp)
         .add_systems(Render, probe_readback.in_set(RenderSystems::Cleanup));
@@ -224,10 +272,7 @@ fn main() {
 
 #[derive(Resource)]
 struct SceneArgs {
-    room: bool,
-    lamps: bool,
-    yard: bool,
-    cell: bool,
+    scene: Scene,
     rung0: bool,
     equal_lamps: bool,
     /// The shared estimator levers; `camera_mode` turns them into components.
@@ -511,239 +556,15 @@ fn setup_furnace(
     ));
 }
 
-fn setup_room(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<ClusterMesh>>,
-    mut materials: ResMut<Assets<StandardSolariMaterial>>,
-    args: Res<SceneArgs>,
-) {
-    let grey = materials.add(StandardSolariMaterial {
-        base_color: Color::srgb(0.6, 0.6, 0.6),
-        perceptual_roughness: 1.0,
-        ..default()
-    });
-    // Emissive-mesh light ONLY: a directional light is invisible to BSDF rays, so
-    // the NEE on/off A/B is only an identity when every light is hittable geometry.
-    let lamp = materials.add(StandardSolariMaterial {
-        base_color: Color::WHITE,
-        emissive: LinearRgba::rgb(4000.0, 4000.0, 4000.0),
-        ..default()
-    });
-
-    let mut slab =
-        |name: &'static str, size: Vec3, pos: DVec3, mat: &Handle<StandardSolariMaterial>| {
-            let mesh = Cuboid::from_size(size)
-                .mesh()
-                .build()
-                .with_generated_tangents()
-                .unwrap();
-            let handle = meshes.add(ClusterMesh::try_from(&mesh).expect("slab bake"));
-            commands.spawn((
-                Name::new(name),
-                TransformStatic,
-                NoGpuGlobalTransformReadback,
-                RaytracingMesh3d(handle),
-                SolariMaterial3d(mat.clone()),
-                Transform::from_translation(pos),
-            ));
-        };
-    // Closed 12×6×12 box (inner faces), 0.2 thick.
-    slab(
-        "floor",
-        Vec3::new(12.4, 0.2, 12.4),
-        DVec3::new(0.0, -3.1, 0.0),
-        &grey,
-    );
-    slab(
-        "ceiling",
-        Vec3::new(12.4, 0.2, 12.4),
-        DVec3::new(0.0, 3.1, 0.0),
-        &grey,
-    );
-    slab(
-        "wall_x-",
-        Vec3::new(0.2, 6.4, 12.4),
-        DVec3::new(-6.1, 0.0, 0.0),
-        &grey,
-    );
-    slab(
-        "wall_x+",
-        Vec3::new(0.2, 6.4, 12.4),
-        DVec3::new(6.1, 0.0, 0.0),
-        &grey,
-    );
-    slab(
-        "wall_z-",
-        Vec3::new(12.4, 6.4, 0.2),
-        DVec3::new(0.0, 0.0, -6.1),
-        &grey,
-    );
-    slab(
-        "wall_z+",
-        Vec3::new(12.4, 6.4, 0.2),
-        DVec3::new(0.0, 0.0, 6.1),
-        &grey,
-    );
-    slab(
-        "lamp",
-        Vec3::new(2.4, 0.1, 2.4),
-        DVec3::new(0.0, 2.9, 0.0),
-        &lamp,
-    );
-
-    let sphere_mesh = Sphere::new(1.2)
-        .mesh()
-        .ico(6)
-        .unwrap()
-        .with_generated_tangents()
-        .unwrap();
-    let sphere = meshes.add(ClusterMesh::try_from(&sphere_mesh).expect("sphere bake"));
-    spawn_ball(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        &sphere,
-        "ball_diffuse",
-        DVec3::new(-2.0, -1.8, -1.5),
-        StandardSolariMaterial {
-            base_color: Color::WHITE,
-            perceptual_roughness: 1.0,
-            ..default()
-        },
-    );
-    spawn_ball(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        &sphere,
-        "ball_metal",
-        DVec3::new(2.0, -1.8, -1.5),
-        StandardSolariMaterial {
-            base_color: Color::WHITE,
-            metallic: 1.0,
-            perceptual_roughness: 0.4,
-            ..default()
-        },
-    );
-
-    // Absolute means only — the A/B across runs is the test, not a ratio.
-    commands.insert_resource(Probes(vec![
-        Probe {
-            name: "back_wall",
-            world: DVec3::new(0.0, 0.0, -6.0),
-            expect: None,
-        },
-        Probe {
-            name: "floor",
-            world: DVec3::new(0.0, -3.0, -3.5),
-            expect: None,
-        },
-        Probe {
-            name: "ball_diffuse",
-            world: DVec3::new(-2.0, -1.8, -0.3),
-            expect: None,
-        },
-        Probe {
-            name: "ball_metal",
-            world: DVec3::new(2.0, -1.8, -0.3),
-            expect: None,
-        },
-    ]));
-
-    commands.spawn((
-        Name::new("camera"),
-        Camera3d::default(),
-        CameraMainTextureUsages::default().with(TextureUsages::STORAGE_BINDING),
-        Msaa::Off,
-        camera_mode(&args),
-        NoGpuGlobalTransformReadback,
-        FreeCamera::default(),
-        Transform::from_translation(DVec3::new(0.0, 0.0, 5.2)),
-    ));
-}
-
-/// Rung-1 exam: a 24×6×24 grey hall lit by an 8×8 ceiling grid of lamps whose
-/// power spans ~4 decades (k² law). Uniform picking wastes almost every sample
-/// on dim lamps; power weighting must converge to the SAME image, far faster.
-fn setup_lamps(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<ClusterMesh>>,
-    mut materials: ResMut<Assets<StandardSolariMaterial>>,
-    args: Res<SceneArgs>,
-) {
-    let grey = materials.add(StandardSolariMaterial {
-        base_color: Color::srgb(0.6, 0.6, 0.6),
-        perceptual_roughness: 1.0,
-        ..default()
-    });
-    let mut slab = |name: String, size: Vec3, pos: DVec3, mat: &Handle<StandardSolariMaterial>| {
-        let mesh = Cuboid::from_size(size).mesh().build().with_generated_tangents().unwrap();
-        let handle = meshes.add(ClusterMesh::try_from(&mesh).expect("slab bake"));
-        commands.spawn((
-            Name::new(name),
-            TransformStatic,
-            NoGpuGlobalTransformReadback,
-            RaytracingMesh3d(handle),
-            SolariMaterial3d(mat.clone()),
-            Transform::from_translation(pos),
-        ));
-    };
-    slab("floor".into(), Vec3::new(24.4, 0.2, 24.4), DVec3::new(0.0, -3.1, 0.0), &grey);
-    slab("ceiling".into(), Vec3::new(24.4, 0.2, 24.4), DVec3::new(0.0, 3.1, 0.0), &grey);
-    slab("wall_x-".into(), Vec3::new(0.2, 6.4, 24.4), DVec3::new(-12.1, 0.0, 0.0), &grey);
-    slab("wall_x+".into(), Vec3::new(0.2, 6.4, 24.4), DVec3::new(12.1, 0.0, 0.0), &grey);
-    slab("wall_z-".into(), Vec3::new(24.4, 6.4, 0.2), DVec3::new(0.0, 0.0, -12.1), &grey);
-    slab("wall_z+".into(), Vec3::new(24.4, 6.4, 0.2), DVec3::new(0.0, 0.0, 12.1), &grey);
-    for k in 0..64u32 {
-        let (i, j) = (k % 8, k / 8);
-        // pilot: a few floodlights over a sea of pilot lights (rung-1 exam:
-        // global flux weighting wins). equal: 64 identical lamps (rung-2 exam:
-        // global picking is uninformative; only receiver-aware RIS helps).
-        let power = if args.equal_lamps {
-            800.0
-        } else if k % 16 == 15 {
-            12000.0
-        } else {
-            2.0
-        };
-        let lamp = materials.add(StandardSolariMaterial {
-            base_color: Color::WHITE,
-            emissive: LinearRgba::rgb(power, power, power),
-            ..default()
-        });
-        slab(
-            format!("lamp_{k}"),
-            Vec3::new(0.9, 0.1, 0.9),
-            DVec3::new((i as f64 - 3.5) * 2.9, 2.9, (j as f64 - 3.5) * 2.9),
-            &lamp,
-        );
-    }
-    commands.insert_resource(Probes(vec![
-        Probe { name: "floor_dim", world: DVec3::new(-9.0, -3.0, -9.0), expect: None },
-        Probe { name: "floor_mid", world: DVec3::new(0.0, -3.0, 0.0), expect: None },
-        Probe { name: "floor_bright", world: DVec3::new(8.0, -3.0, 8.5), expect: None },
-        Probe { name: "back_wall", world: DVec3::new(0.0, 0.5, -12.0), expect: None },
-    ]));
-    commands.spawn((
-        Name::new("camera"),
-        Camera3d::default(),
-        CameraMainTextureUsages::default().with(TextureUsages::STORAGE_BINDING),
-        Msaa::Off,
-        camera_mode(&args),
-        NoGpuGlobalTransformReadback,
-        FreeCamera::default(),
-        Transform::from_translation(DVec3::new(0.0, 1.2, 11.0))
-            .looking_at(DVec3::new(0.0, -2.0, 0.0), Vec3::Y),
-    ));
-}
-
 /// Rung-3 spatial-bias fixture: a STATIC grey room under an equal-lamp ceiling,
-/// with a cluster of upright boxes + tilted ramps on the floor. The boxes cast
-/// shadows and break the floor into varied normals/depths, so a spatial neighbor's
-/// domain genuinely differs from its target — the M-sum bias (naive darkens at
-/// occlusion boundaries, Z-count recovers) finally has something to bite. Nothing
-/// moves, so temporal reprojection stays clean (unlike the yard).
-fn setup_cell(
+/// with a cluster of upright boxes + tilted ramps on the floor, plus a diffuse and
+/// a metal sphere raised on pillars. The boxes cast shadows and break the floor
+/// into varied normals/depths, so a spatial neighbor's domain genuinely differs
+/// from its target — the M-sum bias (naive darkens at occlusion boundaries, Z-count
+/// recovers) finally has something to bite; the pillared spheres add curved diffuse
+/// and glossy receivers on top of that. Nothing moves, so temporal reprojection
+/// stays clean (unlike the yard).
+fn setup_room(
     mut commands: Commands,
     mut meshes: ResMut<Assets<ClusterMesh>>,
     mut materials: ResMut<Assets<StandardSolariMaterial>>,
@@ -777,8 +598,9 @@ fn setup_cell(
     spawn("wall_z+".into(), Vec3::new(16.4, 6.4, 0.2), at(DVec3::new(0.0, 0.0, 8.1)), &grey);
     // Upright boxes (footprint, height) sitting on the floor — vertical faces +
     // flat tops (normal/depth breaks) that cast shadows (occlusion boundaries).
+    // (The back-left box that used to stand at (-3, -2) is now the taller occluder
+    // pillar below — it sits on the camera→corner-ball ray to hide the rough ball.)
     let boxes = [
-        (Vec3::new(1.2, 2.4, 1.2), DVec3::new(-3.0, 0.0, -2.0)),
         (Vec3::new(1.5, 1.0, 1.5), DVec3::new(2.6, 0.0, 1.2)),
         (Vec3::new(1.0, 3.0, 1.0), DVec3::new(0.2, 0.0, 3.0)),
         (Vec3::new(2.2, 0.6, 1.1), DVec3::new(-2.2, 0.0, 2.4)),
@@ -801,6 +623,23 @@ fn setup_cell(
         at(DVec3::new(-1.2, f + 0.9, -3.8)).with_rotation(DQuat::from_rotation_x(0.55)),
         &grey,
     );
+    // Two spheres raised on grey pillars. The glossy metal ball stands visible up
+    // front-right; the rough diffuse ball sits on a pillar in the back-LEFT corner,
+    // hidden by default behind a tall grey occluder pillar planted on the camera→
+    // corner ray. The high look-down camera sees over short boxes, so only a tall
+    // occluder dead on the sightline hides it — the --orbit soak then swings the
+    // corner open (disocclusion: the reuse stack must repopulate the curved receiver,
+    // not smear). Each ball center sits at y = f + pillar_height + BALL_R; xz +
+    // pillar height are reused for the spheres + probes below.
+    const BALL_R: f64 = 0.7;
+    let (dx, dz, d_ph) = (-5.8f64, -5.8f64, 1.4f64); // diffuse: back-left corner
+    let (mx, mz, m_ph) = (2.0f64, -1.0f64, 1.8f64); //   metal: front-right pillar
+    for (label, x, z, ph) in [("diffuse", dx, dz, d_ph), ("metal", mx, mz, m_ph)] {
+        spawn(format!("pillar_{label}"), Vec3::new(0.7, ph as f32, 0.7), at(DVec3::new(x, f + ph * 0.5, z)), &grey);
+    }
+    // Occluder: tall thin pillar on the camera→diffuse-ball ray (x ≈ -3), sized to
+    // cover the corner ball's whole screen extent from the default pose.
+    spawn("occluder".into(), Vec3::new(1.6, 3.6, 1.6), at(DVec3::new(-3.0, f + 1.8, -2.0)), &grey);
     // Equal-lamp 4×4 ceiling grid (uniform lighting isolates the spatial bias from
     // power variance); `--lamp-law pilot` keeps the flood/pilot mix if wanted.
     for k in 0..16u32 {
@@ -818,10 +657,32 @@ fn setup_cell(
             &lamp,
         );
     }
+    // Release the cuboid spawner's borrow of the asset stores so spawn_ball (which
+    // needs &mut meshes/materials itself) can rest the spheres on the pillar tops.
+    drop(spawn);
+    let sphere_mesh = Sphere::new(BALL_R as f32).mesh().ico(6).unwrap().with_generated_tangents().unwrap();
+    let sphere = meshes.add(ClusterMesh::try_from(&sphere_mesh).expect("sphere bake"));
+    let diffuse_y = f + d_ph + BALL_R;
+    let metal_y = f + m_ph + BALL_R;
+    spawn_ball(
+        &mut commands, &mut meshes, &mut materials, &sphere,
+        "ball_diffuse",
+        DVec3::new(dx, diffuse_y, dz),
+        StandardSolariMaterial { base_color: Color::WHITE, perceptual_roughness: 1.0, ..default() },
+    );
+    spawn_ball(
+        &mut commands, &mut meshes, &mut materials, &sphere,
+        "ball_metal",
+        DVec3::new(mx, metal_y, mz),
+        StandardSolariMaterial { base_color: Color::WHITE, metallic: 1.0, perceptual_roughness: 0.4, ..default() },
+    );
     commands.insert_resource(Probes(vec![
         Probe { name: "floor_open", world: DVec3::new(5.5, -3.0, -5.5), expect: None },
         Probe { name: "floor_amid", world: DVec3::new(-1.2, -3.0, 0.5), expect: None },
         Probe { name: "box_top", world: DVec3::new(0.2, 0.0, 3.0), expect: None },
+        // Sphere fronts (camera-facing +z hemisphere), one radius off the center.
+        Probe { name: "ball_diffuse", world: DVec3::new(dx, diffuse_y, dz + BALL_R), expect: None },
+        Probe { name: "ball_metal", world: DVec3::new(mx, metal_y, mz + BALL_R), expect: None },
         Probe { name: "wall_z-", world: DVec3::new(0.0, 0.5, -8.0), expect: None },
     ]));
     commands.spawn((
@@ -1148,6 +1009,68 @@ const LOG_FILTER: &str = concat!(
 #[derive(Resource)]
 struct Timeout(Timer);
 
+/// Screenshot the primary window into `target/tmp/` and print the
+/// machine-readable line the grader parses once the PNG is on disk. This
+/// captures the FINAL surface — post-DLSS-RR, post-tonemap, UI included
+/// (graded runs pass --no-ui).
+fn take_shot(commands: &mut Commands) {
+    let dir = std::path::Path::new("./target/tmp");
+    let _ = std::fs::create_dir_all(dir);
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let path = dir.join(format!("solari-shot-{ms}.png"));
+    commands.spawn(Screenshot::primary_window()).observe(
+        move |captured: On<ScreenshotCaptured>| {
+            let img = captured.image.clone();
+            match img.try_into_dynamic() {
+                // Alpha carries HDR brightness values — drop it (rgb8) or the
+                // PNG comes out wrong, same as bevy's save_to_disk.
+                Ok(dyn_img) => match dyn_img.to_rgb8().save(&path) {
+                    Ok(()) => info!("solari shot: wrote {}", path.display()),
+                    Err(e) => error!("solari shot: {e}"),
+                },
+                Err(e) => error!("solari shot: {e}"),
+            }
+        },
+    );
+}
+
+/// With `--shot-on-dump`: when the `--dump-at-spp` EXR lands in `target/tmp`,
+/// take the display-referred twin screenshot (the truth bake's PNG reference
+/// for the per-frame protocol). The spp counter lives in the render world, so
+/// the dump file appearing IS the signal — polled twice a second; the extra
+/// accumulation frames between dump and shot only converge the truth further.
+fn shot_on_dump(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut state: Local<(f32, bool)>,
+) {
+    let (next_poll, done) = &mut *state;
+    if *done || time.elapsed_secs() < *next_poll {
+        return;
+    }
+    *next_poll = time.elapsed_secs() + 0.5;
+    let fresh_dump = std::fs::read_dir("target/tmp")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| {
+            entry.path().extension().is_some_and(|ext| ext == "exr")
+                && entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|m| m.elapsed().ok())
+                    .is_some_and(|age| age.as_secs_f32() < 2.0)
+        });
+    if fresh_dump {
+        *done = true;
+        take_shot(&mut commands);
+    }
+}
+
 trait ExamAppExt {
     fn add_timeout_exit(&mut self, duration: Option<f32>, agent_default: f32) -> &mut Self;
     fn add_screenshot(&mut self, trigger: KeyCode) -> &mut Self;
@@ -1222,6 +1145,22 @@ impl ExamAppExt for App {
 struct OrbitSoak {
     secs: f32,
     start: Option<Transform>,
+}
+
+/// Announce the primary window's physical size whenever it changes — the dump
+/// resolution follows it, and the grader compares this line against its cached
+/// truth's dims to abort-and-retry a wrongly-tiled launch early.
+fn announce_window_size(
+    mut last: Local<(u32, u32)>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+) {
+    if let Ok(window) = windows.single() {
+        let size = (window.physical_width(), window.physical_height());
+        if *last != size && size.0 > 0 {
+            *last = size;
+            info!("solari window: {}x{}", size.0, size.1);
+        }
+    }
 }
 
 fn orbit_soak(

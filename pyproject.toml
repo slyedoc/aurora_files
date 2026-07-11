@@ -1,0 +1,11 @@
+# Python env for the solari analysis scripts (`uv sync`; scripts/grade_report.py
+# itself is stdlib-only). OpenEXR reads the grader's radiance dumps for ad-hoc
+# numeric analysis (ratio maps, energy audits) without a GPU run.
+[project]
+name = "solari-files"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=2",
+    "openexr>=3.4",
+]

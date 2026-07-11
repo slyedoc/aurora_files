@@ -4,7 +4,7 @@
 //! and pass-through args flow to the underlying tool unchanged:
 //!
 //!   cargo xtask furnace --scene room --recipe restir-gi --taps 3
-//!   cargo xtask grade --scene lamps --time 20 --maps --label baseline
+//!   cargo xtask grade --scene lamps --time 20 --label baseline
 //!   cargo xtask view assets/san_miguel/SanMiguel.bsn --recipe production --bench 30
 //!   cargo xtask soak 10
 //!
@@ -41,9 +41,9 @@ enum Task {
 
 #[derive(clap::Args)]
 struct RunsArgs {
-    /// Remove runs whose scene, label, or filename contains MATCH
-    /// ("all" = every run). Truth caches are kept — only run records go.
-    #[arg(long, value_name = "MATCH")]
+    /// Remove runs whose scene, label, or filename contains MATCH; bare
+    /// `--rm` removes every run. Truth caches are kept — only run records go.
+    #[arg(long, value_name = "MATCH", num_args = 0..=1, default_missing_value = "all")]
     rm: Option<String>,
 }
 
@@ -84,7 +84,7 @@ fn truth(root: &Path, args: &[String]) -> i32 {
     let scenes: &[&str] = if args.iter().any(|a| a == "--scene") {
         &[""]
     } else {
-        &["furnace", "room", "lamps", "yard", "cell"]
+        &["furnace", "room", "yard"]
     };
     for scene in scenes {
         let mut forwarded = vec!["--truth-only".to_string()];
