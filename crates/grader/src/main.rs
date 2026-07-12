@@ -31,16 +31,17 @@ use clap::Parser;
 const LADDER: &[&str] = &[
     // Plain reference accumulator (NEE-1, path-traced GI).
     "(mode: Reference(()))",
-    // BSDF-only brute force — the unbiasedness A/B against reference.
-    "(mode: Reference((di: BsdfOnly)))",
     // ReSTIR DI, temporal only (payload structs default to the canonical levers).
     "(mode: Reference((di: Restir(()))))",
     // ReSTIR DI + the spatial merge+shade pass.
     "(mode: Reference((di: Restir((spatial: Some(()))))))",
-    // ReSTIR DI + GI reconnection reservoirs (recon + temporal).
-    "(mode: Reference((di: Restir(()), gi: Restir(()))))",
+    // ReSTIR DI + GI reconnection reservoirs (recon + temporal). `gi` is an
+    // Option<GiArm> and the ReSTIR selector lives at GiArm.estimator, so the
+    // arm is `Some((estimator: Restir(())))` — a bare `gi: Restir(())` fails
+    // to parse as SolariCamera RON (furnace panics, the rung is skipped).
+    "(mode: Reference((di: Restir(()), gi: Some((estimator: Restir(()))))))",
     // Spatial reuse on both arms.
-    "(mode: Reference((di: Restir((spatial: Some(()))), gi: Restir((spatial: Some(()))))))",
+    "(mode: Reference((di: Restir((spatial: Some(()))), gi: Some((estimator: Restir((spatial: Some(()))))))))",
     // Reference with NRC GI termination — the cache-bias A/B.
     "(mode: Reference((gi: Some((nrc: true)))))",
     // The stack exactly as shipped: SolariLighting::default().
@@ -398,11 +399,13 @@ fn scope_of(config: &str) -> Scope {
 
 impl Scope {
     /// The truth camera: plain reference accumulation at matching scope.
+    /// `bounces: 32` is PINNED — the shipped default is 1 (the RR-facing
+    /// production shape), but a truth must converge the full transport.
     fn truth_camera(self) -> &'static str {
         match self {
-            Scope::Full => "(mode: Reference(()))",
+            Scope::Full => "(mode: Reference((gi: Some((bounces: 32)))))",
             Scope::NoGi => "(mode: Reference((gi: None)))",
-            Scope::GiOnly => "(mode: Reference((gi: Some((only: true)))))",
+            Scope::GiOnly => "(mode: Reference((gi: Some((only: true, bounces: 32)))))",
         }
     }
 

@@ -12,7 +12,7 @@ use bevy::{
     window::{PresentMode, PrimaryWindow, WindowResolution},
     asset::RenderAssetUsages,
     camera::CameraMainTextureUsages,
-    camera_controller::free_camera::{FreeCamera, FreeCameraPlugin},
+    camera_controller::free_camera::{FreeCamera, FreeCameraPlugin, FreeCameraState},
     core_pipeline::Skybox,
     dev_tools::render_debug::RenderDebugOverlayPlugin,
     feathers::{dark_theme::create_dark_theme, theme::UiTheme, FeathersPlugins},
@@ -247,6 +247,17 @@ fn main() {
     }
     if args.shot_on_dump {
         app.add_systems(Update, shot_on_dump);
+    }
+    // Graded runs (scheduled captures / orbit) are DEAF to input: the grader's
+    // furnace children are real windows, and a stolen focus mid-run would hand
+    // the user's WASD to the experiment's camera — strip the controller so the
+    // pose stays owned by the scene setup (and the orbit, when driving).
+    let graded = args.shot_at_secs.is_some()
+        || args.dump_at_secs.is_some()
+        || args.dump_at_spp > 0
+        || args.orbit > 0;
+    if graded {
+        app.add_systems(Update, strip_free_camera);
     }
     app.add_systems(Update, (orbit_soak, announce_window_size));
     // The debug panels are off in graded runs — the title says what's rendering.
@@ -1176,6 +1187,19 @@ struct OrbitSoak {
 /// Announce the primary window's physical size whenever it changes — the dump
 /// resolution follows it, and the grader compares this line against its cached
 /// truth's dims to abort-and-retry a wrongly-tiled launch early.
+/// Remove the free-camera controller from every camera that has one — graded
+/// runs own their pose (scene setup / orbit) and must ignore stray input.
+fn strip_free_camera(
+    cameras: Query<Entity, With<FreeCamera>>,
+    mut commands: Commands,
+) {
+    for entity in &cameras {
+        commands
+            .entity(entity)
+            .remove::<(FreeCamera, FreeCameraState)>();
+    }
+}
+
 fn announce_window_size(
     mut last: Local<(u32, u32)>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -1204,22 +1228,19 @@ fn orbit_soak(
         orbit.start = Some(*tf);
     }
     let start = orbit.start.unwrap();
-    // Frame-indexed: pose is a pure function of the frame number, so frame k
-    // is the same pose at any frame rate — motion captures compare equal
-    // across recipes. (The old time-based sway made faster recipes sweep less
-    // per frame.) Rates assume a nominal 60 fps worth of the old feel.
+    // Continuous frame-indexed sway. The grader's shot burst fires on
+    // WALL-CLOCK (`--shot-at-secs`, thousands of frames in), so the camera must
+    // still be MOVING then for the flicker column to measure error under
+    // motion. The old code swayed only for `orbit.frames` frames (a ~0.4s
+    // twitch at startup at 100+ fps) then snapped back to `start` and held —
+    // leaving a dead-static camera at capture, i.e. no motion test at all.
+    // The settle/snap-back existed for a "stress then shoot at rest" flow the
+    // grader's orbit path doesn't use (it skips FLIP-vs-truth). `orbit.frames`
+    // is now just the on/off gate; motion never stops. Pose is a pure function
+    // of frame number, but capture is time-based and recipes run at different
+    // fps, so cross-recipe sway PHASE still differs — frame-locked capture
+    // (`--shot-at-frame`) is the rigorous follow-up.
     let f = frames.0;
-    if f >= orbit.frames + 60 {
-        *tf = start;
-        return;
-    }
-    // Settle phase: near-final pose while motion-contaminated history heals
-    // (m-cap frames), then the exact pose forces one clean accumulation restart.
-    if f >= orbit.frames {
-        *tf = start;
-        tf.translation += start.rotation * DVec3::new(1.0e-4, 0.0, 0.0);
-        return;
-    }
     let t = f as f64 / 60.0;
     let sway = (t * 0.9).sin() * 1.0;
     let bob = (t * 1.3).sin() * 0.25;
