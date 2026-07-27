@@ -18,6 +18,7 @@ pub mod dedup;
 pub mod discovery;
 pub mod gltf;
 pub mod img;
+pub mod lint;
 pub mod mesh;
 pub mod omm;
 pub mod speedtree;

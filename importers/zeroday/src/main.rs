@@ -47,11 +47,11 @@ fn main() {
         args.gltf.with_file_name(format!("{stem}_anim.glb"))
     });
 
-    // Marker on the `.bsn` root: zero's `bsn_anim` crate sees it, loads the `.animclip`, builds the
+    // Marker on the `.bsn` root: `bevy_animation` sees it, loads the `.animclip`, builds the
     // AnimationGraph/Player, and binds the tree's nodes to the clip by name-path. `clip` is a
     // `Handle<AnimationClip>` resolved from the asset path by the `AnimClipLoader` (`.animclip`).
     let root_components = format!(
-        "    bsn_anim::BsnAnimated(\"{}/{}.animclip\")\n",
+        "    bevy_animation::animclip::AnimatedScene(\"{}/{}.animclip\")\n",
         args.asset_prefix, args.scene_name,
     );
 
@@ -63,6 +63,8 @@ fn main() {
         replace: args.replace,
         root_components,
         emissive_nits: None,
+        erode_px: solari_bsn::mesh::DEFAULT_ERODE_PX,
+        omm_subdiv: solari_bsn::mesh::DEFAULT_OMM_SUBDIV,
     };
     bake_gltf_hierarchy(&cfg);
 

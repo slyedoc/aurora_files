@@ -1,0 +1,24 @@
+# Hoverboard importer: bake the procedurally-authored ZR-09 hoverboard glb → `.cluster_mesh` +
+# `.bsn`. TEXTURE-FREE — the source materials are procedural (Noise/Voronoi/Pointiness), and rather
+# than bake them to maps the exporter flattens each to the scalar factors `StandardSolariMaterial`
+# already carries, so the ray tracer shades the whole prop with no sampler reads.
+#
+#   cargo run --release -p hoverboard_import -- raw/hoverboard/hoverboard.glb assets/hoverboard
+[package]
+name = "hoverboard_import"
+version = "0.1.0"
+edition = "2024"
+publish = false
+# `cargo run -p hoverboard_import` defaults to the importer; the `load_test` bin needs `--bin`.
+default-run = "hoverboard_import"
+
+[[bin]]
+name = "hoverboard_import"
+path = "src/main.rs"
+
+[dependencies]
+solari_bsn = { path = "../../crates/solari_bsn" }
+clap.workspace = true
+# `load_test` spins up a headless bevy app to validate the texture-free `.bsn` — specifically that
+# the `base_color` Color ENUM literal parses; the importer itself only needs solari_bsn.
+bevy.workspace = true

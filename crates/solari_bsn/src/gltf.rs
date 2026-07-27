@@ -3,9 +3,10 @@
 //! embedded textures, and write a `.bsn` — the glTF analogue of [`crate::bake_scene`].
 //!
 //! Milestone: geometry + base-color/normal/metallic-roughness textures + alpha-mode + glass
-//! transmission. Deferred (TODO): OMM baking (needs base-color alpha decode), and the scalar/colour
-//! factors (base_color, emissive, metallic, roughness) — untextured materials currently fall back
-//! to `SolariMaterial` defaults.
+//! transmission + OMM baking for alpha cutouts, plus the scalar/colour factors (base_color,
+//! emissive, metallic, roughness, ior). Carrying the factors is what lets a fully UNTEXTURED
+//! asset import correctly — see the hoverboard importer, which is texture-free by design so the
+//! ray tracer shades it from the `GpuMaterial` struct with no sampler reads at all.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -18,7 +19,7 @@ use bevy::math::Mat4;
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
 use bevy::solari::geometry::{write_cluster_mesh_sync, ClusterMesh};
 
-use crate::bsn;
+use crate::{bsn, mesh};
 
 /// Per-asset knobs for the glTF importer.
 pub struct GltfConfig {
@@ -38,6 +39,12 @@ pub struct GltfConfig {
     /// Per-scene fallback for emissive magnitude (nits), keyed on material name, used only when a
     /// material ships no `KHR_materials_emissive_strength`. `None` keeps the glTF value (×1).
     pub emissive_nits: Option<fn(&str) -> f32>,
+    /// Erosion radius (texels) applied to the cutout alpha mask before OMM baking; pulls the
+    /// conservative 2-state silhouette back in. See [`mesh::DEFAULT_ERODE_PX`]; `0` disables.
+    pub erode_px: u32,
+    /// Max OMM subdivision level (the baker caps per-triangle subdivision at this). See
+    /// [`mesh::DEFAULT_OMM_SUBDIV`].
+    pub omm_subdiv: u32,
 }
 
 /// Bake the scene described by `cfg`: extract textures, bake each unique primitive's
@@ -61,6 +68,7 @@ pub fn bake_gltf_scene(cfg: &GltfConfig) {
         doc.materials().count(),
         doc.textures().count(),
     );
+    lint_materials(doc, cfg.emissive_nits).print();
 
     // Extract every embedded/sourced image once (raw bytes, no re-encode) → `image index → file`.
     let image_files = extract_images(doc, &buffers, base, &textures_dir);
@@ -70,9 +78,13 @@ pub fn bake_gltf_scene(cfg: &GltfConfig) {
         buffers: &buffers,
         image_files: &image_files,
         meshes_dir: &meshes_dir,
+        textures_dir: &textures_dir,
         asset_prefix: &cfg.asset_prefix,
         replace: cfg.replace,
         emissive_nits: cfg.emissive_nits,
+        erode_px: cfg.erode_px,
+        omm_subdiv: cfg.omm_subdiv,
+        decoded_alpha: HashMap::new(),
         baked: HashMap::new(),
         entities: String::new(),
         emitted: 0,
@@ -127,6 +139,7 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
         doc.materials().count(),
         doc.textures().count(),
     );
+    lint_materials(doc, cfg.emissive_nits).print();
 
     let image_files = extract_images(doc, &buffers, base, &textures_dir);
     println!("extracted {} textures -> {}", image_files.len(), textures_dir.display());
@@ -135,9 +148,13 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
         buffers: &buffers,
         image_files: &image_files,
         meshes_dir: &meshes_dir,
+        textures_dir: &textures_dir,
         asset_prefix: &cfg.asset_prefix,
         replace: cfg.replace,
         emissive_nits: cfg.emissive_nits,
+        erode_px: cfg.erode_px,
+        omm_subdiv: cfg.omm_subdiv,
+        decoded_alpha: HashMap::new(),
         baked: HashMap::new(),
         entities: String::new(),
         emitted: 0,
@@ -228,9 +245,15 @@ struct Ctx<'a> {
     buffers: &'a [gltf::buffer::Data],
     image_files: &'a HashMap<usize, String>,
     meshes_dir: &'a Path,
+    textures_dir: &'a Path,
     asset_prefix: &'a str,
     replace: bool,
     emissive_nits: Option<fn(&str) -> f32>,
+    erode_px: u32,
+    omm_subdiv: u32,
+    /// Base-color images decoded for OMM bakes, by glTF image index — cutout atlases are
+    /// shared by many primitives, so decode each once (`None` caches a failed decode).
+    decoded_alpha: HashMap<usize, Option<image::RgbaImage>>,
     /// `(mesh index, primitive index) → owner stem`, so shared meshes bake once and instance nodes
     /// reuse the baked `.cluster_mesh`. `None` marks a primitive whose bake failed (entities skipped).
     baked: HashMap<(usize, usize), Option<String>>,
@@ -319,6 +342,7 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
         doc.materials().count(),
         doc.textures().count(),
     );
+    lint_materials(doc, cfg.emissive_nits).print();
 
     let image_files = extract_images(doc, &buffers, base, &textures_dir);
     println!("extracted {} textures -> {}", image_files.len(), textures_dir.display());
@@ -327,9 +351,13 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
         buffers: &buffers,
         image_files: &image_files,
         meshes_dir: &meshes_dir,
+        textures_dir: &textures_dir,
         asset_prefix: &cfg.asset_prefix,
         replace: cfg.replace,
         emissive_nits: cfg.emissive_nits,
+        erode_px: cfg.erode_px,
+        omm_subdiv: cfg.omm_subdiv,
+        decoded_alpha: HashMap::new(),
         baked: HashMap::new(),
         entities: String::new(),
         emitted: 0,
@@ -463,7 +491,8 @@ fn bake_primitive(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> O
 
     let bevy_mesh = build_primitive_mesh(prim, ctx.buffers)?;
     match ClusterMesh::try_from(&bevy_mesh) {
-        Ok(cm) => {
+        Ok(mut cm) => {
+            attach_primitive_omm(prim, &mut cm, ctx);
             let w = BufWriter::new(File::create(&mesh_file).expect("create .cluster_mesh"));
             write_cluster_mesh_sync(&cm, w).expect("write .cluster_mesh");
             ctx.baked_count += 1;
@@ -477,6 +506,43 @@ fn bake_primitive(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> O
             ctx.failed_count += 1;
             None
         }
+    }
+}
+
+/// Bake and embed an opacity micromap when the primitive is an alpha cutout
+/// (`AlphaMode::Mask` with a base-color texture): decode the texture's alpha and hand it to
+/// the 2-state OMM baker, so RT cores resolve the cutout in hardware instead of any-hit
+/// testing every triangle — without one, cutouts render holes-solid (the runtime assumes
+/// alpha-tested geometry carries an OMM).
+fn attach_primitive_omm(prim: &gltf::Primitive, cm: &mut ClusterMesh, ctx: &mut Ctx) {
+    let material = prim.material();
+    if material.alpha_mode() != gltf::material::AlphaMode::Mask {
+        return;
+    }
+    let Some(info) = material.pbr_metallic_roughness().base_color_texture() else {
+        return;
+    };
+    let Some(source) = info.texture().source() else {
+        return;
+    };
+    let idx = source.index();
+    // Copy the shared field references out so they don't hold the `&mut Ctx` reborrow
+    // across the `decoded_alpha` entry.
+    let (files, textures_dir) = (ctx.image_files, ctx.textures_dir);
+    let Some(file) = files.get(&idx) else {
+        return;
+    };
+    let rgba = ctx.decoded_alpha.entry(idx).or_insert_with(|| {
+        match image::open(textures_dir.join(file)) {
+            Ok(img) => Some(img.into_rgba8()),
+            Err(err) => {
+                eprintln!("  omm skipped ({file}): {err}");
+                None
+            }
+        }
+    });
+    if let Some(rgba) = rgba {
+        mesh::attach_omm_rgba(cm, rgba, ctx.erode_px, ctx.omm_subdiv, file);
     }
 }
 
@@ -541,12 +607,98 @@ pub(crate) fn build_primitive_mesh(prim: &gltf::Primitive, buffers: &[gltf::buff
     Some(mesh)
 }
 
-/// Inline `SolariMaterial` field list for a glTF material: textures (by extracted file path),
-/// alpha-mode, and glass transmission/IOR. Scalar/colour factors are deferred (see module docs).
+/// A material's emissive as linear radiance: `emissive_factor × KHR_materials_emissive_strength`.
+/// When the asset ships no strength, falls back to the per-scene `emissive_nits` resolver (keyed on
+/// material name) so relative emitter brightness bakes in physically.
+///
+/// Shared by the `.bsn` writer and [`crate::lint`] so the warning can never disagree with the value
+/// actually written. `None` for non-emitters.
+pub(crate) fn emissive_radiance(
+    material: &gltf::Material,
+    emissive_nits: Option<fn(&str) -> f32>,
+    has_emissive_texture: bool,
+) -> Option<[f32; 3]> {
+    let ef = material.emissive_factor();
+    if !has_emissive_texture && ef == [0.0, 0.0, 0.0] {
+        return None;
+    }
+    let strength = material
+        .emissive_strength()
+        .unwrap_or_else(|| emissive_nits.map_or(1.0, |f| f(material.name().unwrap_or(""))));
+    // A textured emissive with a zero factor would be invisible (emissive = factor × texture);
+    // default such a material to unit factor so the texture shows.
+    let [r, g, b] = if has_emissive_texture && ef == [0.0, 0.0, 0.0] { [1.0, 1.0, 1.0] } else { ef };
+    Some([r * strength, g * strength, b * strength])
+}
+
+/// Lint every material in the document — unit-system mistakes that bake cleanly and only show up
+/// in the viewer. See [`crate::lint`].
+pub(crate) fn lint_materials(
+    doc: &gltf::Document,
+    emissive_nits: Option<fn(&str) -> f32>,
+) -> crate::lint::Report {
+    let mut report = crate::lint::Report::default();
+    for material in doc.materials() {
+        let name = material.name().unwrap_or("<unnamed>").to_string();
+        let has_emissive_tex = material.emissive_texture().is_some();
+        if let Some(rgb) = emissive_radiance(&material, emissive_nits, has_emissive_tex) {
+            report.emitters += 1;
+            // A textured emitter's factor is only a tint; the texture carries the magnitude, so a
+            // low factor there is expected rather than suspicious.
+            if !has_emissive_tex {
+                if let Some(v) = crate::lint::check_emissive(&name, rgb) {
+                    report.warnings.extend(v.warning);
+                }
+            }
+        }
+        let pbr = material.pbr_metallic_roughness();
+        let textured = pbr.base_color_texture().is_some()
+            || pbr.metallic_roughness_texture().is_some()
+            || material.normal_texture().is_some();
+        if crate::lint::is_default_white(pbr.base_color_factor(), textured) {
+            report.white_plastic.push(name);
+        }
+    }
+    report
+}
+
+/// Inline `SolariMaterial` field list for a glTF material: the scalar/colour factors, textures (by
+/// extracted file path), alpha-mode, and glass transmission/IOR.
 fn material_fields(material: &gltf::Material, ctx: &Ctx) -> String {
     let mut fields = String::new();
 
     let pbr = material.pbr_metallic_roughness();
+
+    // Scalar factors. Emitted only when they differ from `StandardSolariMaterial::default()`
+    // (white / 0.5 rough / 0 metallic), so pre-existing textured imports keep their exact `.bsn`.
+    // These are what make an UNTEXTURED material render correctly — without them a texture-free
+    // asset falls back to default white plastic. glTF's base color factor is linear, and
+    // `base_color` is a `Color` ENUM, so it needs the tuple-variant form (unlike `emissive`,
+    // which is a plain `LinearRgba` struct).
+    let bc = pbr.base_color_factor();
+    if bc[0] != 1.0 || bc[1] != 1.0 || bc[2] != 1.0 || bc[3] != 1.0 {
+        let _ = write!(
+            fields,
+            " base_color: bevy_color::color::Color::LinearRgba(bevy_color::linear_rgba::LinearRgba \
+             {{ red: {}, green: {}, blue: {}, alpha: {} }}),",
+            bsn::f(bc[0]), bsn::f(bc[1]), bsn::f(bc[2]), bsn::f(bc[3]),
+        );
+    }
+    let metallic = pbr.metallic_factor();
+    if metallic != 0.0 {
+        let _ = write!(fields, " metallic: {},", bsn::f(metallic));
+    }
+    let roughness = pbr.roughness_factor();
+    if roughness != 0.5 {
+        let _ = write!(fields, " perceptual_roughness: {},", bsn::f(roughness));
+    }
+    if let Some(ior) = material.ior() {
+        // Only meaningful for transmissive surfaces, but harmless and cheap to carry.
+        if ior != 1.5 {
+            let _ = write!(fields, " ior: {},", bsn::f(ior));
+        }
+    }
+
     if let Some(info) = pbr.base_color_texture() {
         if let Some(p) = tex_file(info.texture(), ctx) {
             let _ = write!(fields, " base_color_texture: \"{p}\",");
@@ -566,19 +718,13 @@ fn material_fields(material: &gltf::Material, ctx: &Ctx) -> String {
     // Emissive: factor × KHR_materials_emissive_strength as linear radiance. When the asset ships no
     // strength, fall back to the per-scene `emissive_nits` resolver (keyed on material name) so
     // relative emitter brightness bakes in physically. `None` keeps the glTF value. View with exposure.
-    let ef = material.emissive_factor();
-    let strength = material.emissive_strength().unwrap_or_else(|| {
-        ctx.emissive_nits.map_or(1.0, |f| f(material.name().unwrap_or("")))
-    });
     let emissive_tex = material.emissive_texture().and_then(|info| tex_file(info.texture(), ctx));
-    if emissive_tex.is_some() || ef != [0.0, 0.0, 0.0] {
-        // A textured emissive with a zero factor would be invisible (emissive = factor × texture);
-        // default such a material to unit factor so the texture shows.
-        let [r, g, b] = if emissive_tex.is_some() && ef == [0.0, 0.0, 0.0] { [1.0, 1.0, 1.0] } else { ef };
+    let radiance = emissive_radiance(material, ctx.emissive_nits, emissive_tex.is_some());
+    if let Some([r, g, b]) = radiance {
         let _ = write!(
             fields,
             " emissive: bevy_color::linear_rgba::LinearRgba {{ red: {}, green: {}, blue: {}, alpha: 1.0 }},",
-            bsn::f(r * strength), bsn::f(g * strength), bsn::f(b * strength),
+            bsn::f(r), bsn::f(g), bsn::f(b),
         );
         if let Some(p) = emissive_tex {
             let _ = write!(fields, " emissive_texture: \"{p}\",");

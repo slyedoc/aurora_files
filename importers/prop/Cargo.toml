@@ -1,0 +1,23 @@
+# Generic prop importer: bake any normalized `.glb` → `.cluster_mesh` + `.bsn`, with the per-asset
+# knobs as CLI flags. Use this for straightforward props (mechs, vehicles, kit pieces) instead of
+# adding another ~40-line crate that only differs by a string. Assets with real import LOGIC still
+# earn their own crate — san_miguel (submesh filters), speedtree (alpha classification),
+# zeroday (hierarchy + animation), lunarbase (per-group split).
+#
+#   cargo run --release -p prop_import -- raw/mech/mech.glb assets/mech --scene-name Mech_A
+[package]
+name = "prop_import"
+version = "0.1.0"
+edition = "2024"
+publish = false
+default-run = "prop_import"
+
+[[bin]]
+name = "prop_import"
+path = "src/main.rs"
+
+[dependencies]
+solari_bsn = { path = "../../crates/solari_bsn" }
+clap.workspace = true
+# `load_test` validates the baked `.bsn` headlessly.
+bevy.workspace = true

@@ -37,6 +37,8 @@ fn main() {
         replace: args.replace,
         root_components: String::new(),
         emissive_nits: None,
+        erode_px: solari_bsn::mesh::DEFAULT_ERODE_PX,
+        omm_subdiv: solari_bsn::mesh::DEFAULT_OMM_SUBDIV,
     };
     bake_gltf_scene(&cfg);
 }

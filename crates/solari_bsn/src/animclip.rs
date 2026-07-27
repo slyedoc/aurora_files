@@ -9,7 +9,7 @@
 //! precomputed id — the loader and the runtime wiring both hash it with bevy's `from_names`, and
 //! because both derive from the same node names they agree. Keeps this writer bevy-free.
 //!
-//! Format (little-endian) — see the reader in zero's `bsn_anim` crate, which must match byte-for-byte:
+//! Format (little-endian) — see the reader in `bevy_animation::animclip`, which must match byte-for-byte:
 //!   magic  "ANIMCLP\x01"                     (8 bytes)
 //!   u32    target_count
 //!   per target:

@@ -1504,6 +1504,7 @@ dependencies = [
  "bevy_ui",
  "bevy_ui_widgets",
  "bevy_utils",
+ "bitflags 2.13.0",
  "bytemuck",
  "clap",
  "derive_more",
@@ -3210,6 +3211,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
+name = "hoverboard_import"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "clap",
+ "solari_bsn",
+]
+
+[[package]]
 name = "icu_collections"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4711,6 +4721,15 @@ name = "profiling"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
+
+[[package]]
+name = "prop_import"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "clap",
+ "solari_bsn",
+]
 
 [[package]]
 name = "pulp"
