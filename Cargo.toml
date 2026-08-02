@@ -8,7 +8,7 @@ members = ["crates/*", "importers/*"]
 [workspace.dependencies]
 # Umbrella with defaults so `bevy::mesh` / `bevy::asset` / `bevy::solari` re-exports exist;
 # `cluster_processor` gates the `Mesh -> ClusterMesh` bake. Shared by solari_bsn and the importers.
-bevy = { path = "/mnt/code/f/bevy", features = [
+bevy = { path = "/mnt/code/f/bevy/.claude/worktrees/chore-research-slang", features = [
   "bevy_solari",
   "cluster_processor",
   # Always on: the whole stack is NVIDIA-only anyway, and camera behavior
@@ -24,16 +24,16 @@ clap = { version = "4", features = ["derive"] }
 # table (the worktree's root Cargo.toml `[patch.crates-io]`). Patches only apply at the workspace
 # root, so they live here rather than in any member crate.
 [patch.crates-io]
-# Mirror zero's patch table: the bevy fork moved to the LOCAL wgpu fork (has COOPERATIVE_VECTOR);
-# the old `solari-rt-naga` git branch predates coopvec and no longer builds bevy_solari.
-wgpu             = { path = "/mnt/code/f/wgpu/wgpu" }
-wgpu-core        = { path = "/mnt/code/f/wgpu/wgpu-core" }
-wgpu-hal         = { path = "/mnt/code/f/wgpu/wgpu-hal" }
-wgpu-types       = { path = "/mnt/code/f/wgpu/wgpu-types" }
-wgpu-naga-bridge = { path = "/mnt/code/f/wgpu/wgpu-naga-bridge" }
-naga             = { path = "/mnt/code/f/wgpu/naga" }
-# Local naga_oil: the git `solari-ser` head (b9480dd) predates naga's CooperativeVectorStore variant;
-# the local checkout (56c4302) adds the redirect arms. Matches the active coopvec work.
-naga_oil         = { path = "/mnt/code/f/naga_oil" }
+# Mirror the chore-research-slang worktree's patch table: the descriptor-heap work lives on the
+# wgpu-slang checkout (branch solari-slang — view/sampler create-info accessors, Sampler::as_hal,
+# heap ride-along extensions), which the older /mnt/code/f/wgpu checkout lacks.
+wgpu             = { path = "/mnt/code/f/wgpu-slang/wgpu" }
+wgpu-core        = { path = "/mnt/code/f/wgpu-slang/wgpu-core" }
+wgpu-hal         = { path = "/mnt/code/f/wgpu-slang/wgpu-hal" }
+wgpu-types       = { path = "/mnt/code/f/wgpu-slang/wgpu-types" }
+wgpu-naga-bridge = { path = "/mnt/code/f/wgpu-slang/wgpu-naga-bridge" }
+naga             = { path = "/mnt/code/f/wgpu-slang/naga" }
+# Stock naga_oil pinned at the wgpu-29 update, same as the worktree.
+naga_oil         = { path = "/mnt/code/f/naga_oil-slang" }
 ash              = { git = "https://github.com/ash-rs/ash.git", branch = "master" }
 gpu-allocator    = { git = "https://github.com/slyedoc/gpu-allocator.git", branch = "ash-push-rename" }
