@@ -13,3 +13,4 @@ assets
 # Keep the raw/ dir in the repo (placeholder tracked) but ignore its contents.
 raw/*
 !raw/.gitkeep
+crash-dumps/
