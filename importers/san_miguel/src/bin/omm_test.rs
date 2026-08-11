@@ -6,7 +6,7 @@
 //!
 //!   cargo run --release --bin omm_test
 
-use solari_bsn::omm;
+use aurora_bsn::omm;
 
 fn main() {
     // Procedural alpha ring (rMin..rMax around center), matching the SDK sample.

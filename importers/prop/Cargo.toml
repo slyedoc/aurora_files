@@ -17,7 +17,7 @@ name = "prop_import"
 path = "src/main.rs"
 
 [dependencies]
-solari_bsn = { path = "../../crates/solari_bsn" }
+aurora_bsn = { path = "../../crates/aurora_bsn" }
 clap.workspace = true
 # `load_test` validates the baked `.bsn` headlessly.
 bevy.workspace = true

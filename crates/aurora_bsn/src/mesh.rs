@@ -4,7 +4,7 @@ use std::path::Path;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
-use bevy::solari::geometry::{ClusterMesh, OmmDesc, OmmUsage};
+use bevy_aurora::geometry::{ClusterMesh, OmmDesc, OmmUsage};
 use image::RgbaImage;
 
 use crate::dedup::V3;

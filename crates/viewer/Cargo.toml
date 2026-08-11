@@ -1,30 +1,19 @@
-# General bevy_solari `.bsn` scene viewer. Loads any importer-baked `.bsn` under full ray tracing
-# and flies a free camera through it — point it at an asset-relative `.bsn` path and set
-# `BEVY_ASSET_ROOT` to the directory holding `assets/` (this `solari_files` tree).
+# General bevy_aurora `.bsn` scene viewer. Loads any importer-baked `.bsn` under full ray tracing
+# and flies a free camera through it — point it at an asset-relative `.bsn` path from this tree:
 #
-#   BEVY_ASSET_ROOT=/mnt/code/p/solari_files \
-#     cargo run --release -p solari_view -- san_miguel/SanMiguel.bsn
+#   cargo run --release -p aurora_view -- bistro/bistro.bsn
 [package]
-name = "solari_view"
+name = "aurora_view"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [[bin]]
-name = "solari_view"
+name = "aurora_view"
 path = "src/main.rs"
 
 [dependencies]
-# Inherits the workspace `bevy` (bevy_solari + cluster_processor); add the viewer's UI/camera/debug
-# features on top (cargo unions them with the workspace base set).
-bevy = { workspace = true, features = [
-  "bevy_camera_controller",
-  "free_camera",
-  "bevy_feathers",
-  "bevy_dev_tools",
-  # Debug UI + the shared camera CLI (`SolariCameraArgs`, furnace levers).
-  "bevy_solari_debug",
-] }
+bevy = { workspace = true, features = ["bevy_camera_controller", "free_camera"] }
+bevy_aurora.workspace = true
 clap.workspace = true
 util = { path = "../util" }
-glob = "0.3"

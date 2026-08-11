@@ -16,5 +16,5 @@ pub const LOG_FILTER: &str = concat!(
     ",bevy_render=warn",
     ",wgpu_hal=warn",
     ",bevy_diagnostic::system_information_diagnostics_plugin=warn",
-    ",bevy_solari::gpu::allocator=warn",
+    ",bevy_aurora::gpu::allocator=warn",
 );

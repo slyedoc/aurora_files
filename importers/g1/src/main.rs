@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use bevy::math::{Mat3, Quat, Vec3};
 use clap::Parser;
 use serde::Deserialize;
-use solari_bsn::gltf::bake_glb_primitive;
+use aurora_bsn::gltf::bake_glb_primitive;
 
 #[derive(Parser)]
 #[command(about = "Bake the G1 rig glbs → .cluster_mesh + g1.bsn template")]
@@ -90,8 +90,8 @@ fn main() {
                 "    bevy_ecs::name::Name(\"{}#{gi}\")\n    \
                  bevy_transform::components::transform::Transform {{ translation: glam::DVec3 {{ x: 0.0, y: 0.0, z: 0.0 }}, rotation: glam::DQuat {{ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }}, scale: glam::DVec3 {{ x: 1.0, y: 1.0, z: 1.0 }} }}\n    \
                  ai::model::body::plugin::G1Link {{ index: {}, offset_pos: glam::Vec3 {{ x: {}, y: {}, z: {} }}, offset_rot: glam::Quat {{ x: {}, y: {}, z: {}, w: {} }} }}\n{head}    \
-                 bevy_solari::bindings::types::RaytracingMesh3d(\"{}/meshes/{stem}.cluster_mesh\")\n    \
-                 bevy_solari::material::SolariMaterial3d(bevy_solari::material::StandardSolariMaterial {{ base_color: bevy_color::color::Color::Srgba(bevy_color::srgba::Srgba {{ red: {}, green: {}, blue: {}, alpha: {} }}), metallic: {}, perceptual_roughness: {} }}),\n\n",
+                 bevy_aurora::bindings::types::RaytracingMesh3d(\"{}/meshes/{stem}.cluster_mesh\")\n    \
+                 bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::StandardAuroraMaterial {{ base_color: bevy_color::color::Color::Srgba(bevy_color::srgba::Srgba {{ red: {}, green: {}, blue: {}, alpha: {} }}), metallic: {}, perceptual_roughness: {} }}),\n\n",
                 link.name,
                 link.index,
                 f(geom.pos[0]), f(geom.pos[1]), f(geom.pos[2]),

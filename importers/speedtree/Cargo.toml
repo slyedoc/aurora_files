@@ -13,5 +13,5 @@ name = "speedtree_import"
 path = "src/main.rs"
 
 [dependencies]
-solari_bsn = { path = "../../crates/solari_bsn" }
+aurora_bsn = { path = "../../crates/aurora_bsn" }
 clap.workspace = true

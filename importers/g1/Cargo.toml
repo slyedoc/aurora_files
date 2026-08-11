@@ -13,7 +13,7 @@ name = "g1_import"
 path = "src/main.rs"
 
 [dependencies]
-solari_bsn = { path = "../../crates/solari_bsn" }
+aurora_bsn = { path = "../../crates/aurora_bsn" }
 bevy.workspace = true
 clap.workspace = true
 serde = { version = "1", features = ["derive"] }

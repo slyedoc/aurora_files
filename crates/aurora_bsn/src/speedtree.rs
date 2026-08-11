@@ -11,7 +11,7 @@ use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 use bevy::math::Mat4;
-use bevy::solari::geometry::{write_cluster_mesh_sync, ClusterMesh};
+use bevy_aurora::geometry::{write_cluster_mesh_sync, ClusterMesh};
 
 use crate::gltf::build_primitive_mesh;
 use crate::{bsn, img, mesh};
@@ -211,11 +211,11 @@ fn clump_placements(seed_name: &str, k: u32, radius: f32) -> Vec<Mat4> {
 /// Concatenate `src` under each placement into one mesh (positions by the full
 /// transform, normals/tangents rotation-only — placements are uniform-scale).
 fn merge_placements(
-    src: &bevy::render::mesh::Mesh,
+    src: &bevy::mesh::Mesh,
     placements: &[Mat4],
-) -> bevy::render::mesh::Mesh {
+) -> bevy::mesh::Mesh {
     use bevy::math::Vec3;
-    use bevy::render::mesh::{Indices, Mesh, VertexAttributeValues};
+    use bevy::mesh::{Indices, Mesh, VertexAttributeValues};
 
     let positions = match src.attribute(Mesh::ATTRIBUTE_POSITION) {
         Some(VertexAttributeValues::Float32x3(v)) => v.clone(),
@@ -270,7 +270,7 @@ fn merge_placements(
     }
 
     let mut out = Mesh::new(
-        bevy::render::mesh::PrimitiveTopology::TriangleList,
+        bevy::mesh::PrimitiveTopology::TriangleList,
         bevy::asset::RenderAssetUsages::RENDER_WORLD,
     );
     out.insert_attribute(Mesh::ATTRIBUTE_POSITION, mp);
@@ -294,7 +294,7 @@ struct ClumpSource {
     name: String,
     cut: bool,
     image_idx: Option<usize>,
-    mesh: bevy::render::mesh::Mesh,
+    mesh: bevy::mesh::Mesh,
 }
 
 struct Tree<'a> {
@@ -431,7 +431,7 @@ fn material_fields(material: &gltf::Material, cut: bool, ctx: &Tree) -> String {
     if let Some(p) = base_color_image(material).and_then(|i| ctx.image_files.get(&i)) {
         let _ = write!(f, " base_color_texture: \"{}/textures/{p}\",", ctx.cfg.asset_prefix);
     }
-    if let Some(p) = material.normal_texture().and_then(|t| t.texture().source()).map(|s| s.index()).and_then(|i| ctx.image_files.get(&i)) {
+    if let Some(p) = material.normal_texture().map(|t| t.texture().source().index()).and_then(|i| ctx.image_files.get(&i)) {
         let _ = write!(f, " normal_map_texture: \"{}/textures/{p}\",", ctx.cfg.asset_prefix);
     }
     if cut {
@@ -442,13 +442,13 @@ fn material_fields(material: &gltf::Material, cut: bool, ctx: &Tree) -> String {
 
 /// The `image` index a material samples for base color, if any.
 fn base_color_image(material: &gltf::Material) -> Option<usize> {
-    Some(material.pbr_metallic_roughness().base_color_texture()?.texture().source()?.index())
+    Some(material.pbr_metallic_roughness().base_color_texture()?.texture().source().index())
 }
 
 /// Bake `world` into the mesh attributes: positions by the full transform,
 /// normals/tangents by rotation only (SpeedTree node scale is uniform).
-fn bake_world_into_mesh(mesh: &mut bevy::render::mesh::Mesh, world: Mat4) {
-    use bevy::render::mesh::{Mesh, VertexAttributeValues};
+fn bake_world_into_mesh(mesh: &mut bevy::mesh::Mesh, world: Mat4) {
+    use bevy::mesh::{Mesh, VertexAttributeValues};
     let (_, rotation, _) = world.to_scale_rotation_translation();
     if let Some(VertexAttributeValues::Float32x3(positions)) =
         mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
@@ -504,7 +504,7 @@ fn extract_referenced(
         if let Some(i) = base_color_image(&mat) {
             needed.insert(i);
         }
-        if let Some(s) = mat.normal_texture().and_then(|t| t.texture().source()) {
+        if let Some(s) = mat.normal_texture().map(|t| t.texture().source()) {
             needed.insert(s.index());
         }
     }

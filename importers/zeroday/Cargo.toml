@@ -15,8 +15,8 @@ name = "zeroday_import"
 path = "src/main.rs"
 
 [dependencies]
-solari_bsn = { path = "../../crates/solari_bsn" }
+aurora_bsn = { path = "../../crates/aurora_bsn" }
 clap.workspace = true
 # `load_test` spins up a headless bevy app to validate the hierarchy `.bsn`; the importer itself
-# only needs solari_bsn.
+# only needs aurora_bsn.
 bevy.workspace = true

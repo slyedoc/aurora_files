@@ -1,14 +1,14 @@
 //! Bistro importer: bake the Amazon Lumberyard Bistro glTF to `.cluster_mesh` + a `.bsn`.
 //!
 //! Uses the PNG-textured `Bistro.glb`. Geometry + textures + alpha-mode + glass transmission are
-//! imported; OMM baking and scalar/colour material factors are TODO (see `solari_bsn::gltf`).
+//! imported; OMM baking and scalar/colour material factors are TODO (see `aurora_bsn::gltf`).
 //!
 //!   cargo run --release -p bistro_import -- raw/Bistro/Bistro.glb assets/bistro bistro
 
 use std::path::PathBuf;
 
 use clap::Parser;
-use solari_bsn::{bake_gltf_scene, GltfConfig};
+use aurora_bsn::{bake_gltf_scene, GltfConfig};
 
 #[derive(Parser)]
 #[command(about = "Bake Bistro glTF/GLB → .cluster_mesh + .bsn")]
@@ -25,10 +25,10 @@ struct Args {
     replace: bool,
     /// OMM cutout alpha-mask erosion radius in texels (pulls the conservative silhouette in;
     /// `0` disables, 1-3 useful).
-    #[arg(long, default_value_t = solari_bsn::mesh::DEFAULT_ERODE_PX)]
+    #[arg(long, default_value_t = aurora_bsn::mesh::DEFAULT_ERODE_PX)]
     erode: u32,
     /// Max OMM subdivision level (per-triangle cap; higher = finer cutout edge, larger data).
-    #[arg(long, default_value_t = solari_bsn::mesh::DEFAULT_OMM_SUBDIV)]
+    #[arg(long, default_value_t = aurora_bsn::mesh::DEFAULT_OMM_SUBDIV)]
     level: u32,
 }
 

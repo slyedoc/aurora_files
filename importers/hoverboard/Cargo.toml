@@ -17,8 +17,8 @@ name = "hoverboard_import"
 path = "src/main.rs"
 
 [dependencies]
-solari_bsn = { path = "../../crates/solari_bsn" }
+aurora_bsn = { path = "../../crates/aurora_bsn" }
 clap.workspace = true
 # `load_test` spins up a headless bevy app to validate the texture-free `.bsn` — specifically that
-# the `base_color` Color ENUM literal parses; the importer itself only needs solari_bsn.
+# the `base_color` Color ENUM literal parses; the importer itself only needs aurora_bsn.
 bevy.workspace = true

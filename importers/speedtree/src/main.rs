@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use solari_bsn::{bake_speedtree, SpeedTreeConfig};
+use aurora_bsn::{bake_speedtree, SpeedTreeConfig};
 
 #[derive(Parser)]
 #[command(about = "Bake staged SpeedTree .glb trees → per-tree .bsn (+OMM cutouts)")]

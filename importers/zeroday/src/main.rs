@@ -16,7 +16,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use solari_bsn::{bake_gltf_hierarchy, transcode_gltf_to_animclip, GltfConfig};
+use aurora_bsn::{bake_gltf_hierarchy, transcode_gltf_to_animclip, GltfConfig};
 
 #[derive(Parser)]
 #[command(about = "Bake a Zero-Day geometry glb → .cluster_mesh + hierarchy .bsn (+ stage anim glb)")]
@@ -63,8 +63,8 @@ fn main() {
         replace: args.replace,
         root_components,
         emissive_nits: None,
-        erode_px: solari_bsn::mesh::DEFAULT_ERODE_PX,
-        omm_subdiv: solari_bsn::mesh::DEFAULT_OMM_SUBDIV,
+        erode_px: aurora_bsn::mesh::DEFAULT_ERODE_PX,
+        omm_subdiv: aurora_bsn::mesh::DEFAULT_OMM_SUBDIV,
     };
     bake_gltf_hierarchy(&cfg);
 

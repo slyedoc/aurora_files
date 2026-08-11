@@ -1,4 +1,4 @@
-# San Miguel importer: a thin wrapper over `solari_bsn::bake_scene` plus measurement/validation
+# San Miguel importer: a thin wrapper over `aurora_bsn::bake_scene` plus measurement/validation
 # helper bins (dup_scan, load_test, omm_test).
 #
 #   cargo run --release -p san_miguel_import -- raw/San_Miguel/san-miguel.obj assets/san_miguel san_miguel
@@ -15,10 +15,10 @@ name = "san_miguel_import"
 path = "src/main.rs"
 
 [dependencies]
-solari_bsn = { path = "../../crates/solari_bsn" }
+aurora_bsn = { path = "../../crates/aurora_bsn" }
 clap.workspace = true
 # `load_test` spins up a headless bevy app to validate the `.bsn`; the importer itself only needs
-# solari_bsn. Shared one bevy definition via the workspace.
+# aurora_bsn. Shared one bevy definition via the workspace.
 bevy.workspace = true
 # `dup_scan` loads the OBJ directly to measure instance candidates.
 tobj = "4"

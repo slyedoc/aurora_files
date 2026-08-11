@@ -1,22 +1,21 @@
-//! Inspector-driven sun controls: [`SunSettings`] is a reflected resource
-//! (bounded sliders come from the range attributes), [`apply_sun`] maps it
-//! onto every [`Sun`]-marked `SolariDirectionLight`, and the panel is a
-//! `bevy_feathers_inspector` resource card — no hand-rolled sliders.
+//! Sun controls: [`SunSettings`] is a reflected resource mapped by
+//! [`apply_sun`] onto every [`Sun`]-marked `AuroraDirectionLight`.
+//!
+//! The old fork-era feathers inspector card is gone with the wgpu stack;
+//! settings are edited in code / CLI for now and the resource stays reflected
+//! so a future aurora inspector can pick it straight back up.
 
-use bevy::{
-    feathers::{self, theme::ThemeBackgroundColor},
-    light::light_consts::lux,
-    math::DQuat,
-    prelude::*,
+use bevy::{light::light_consts::lux, math::DQuat, prelude::*};
+use bevy_aurora::{
+    lights::AuroraDirectionLight,
+    render::{AuroraCamera, CameraReset},
 };
-use core::any::TypeId;
 
 /// The sun entity the settings steer.
 #[derive(Component)]
 pub struct Sun;
 
-/// Sun steering, degrees. Edited through the inspector card; [`apply_sun`]
-/// stamps it onto the [`Sun`] light every change (including spawn).
+/// Sun steering, degrees.
 #[derive(Resource, Reflect)]
 #[reflect(Resource, Default)]
 pub struct SunSettings {
@@ -46,7 +45,7 @@ impl Plugin for SunPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<SunSettings>()
             .init_resource::<SunSettings>()
-            .add_systems(Update, (apply_sun, reset_on_change, spawn_sun_panel));
+            .add_systems(Update, (apply_sun, reset_on_change));
     }
 }
 
@@ -55,7 +54,7 @@ impl Plugin for SunPlugin {
 /// (`is_changed` is true on insert, and `Added<Sun>` re-arms it).
 fn apply_sun(
     settings: Res<SunSettings>,
-    mut sun: Query<(&mut Transform, &mut SolariDirectionLight), With<Sun>>,
+    mut sun: Query<(&mut Transform, &mut AuroraDirectionLight), With<Sun>>,
     added: Query<(), Added<Sun>>,
 ) {
     if !settings.is_changed() && added.is_empty() {
@@ -79,7 +78,7 @@ fn apply_sun(
 /// camera reset for the frame.
 fn reset_on_change(
     settings: Res<SunSettings>,
-    mut cameras: Query<&mut CameraReset, With<SolariCamera>>,
+    mut cameras: Query<&mut CameraReset, With<AuroraCamera>>,
 ) {
     if !settings.is_changed() || settings.is_added() {
         return;
@@ -87,49 +86,4 @@ fn reset_on_change(
     for mut reset in &mut cameras {
         reset.history = true;
     }
-}
-
-/// Marker for the spawned sun panel (spawn once, only while a sun exists).
-#[derive(Component)]
-struct SunPanel;
-
-/// Top-right inspector card for [`SunSettings`], spawned once a [`Sun`]
-/// exists. Honors `SolariDebugUi(false)` — graded screenshot runs stay clean.
-/// (Free-camera parking over UI is global — see [`crate::park`].)
-fn spawn_sun_panel(
-    suns: Query<(), With<Sun>>,
-    panels: Query<(), With<SunPanel>>,
-    debug_ui: Option<Res<SolariDebugUi>>,
-    mut commands: Commands,
-) {
-    if suns.is_empty() || !panels.is_empty() || debug_ui.is_some_and(|ui| !ui.0) {
-        return;
-    }
-    let card = commands
-        .spawn((
-            SunPanel,
-            Node {
-                position_type: PositionType::Absolute,
-                top: px(10),
-                right: px(10),
-                width: px(300),
-                flex_direction: FlexDirection::Column,
-                padding: UiRect::all(px(8)),
-                ..Default::default()
-            },
-            ThemeBackgroundColor(feathers::tokens::WINDOW_BG),
-        ))
-        .id();
-    let panel = commands
-        .spawn(Node {
-            flex_direction: FlexDirection::Column,
-            row_gap: px(2),
-            ..Default::default()
-        })
-        .id();
-    commands.entity(card).add_child(panel);
-    commands.queue(bevy::feathers_inspector::BuildResourceInspector {
-        type_id: TypeId::of::<SunSettings>(),
-        panel,
-    });
 }

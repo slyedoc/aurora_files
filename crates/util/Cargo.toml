@@ -1,6 +1,6 @@
-# Shared rig for the solari tools (modeled on zero's crates/util): the
-# inspector-driven sun controls, and the common log filter. Furnace and the
-# viewer keep their identities; what they'd otherwise duplicate lives here.
+# Shared rig for the aurora tools (modeled on zero's crates/util): sun controls
+# and the common log filter. What the viewer and importer load-tests would
+# otherwise duplicate lives here.
 [package]
 name = "util"
 version = "0.1.0"
@@ -11,6 +11,7 @@ publish = false
 bevy = { workspace = true, features = [
   "bevy_camera_controller",
   "free_camera",
-  "bevy_feathers",
-  "bevy_solari_debug",
+  "bevy_ui",
+  "ui_picking",
 ] }
+bevy_aurora.workspace = true

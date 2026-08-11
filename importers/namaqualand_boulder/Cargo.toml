@@ -1,6 +1,6 @@
 # Namaqualand Boulder importer: bake the Poly Haven scanned-boulder glTF → `.cluster_mesh` + `.bsn`.
 # A single high-detail prop (diff/arm/nor textures, no displacement map — the relief is baked into
-# the mesh). Mirrors the Bistro importer; proves `solari_bsn::bake_gltf_scene` on a `.gltf` + sibling
+# the mesh). Mirrors the Bistro importer; proves `aurora_bsn::bake_gltf_scene` on a `.gltf` + sibling
 # `.bin`/textures (vs Bistro's self-contained `.glb`).
 #
 #   cargo run --release -p namaqualand_boulder_import -- \
@@ -16,5 +16,5 @@ name = "namaqualand_boulder_import"
 path = "src/main.rs"
 
 [dependencies]
-solari_bsn = { path = "../../crates/solari_bsn" }
+aurora_bsn = { path = "../../crates/aurora_bsn" }
 clap.workspace = true

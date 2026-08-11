@@ -1,14 +1,15 @@
-# Core of the importer pipeline: OBJ/MTL -> `bevy_solari` `.cluster_mesh` assets + a `.bsn` scene.
+# Core of the importer pipeline: OBJ/MTL -> `bevy_aurora` `.cluster_mesh` assets + a `.bsn` scene.
 # Owns the OMM CPU-baker link (build.rs + csrc) and depends on the bevy fork; the per-asset
 # importer binaries are thin wrappers over `bake_scene`.
 [package]
-name = "solari_bsn"
+name = "aurora_bsn"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [dependencies]
 bevy.workspace = true
+bevy_aurora.workspace = true
 tobj = "4"
 image = { version = "0.25.2", default-features = false, features = ["png", "jpeg", "tga"] }
 # glTF import path (Bistro). Same crate + extension set bevy_gltf uses, so materials/extensions

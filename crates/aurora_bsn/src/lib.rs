@@ -1,6 +1,6 @@
-//! Offline importer core: OBJ/MTL → `bevy_solari` `.cluster_mesh` assets + a `.bsn` scene.
+//! Offline importer core: OBJ/MTL → `bevy_aurora` `.cluster_mesh` assets + a `.bsn` scene.
 //!
-//! Sidesteps glTF: each OBJ submesh is baked to a `bevy_solari` `.cluster_mesh` and the scene is
+//! Sidesteps glTF: each OBJ submesh is baked to a `bevy_aurora` `.cluster_mesh` and the scene is
 //! emitted as Bevy Scene Notation referencing those meshes plus inline `SolariMaterial`s (which,
 //! unlike glTF, can carry a displacement/depth texture). Per-asset importer binaries fill a
 //! [`SceneConfig`] and call [`bake_scene`]; everything reusable lives in the submodules.
@@ -10,7 +10,7 @@ use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-use bevy::solari::geometry::{write_cluster_mesh_sync, ClusterMesh};
+use bevy_aurora::geometry::{write_cluster_mesh_sync, ClusterMesh};
 
 pub mod animclip;
 pub mod bsn;

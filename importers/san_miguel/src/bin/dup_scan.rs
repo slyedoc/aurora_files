@@ -20,7 +20,7 @@ use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use solari_bsn::dedup::{kabsch_rel_residual, positions};
+use aurora_bsn::dedup::{kabsch_rel_residual, positions};
 
 /// Relative-RMS-residual gate below which a Kabsch fit counts as the same shape (fraction of the
 /// object's RMS radius). Genuine instances sit at float noise (~1e-5); different shapes are >0.1.

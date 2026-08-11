@@ -6,7 +6,7 @@
 //! groups.
 //!
 //! Uses a self-contained PNG-textured `.glb`. Geometry + textures + alpha-mode + glass transmission
-//! are imported; OMM baking and scalar/colour material factors are TODO (see `solari_bsn::gltf`).
+//! are imported; OMM baking and scalar/colour material factors are TODO (see `aurora_bsn::gltf`).
 //! Two source `.glb`s ship under `raw/lunarbase/`: `kb3d_lunarbase.glb` (decimated) and
 //! `kb3d_lunarbase-native.glb` (full-res); pass whichever you want.
 //!
@@ -16,7 +16,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use solari_bsn::{bake_gltf_per_group, GltfConfig};
+use aurora_bsn::{bake_gltf_per_group, GltfConfig};
 
 #[derive(Parser)]
 #[command(about = "Bake Lunarbase glTF/GLB → .cluster_mesh + one .bsn per building")]
@@ -45,8 +45,8 @@ fn main() {
         replace: args.replace,
         root_components: String::new(),
         emissive_nits: None,
-        erode_px: solari_bsn::mesh::DEFAULT_ERODE_PX,
-        omm_subdiv: solari_bsn::mesh::DEFAULT_OMM_SUBDIV,
+        erode_px: aurora_bsn::mesh::DEFAULT_ERODE_PX,
+        omm_subdiv: aurora_bsn::mesh::DEFAULT_OMM_SUBDIV,
     };
     bake_gltf_per_group(&cfg);
 }

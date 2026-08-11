@@ -1,11 +1,11 @@
-//! San Miguel importer: configure [`solari_bsn::bake_scene`] for the San Miguel courtyard.
+//! San Miguel importer: configure [`aurora_bsn::bake_scene`] for the San Miguel courtyard.
 //!
 //!   cargo run --release -p san_miguel_import -- raw/San_Miguel/san-miguel.obj assets/san_miguel san_miguel
 
 use std::path::PathBuf;
 
 use clap::Parser;
-use solari_bsn::{bake_scene, SceneConfig, SubmeshFilter, SubmeshInfo};
+use aurora_bsn::{bake_scene, SceneConfig, SubmeshFilter, SubmeshInfo};
 
 /// Default texture stem isolated by `--cutout-only` (a flower petal cutmask).
 const DEFAULT_CUTOUT_TEX: &str = "FL11pet3";
@@ -32,10 +32,10 @@ struct Args {
     replace: bool,
     /// OMM cutout alpha-mask erosion radius in texels (pulls the conservative silhouette in;
     /// `0` disables, 1-3 useful).
-    #[arg(long, default_value_t = solari_bsn::mesh::DEFAULT_ERODE_PX)]
+    #[arg(long, default_value_t = aurora_bsn::mesh::DEFAULT_ERODE_PX)]
     erode: u32,
     /// Max OMM subdivision level (per-triangle cap; higher = finer cutout edge, larger data).
-    #[arg(long, default_value_t = solari_bsn::mesh::DEFAULT_OMM_SUBDIV)]
+    #[arg(long, default_value_t = aurora_bsn::mesh::DEFAULT_OMM_SUBDIV)]
     level: u32,
 }
 

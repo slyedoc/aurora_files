@@ -1,42 +1,46 @@
-# `.bsn` importer workspace: the `solari_bsn` library + per-asset importer binaries and a viewer.
-# Converts source OBJ/MTL or glTF into `bevy_solari` `.cluster_mesh` assets and a `.bsn` scene,
-# sidestepping glTF's lack of displacement/depth maps; `solari_view` renders the result.
+# `.bsn` importer workspace: the `aurora_bsn` library + per-asset importer binaries and a viewer.
+# Converts source OBJ/MTL or glTF into `bevy_aurora` `.cluster_mesh` assets and a `.bsn` scene,
+# sidestepping glTF's lack of displacement/depth maps; the viewer renders the result on aurora.
+#
+# `furnace` and `grader` are PARKED (excluded): they still render on the old wgpu solari stack
+# and aren't worth carrying until the rendering pass they exist to grade gets its own rework.
 [workspace]
 resolver = "3"
-members = ["crates/*", "importers/*"]
+members = ["crates/aurora_bsn", "crates/util", "crates/viewer", "crates/xtask", "importers/*"]
+exclude = ["crates/furnace", "crates/grader"]
 
 [workspace.dependencies]
-# Umbrella with defaults so `bevy::mesh` / `bevy::asset` / `bevy::solari` re-exports exist;
-# `cluster_processor` gates the `Mesh -> ClusterMesh` bake. Shared by solari_bsn and the importers.
-bevy = { path = "/mnt/code/f/bevy/.claude/worktrees/chore-research-slang", features = [
-  "bevy_solari",
-  "cluster_processor",
-  # Always on: the whole stack is NVIDIA-only anyway, and camera behavior
-  # UNDER DLSS RR is what any meaningful test measures.
-  "dlss",
-  # F1 world inspector in every tool.
-  "experimental_bevy_feathers_inspector",
-  # Watch bevy_solari's embedded .slang sources: saving a shader edit hot
-  # reloads the RT pipeline in a running viewer.
-  "embedded_watcher",
+# The same stacked-chain rev bevy_aurora pins (render-free: no bevy_render/wgpu anywhere in this
+# workspace anymore — the cluster bake and the wire-format writer live in bevy_aurora itself).
+# `bevy_animation` carries the `.animclip` parser the g1 importer round-trips.
+bevy = { git = "https://github.com/slyedoc/bevy.git", rev = "57eaac32c22ac591472ddc5c05fcc4770996508b", default-features = false, features = [
+  "default_app",
+  "default_platform",
+  "common_api",
+  "std",
+  "multi_threaded",
+  "transform_f64",
+  "scene",
+  "serialize",
+  "bevy_animation",
+  "bevy_camera",
+  "bevy_mesh",
+  "bevy_mikktspace",
+  "bevy_image",
+  "bevy_color",
+  "png",
+  "jpeg",
+  "ktx2",
+  "zstd_rust",
 ] }
+# The engine: `ClusterMesh` + `write_cluster_mesh_sync` (the SACRED wire format) + the
+# Mesh -> ClusterMesh bake, and everything the viewer renders with.
+bevy_aurora = { path = "/home/slyedoc/code/p/bevy_aurora" }
 # CLI parsing for the importer binaries.
 clap = { version = "4", features = ["derive"] }
 
-# bevy_solari pulls forked wgpu/naga/ash; this workspace must mirror the bevy workspace's patch
-# table (the worktree's root Cargo.toml `[patch.crates-io]`). Patches only apply at the workspace
-# root, so they live here rather than in any member crate.
+# bevy_aurora pins ash git master (NV cluster/PTLAS extensions); the patch must live at THIS
+# workspace root to apply.
 [patch.crates-io]
-# Mirror the chore-research-slang worktree's patch table: the descriptor-heap work lives on the
-# wgpu-slang checkout (branch solari-slang — view/sampler create-info accessors, Sampler::as_hal,
-# heap ride-along extensions), which the older /mnt/code/f/wgpu checkout lacks.
-wgpu             = { path = "/mnt/code/f/wgpu-slang/wgpu" }
-wgpu-core        = { path = "/mnt/code/f/wgpu-slang/wgpu-core" }
-wgpu-hal         = { path = "/mnt/code/f/wgpu-slang/wgpu-hal" }
-wgpu-types       = { path = "/mnt/code/f/wgpu-slang/wgpu-types" }
-wgpu-naga-bridge = { path = "/mnt/code/f/wgpu-slang/wgpu-naga-bridge" }
-naga             = { path = "/mnt/code/f/wgpu-slang/naga" }
-# Stock naga_oil pinned at the wgpu-29 update, same as the worktree.
-naga_oil         = { path = "/mnt/code/f/naga_oil-slang" }
-ash              = { git = "https://github.com/ash-rs/ash.git", branch = "master" }
-gpu-allocator    = { git = "https://github.com/slyedoc/gpu-allocator.git", branch = "ash-push-rename" }
+ash = { git = "https://github.com/ash-rs/ash", rev = "f4c2ca3e4f6b998d5254ad101a32f024d87cdec2" }
+ash-window = { git = "https://github.com/ash-rs/ash", rev = "f4c2ca3e4f6b998d5254ad101a32f024d87cdec2" }

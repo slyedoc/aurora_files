@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use bevy::asset::RenderAssetUsages;
 use bevy::math::Mat4;
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
-use bevy::solari::geometry::{write_cluster_mesh_sync, ClusterMesh};
+use bevy_aurora::geometry::{write_cluster_mesh_sync, ClusterMesh};
 
 use crate::{bsn, mesh};
 
@@ -522,9 +522,7 @@ fn attach_primitive_omm(prim: &gltf::Primitive, cm: &mut ClusterMesh, ctx: &mut 
     let Some(info) = material.pbr_metallic_roughness().base_color_texture() else {
         return;
     };
-    let Some(source) = info.texture().source() else {
-        return;
-    };
+    let source = info.texture().source();
     let idx = source.index();
     // Copy the shared field references out so they don't hold the `&mut Ctx` reborrow
     // across the `decoded_alpha` entry.
@@ -761,7 +759,7 @@ fn material_fields(material: &gltf::Material, ctx: &Ctx) -> String {
 /// A texture's extracted file as an asset-prefixed path: texture → source image → filename.
 /// `None` if the texture has no image source or the image wasn't extracted.
 fn tex_file(tex: gltf::Texture, ctx: &Ctx) -> Option<String> {
-    let img_idx = tex.source()?.index();
+    let img_idx = tex.source().index();
     let image = ctx.image_files.get(&img_idx)?;
     Some(format!("{}/textures/{}", ctx.asset_prefix, image))
 }

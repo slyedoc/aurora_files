@@ -2,7 +2,7 @@
 //! target/curve counts, and confirm a node's Name-PATH hashes to a key present in the clip. That
 //! is the writer/reader + name-path-binding contract, checked without a GPU or a running app.
 //!
-//! Lives next to the writer (`solari_bsn::transcode_gltf_to_animclip`) on purpose — the binary
+//! Lives next to the writer (`aurora_bsn::transcode_gltf_to_animclip`) on purpose — the binary
 //! layout is defined in two places and they must agree byte-for-byte, so the check that they do
 //! belongs with the half this repo owns. The reader is `bevy_animation::animclip`.
 //!

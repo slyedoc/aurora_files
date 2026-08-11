@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use solari_bsn::{bake_gltf_hierarchy, bake_gltf_per_group, bake_gltf_scene, GltfConfig};
+use aurora_bsn::{bake_gltf_hierarchy, bake_gltf_per_group, bake_gltf_scene, GltfConfig};
 
 #[derive(Parser)]
 #[command(about = "Bake a normalized prop glb → .cluster_mesh + .bsn")]
@@ -46,7 +46,7 @@ struct Args {
     anim: Option<PathBuf>,
     /// Multiply every emissive that ships no `KHR_materials_emissive_strength` by this, in nits.
     /// The rescue hatch for factor-convention sources (glTF clamps `emissiveFactor` to [0,1], so
-    /// pre-extension assets encode emitters in 0..1 and render ~1000x too dim). See `solari_bsn::lint`.
+    /// pre-extension assets encode emitters in 0..1 and render ~1000x too dim). See `aurora_bsn::lint`.
     #[arg(long)]
     emissive_nits: Option<f32>,
     /// Re-bake `.cluster_mesh` files even if they already exist.
@@ -107,8 +107,8 @@ fn main() {
         replace: args.replace,
         root_components,
         emissive_nits,
-        erode_px: solari_bsn::mesh::DEFAULT_ERODE_PX,
-        omm_subdiv: solari_bsn::mesh::DEFAULT_OMM_SUBDIV,
+        erode_px: aurora_bsn::mesh::DEFAULT_ERODE_PX,
+        omm_subdiv: aurora_bsn::mesh::DEFAULT_OMM_SUBDIV,
     };
 
     if args.per_group {
@@ -120,7 +120,7 @@ fn main() {
     }
 
     if let Some(anim_src) = &args.anim {
-        match solari_bsn::transcode_gltf_to_animclip(anim_src, &clip_dst) {
+        match aurora_bsn::transcode_gltf_to_animclip(anim_src, &clip_dst) {
             Ok(n) => println!(
                 "transcoded {n} animation target(s) -> {}",
                 clip_dst.display()

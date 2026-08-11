@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use solari_bsn::{bake_gltf_scene, GltfConfig};
+use aurora_bsn::{bake_gltf_scene, GltfConfig};
 
 #[derive(Parser)]
 #[command(about = "Bake the hoverboard glb → .cluster_mesh + .bsn (texture-free)")]
@@ -60,8 +60,8 @@ fn main() {
         replace: args.replace,
         root_components: String::new(),
         emissive_nits: Some(emissive_nits),
-        erode_px: solari_bsn::mesh::DEFAULT_ERODE_PX,
-        omm_subdiv: solari_bsn::mesh::DEFAULT_OMM_SUBDIV,
+        erode_px: aurora_bsn::mesh::DEFAULT_ERODE_PX,
+        omm_subdiv: aurora_bsn::mesh::DEFAULT_OMM_SUBDIV,
     };
     bake_gltf_scene(&cfg);
 }
