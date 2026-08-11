@@ -33,8 +33,15 @@ use util::{
 #[derive(Parser, Resource, Clone)]
 #[command(name = "aurora_view", about = "Aurora .bsn scene viewer")]
 struct Args {
-    /// Scene path under `assets/` (e.g. `bistro/bistro.bsn`).
-    scene: String,
+    /// One or more `.bsn` scenes — asset-relative (`bistro/bistro.bsn`) or
+    /// filesystem paths (shell globs like `assets/lunarbase/*` work: non-.bsn
+    /// entries are skipped). Multiple scenes lay out in a grid.
+    #[arg(required = true)]
+    scenes: Vec<String>,
+
+    /// Grid spacing between scenes (m).
+    #[arg(long, default_value_t = 20.0)]
+    spacing: f32,
 
     /// Camera start position, `x,y,z`.
     #[arg(long, default_value = "-10.0,2.0,-2.0", value_parser = parse_vec3)]
@@ -82,7 +89,10 @@ fn main() {
     App::new()
         .add_plugins(AuroraPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: format!("aurora_view — {}", args.scene),
+                title: match args.scenes.as_slice() {
+                    [one] => format!("aurora_view — {one}"),
+                    many => format!("aurora_view — {} scenes", many.len()),
+                },
                 ..default()
             }),
             ..default()
@@ -100,15 +110,43 @@ fn main() {
         .run();
 }
 
+/// A scene arg as the asset server wants it: filesystem paths (absolute,
+/// cwd-relative, or `assets/`-prefixed — what shell globs produce) reduce to
+/// asset-root-relative; non-`.bsn` entries (globbed dirs) are dropped.
+fn normalize(raw: &str) -> Option<String> {
+    if !raw.ends_with(".bsn") {
+        warn!("aurora_view: skipping non-.bsn arg {raw}");
+        return None;
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+    if let (Ok(abs), Ok(root)) = (std::fs::canonicalize(raw), std::fs::canonicalize(&root))
+        && let Ok(rel) = abs.strip_prefix(&root)
+    {
+        return Some(rel.to_string_lossy().into_owned());
+    }
+    Some(raw.strip_prefix("assets/").unwrap_or(raw).to_string())
+}
+
 fn setup(mut commands: Commands, args: Res<Args>, asset_server: Res<AssetServer>) {
-    // Root with a Transform: the scene patch parents its entities here, and
-    // aurora's transform graph composes children against this basis.
-    commands.spawn((
-        Name::new(args.scene.clone()),
-        Transform::default(),
-        Visibility::Visible,
-        ScenePatchInstance(asset_server.load(&args.scene)),
-    ));
+    // Each scene gets a root with a Transform: the patch parents its entities
+    // there, and aurora's transform graph composes children against that
+    // basis. Multiple scenes tile a square grid — the KB3D group `.bsn`s are
+    // origin-centered props, so a kit browses as rows of pedestals.
+    let scenes: Vec<String> = args.scenes.iter().filter_map(|s| normalize(s)).collect();
+    let cols = (scenes.len() as f32).sqrt().ceil().max(1.0) as usize;
+    for (i, scene) in scenes.iter().enumerate() {
+        let (col, row) = (i % cols, i / cols);
+        commands.spawn((
+            Name::new(scene.clone()),
+            Transform::from_xyz(
+                col as f64 * args.spacing as f64,
+                0.0,
+                row as f64 * args.spacing as f64,
+            ),
+            Visibility::Visible,
+            ScenePatchInstance(asset_server.load(scene)),
+        ));
+    }
 
     commands.spawn((
         Name::new("sun"),
