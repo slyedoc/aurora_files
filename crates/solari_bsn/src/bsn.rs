@@ -64,8 +64,8 @@ pub fn write_entity(
     let _ = write!(
         out,
         "    bevy_transform::components::transform::Transform {{ {transform} }}\n    \
-         bevy_solari::bindings::types::RaytracingMesh3d(\"{asset_prefix}/meshes/{mesh_stem}.cluster_mesh\")\n    \
-         bevy_solari::material::SolariMaterial3d(bevy_solari::material::StandardSolariMaterial {{{}}}),\n\n",
+         bevy_aurora::bindings::types::RaytracingMesh3d(\"{asset_prefix}/meshes/{mesh_stem}.cluster_mesh\")\n    \
+         bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::StandardAuroraMaterial {{{}}}),\n\n",
         material_fields(asset_prefix, material, is_cutmask, displacement_maps),
     );
 }
@@ -102,7 +102,7 @@ fn material_fields(
     if is_cutmask {
         let _ = write!(
             fields,
-            " alpha_mode: bevy_material::alpha::AlphaMode::Mask({:?}),",
+            " alpha_mode: bevy_aurora::material::alpha::AlphaMode::Mask({:?}),",
             img::MASK_CUTOFF,
         );
     }
@@ -136,8 +136,8 @@ pub fn write_entity_trs(
          translation: glam::DVec3 {{ x: {}, y: {}, z: {} }}, \
          rotation: glam::DQuat {{ x: {}, y: {}, z: {}, w: {} }}, \
          scale: glam::DVec3 {{ x: {}, y: {}, z: {} }} }}\n    \
-         bevy_solari::bindings::types::RaytracingMesh3d(\"{asset_prefix}/meshes/{mesh_stem}.cluster_mesh\")\n    \
-         bevy_solari::material::SolariMaterial3d(bevy_solari::material::StandardSolariMaterial {{{material_fields}}}),\n\n",
+         bevy_aurora::bindings::types::RaytracingMesh3d(\"{asset_prefix}/meshes/{mesh_stem}.cluster_mesh\")\n    \
+         bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::StandardAuroraMaterial {{{material_fields}}}),\n\n",
         f(tx), f(ty), f(tz),
         f(qx), f(qy), f(qz), f(qw),
         f(sx), f(sy), f(sz),

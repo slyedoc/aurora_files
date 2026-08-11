@@ -442,8 +442,8 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
     if let Some(stem) = prims.first() {
         let _ = write!(
             out,
-            "{pad}bevy_solari::bindings::types::RaytracingMesh3d(\"{}/meshes/{stem}.cluster_mesh\")\n\
-             {pad}bevy_solari::material::SolariMaterial3d(bevy_solari::material::StandardSolariMaterial {{{mat_fields}}})\n",
+            "{pad}bevy_aurora::bindings::types::RaytracingMesh3d(\"{}/meshes/{stem}.cluster_mesh\")\n\
+             {pad}bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::StandardAuroraMaterial {{{mat_fields}}})\n",
             ctx.asset_prefix,
         );
         ctx.emitted += 1;
@@ -464,8 +464,8 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
             kids,
             "{cpad}bevy_ecs::name::Name(\"{name}#{i}\")\n\
              {cpad}bevy_transform::components::transform::Transform {{ translation: glam::DVec3 {{ x: 0.0, y: 0.0, z: 0.0 }}, rotation: glam::DQuat {{ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }}, scale: glam::DVec3 {{ x: 1.0, y: 1.0, z: 1.0 }} }}\n\
-             {cpad}bevy_solari::bindings::types::RaytracingMesh3d(\"{}/meshes/{stem}.cluster_mesh\")\n\
-             {cpad}bevy_solari::material::SolariMaterial3d(bevy_solari::material::StandardSolariMaterial {{{mat}}}),\n",
+             {cpad}bevy_aurora::bindings::types::RaytracingMesh3d(\"{}/meshes/{stem}.cluster_mesh\")\n\
+             {cpad}bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::StandardAuroraMaterial {{{mat}}}),\n",
             ctx.asset_prefix,
         );
         ctx.emitted += 1;
@@ -736,7 +736,7 @@ fn material_fields(material: &gltf::Material, ctx: &Ctx) -> String {
         let cutoff = material.alpha_cutoff().unwrap_or(0.5);
         let _ = write!(
             fields,
-            " alpha_mode: bevy_material::alpha::AlphaMode::Mask({}),",
+            " alpha_mode: bevy_aurora::material::alpha::AlphaMode::Mask({}),",
             bsn::f(cutoff)
         );
     }

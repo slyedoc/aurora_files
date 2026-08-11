@@ -435,7 +435,7 @@ fn material_fields(material: &gltf::Material, cut: bool, ctx: &Tree) -> String {
         let _ = write!(f, " normal_map_texture: \"{}/textures/{p}\",", ctx.cfg.asset_prefix);
     }
     if cut {
-        let _ = write!(f, " alpha_mode: bevy_material::alpha::AlphaMode::Mask({}),", bsn::f(img::MASK_CUTOFF));
+        let _ = write!(f, " alpha_mode: bevy_aurora::material::alpha::AlphaMode::Mask({}),", bsn::f(img::MASK_CUTOFF));
     }
     f
 }
