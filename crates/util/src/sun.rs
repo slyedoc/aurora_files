@@ -8,7 +8,6 @@ use bevy::{
     light::light_consts::lux,
     math::DQuat,
     prelude::*,
-    solari::prelude::*,
 };
 use core::any::TypeId;
 

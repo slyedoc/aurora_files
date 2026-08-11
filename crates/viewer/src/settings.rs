@@ -7,7 +7,7 @@ use bevy::{
         self,
         controls::FeathersCheckbox,
         theme::{ThemeBackgroundColor, ThemedText},
-    }, prelude::*, solari::prelude::*, ui::Checked, ui_widgets::{
+    }, prelude::*, ui::Checked, ui_widgets::{
         ValueChange, checkbox_self_update,
     },
 };

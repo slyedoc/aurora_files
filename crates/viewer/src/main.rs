@@ -34,8 +34,7 @@ use bevy::{
     ui::{ComputedNode, OverflowAxis, ScrollPosition},
     pbr::PbrPlugin,
     prelude::*,
-    render::render_resource::TextureUsages,
-    solari::prelude::*,
+    render::render_resource::TextureUsages,    
     window::{PresentMode, WindowResolution},
     winit::WinitSettings,
 };

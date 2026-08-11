@@ -1515,8 +1515,6 @@ dependencies = [
  "libloading",
  "lz4_flex",
  "meshopt",
- "naga",
- "naga_oil",
  "range-alloc",
  "ron",
  "serde",
