@@ -12,7 +12,7 @@ name = "bake_person"
 path = "src/main.rs"
 
 [dependencies]
-bevy_aurora = { path = "/home/slyedoc/code/p/bevy_aurora" }
+bevy_aurora = { path = "../../../bevy_aurora" }
 make_human = { path = "../../crates/make_human", features = ["aurora"] }
 bevy = { git = "https://github.com/bevyengine/bevy", branch = "main", default-features = false, features = [
     # aurora's baseline

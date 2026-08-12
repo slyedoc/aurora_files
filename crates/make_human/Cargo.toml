@@ -19,7 +19,7 @@ debug_draw = ["bevy/default_font"]
 aurora = []
 
 [dependencies]
-bevy_aurora = { path = "/home/slyedoc/code/p/bevy_aurora" }
+bevy_aurora = { path = "../../../bevy_aurora" }
 bevy = { git = "https://github.com/bevyengine/bevy", branch = "main", default-features = false, features = [
     "bevy_asset",
     "bevy_scene",
@@ -49,7 +49,7 @@ bevy = { git = "https://github.com/bevyengine/bevy", branch = "main", default-fe
 avian3d = { git = "https://github.com/avianphysics/avian", branch = "main", default-features = false, features = ["3d", "f32", "parry-f32", "default-collider", "xpbd_joints", "parallel", "collider-from-mesh", "bevy_scene", "bevy_picking"] }
 # NOTE: the "2d" feature (TextureAtlas dynamic assets) pulled dep:bevy_render —
 # dropped with the render stack.
-bevy_asset_loader = { path = "/mnt/code/f/bevy_asset_loader/bevy_asset_loader", features = [
+bevy_asset_loader = { git = "https://github.com/slyedoc/bevy_asset_loader", branch = "aurora", features = [
     "standard_dynamic_assets",
 ] }
 bevy_enhanced_input = { git = "https://github.com/simgine/bevy_enhanced_input", branch = "master", default-features = false }

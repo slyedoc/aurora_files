@@ -461,6 +461,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 [[package]]
 name = "avian3d"
 version = "0.8.0-dev"
+source = "git+https://github.com/slyedoc/avian?branch=aurora#c36fbc8a45bec3f19af1946849c5b715fb81116e"
 dependencies = [
  "approx",
  "avian_derive",
@@ -484,6 +485,7 @@ dependencies = [
 [[package]]
 name = "avian_derive"
 version = "0.2.3"
+source = "git+https://github.com/slyedoc/avian?branch=aurora#c36fbc8a45bec3f19af1946849c5b715fb81116e"
 dependencies = [
  "proc-macro-error3",
  "proc-macro2",
@@ -691,6 +693,7 @@ dependencies = [
 [[package]]
 name = "bevy_asset_loader"
 version = "0.27.0"
+source = "git+https://github.com/slyedoc/bevy_asset_loader?branch=aurora#5f058cff05f1c65ed1204635afa013fd407480d5"
 dependencies = [
  "anyhow",
  "bevy_app",
@@ -710,6 +713,7 @@ dependencies = [
 [[package]]
 name = "bevy_asset_loader_derive"
 version = "0.27.0"
+source = "git+https://github.com/slyedoc/bevy_asset_loader?branch=aurora#5f058cff05f1c65ed1204635afa013fd407480d5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1160,7 +1164,7 @@ dependencies = [
 [[package]]
 name = "bevy_heavy"
 version = "0.4.0-dev"
-source = "git+https://github.com/slyedoc/bevy_heavy?branch=bevy-main#313717a4bfc24279db6b535d093fcb8701487091"
+source = "git+https://github.com/slyedoc/bevy_heavy?branch=aurora#fe4a450dd7c13b4596df97e718117021b1122c77"
 dependencies = [
  "bevy_math",
  "bevy_reflect",
@@ -1859,7 +1863,7 @@ dependencies = [
 [[package]]
 name = "bevy_transform_interpolation"
 version = "0.4.0-dev"
-source = "git+https://github.com/slyedoc/bevy_transform_interpolation?branch=bevy-main#524c59f579dc54b84d12fdc95012ce2b91424551"
+source = "git+https://github.com/slyedoc/bevy_transform_interpolation?branch=aurora#524c59f579dc54b84d12fdc95012ce2b91424551"
 dependencies = [
  "bevy",
 ]
@@ -3283,7 +3287,7 @@ dependencies = [
 [[package]]
 name = "glam_matrix_extras"
 version = "0.2.0-dev"
-source = "git+https://github.com/slyedoc/glam_matrix_extras?branch=bevy-main#c944964ae94c56da39228a0c246a01bfa6de03d8"
+source = "git+https://github.com/slyedoc/glam_matrix_extras?branch=aurora#c944964ae94c56da39228a0c246a01bfa6de03d8"
 dependencies = [
  "bevy_reflect",
  "glam",
