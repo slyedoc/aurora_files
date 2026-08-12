@@ -298,7 +298,7 @@ dependencies = [
 [[package]]
 name = "ash"
 version = "0.38.0+1.4.352"
-source = "git+https://github.com/ash-rs/ash?rev=f4c2ca3e4f6b998d5254ad101a32f024d87cdec2#f4c2ca3e4f6b998d5254ad101a32f024d87cdec2"
+source = "git+https://github.com/slyedoc/ash?branch=aurora#f4c2ca3e4f6b998d5254ad101a32f024d87cdec2"
 dependencies = [
  "libloading",
 ]
@@ -306,7 +306,7 @@ dependencies = [
 [[package]]
 name = "ash-window"
 version = "0.13.0"
-source = "git+https://github.com/ash-rs/ash?rev=f4c2ca3e4f6b998d5254ad101a32f024d87cdec2#f4c2ca3e4f6b998d5254ad101a32f024d87cdec2"
+source = "git+https://github.com/slyedoc/ash?branch=aurora#f4c2ca3e4f6b998d5254ad101a32f024d87cdec2"
 dependencies = [
  "ash",
  "raw-window-handle",

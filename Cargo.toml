@@ -49,8 +49,8 @@ clap = { version = "4", features = ["derive"] }
 # bevy_aurora pins ash git master (NV cluster/PTLAS extensions); the patch must live at THIS
 # workspace root to apply.
 [patch.crates-io]
-ash = { git = "https://github.com/ash-rs/ash", rev = "f4c2ca3e4f6b998d5254ad101a32f024d87cdec2" }
-ash-window = { git = "https://github.com/ash-rs/ash", rev = "f4c2ca3e4f6b998d5254ad101a32f024d87cdec2" }
+ash = { git = "https://github.com/slyedoc/ash", branch = "aurora" }
+ash-window = { git = "https://github.com/slyedoc/ash", branch = "aurora" }
 
 # make_human's manifest reaches bevy/avian/enhanced_input by their upstream
 # URLs (same convention as zero); redirect them onto the one stacked graph.
