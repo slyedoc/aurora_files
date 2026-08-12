@@ -1002,7 +1002,7 @@ dependencies = [
 [[package]]
 name = "bevy_enhanced_input"
 version = "0.26.0"
-source = "git+https://github.com/slyedoc/bevy_enhanced_input?branch=bevy-main#120b9dfe3e19a6ce4f4cb4c1265565838151e240"
+source = "git+https://github.com/slyedoc/bevy_enhanced_input?branch=aurora#120b9dfe3e19a6ce4f4cb4c1265565838151e240"
 dependencies = [
  "bevy",
  "bevy_enhanced_input_macros",
@@ -1015,7 +1015,7 @@ dependencies = [
 [[package]]
 name = "bevy_enhanced_input_macros"
 version = "0.26.0"
-source = "git+https://github.com/slyedoc/bevy_enhanced_input?branch=bevy-main#120b9dfe3e19a6ce4f4cb4c1265565838151e240"
+source = "git+https://github.com/slyedoc/bevy_enhanced_input?branch=aurora#120b9dfe3e19a6ce4f4cb4c1265565838151e240"
 dependencies = [
  "proc-macro2",
  "quote",
