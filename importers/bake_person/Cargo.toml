@@ -1,0 +1,61 @@
+# Person bake: the const CAST -> baked skinned prefabs (people/<name>.bsn +
+# self-contained meshes/textures) written into the consuming game's assets.
+# A content pipeline step, not a demo — reads the raw/make_human library.
+[package]
+name = "bake_person"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "bake_person"
+path = "src/main.rs"
+
+[dependencies]
+bevy_aurora = { path = "/home/slyedoc/code/p/bevy_aurora" }
+make_human = { path = "../../crates/make_human", features = ["aurora"] }
+bevy = { git = "https://github.com/bevyengine/bevy", branch = "main", default-features = false, features = [
+    # aurora's baseline
+    "default_app",
+    "default_platform",
+    "common_api",
+    "std",
+    "multi_threaded",
+    "transform_f64",
+    "bevy_winit",
+    "x11",
+    "wayland",
+    "scene",
+    "serialize",
+    "bevy_animation",
+    "bevy_camera",
+    "bevy_ui",
+    "bevy_ui_widgets",
+    "ui_picking",
+    "bevy_input_focus",
+    "bevy_feathers_core",
+    "bevy_camera_controller",
+    "free_camera",
+    "bevy_light",
+    "bevy_mesh",
+    "bevy_mikktspace",
+    "bevy_image",
+    "bevy_color",
+    "png",
+    "ktx2",
+    "zstd_rust",
+    "default_font",
+    # zero's additions (all render-free at this rev)
+    "bevy_audio",
+    "vorbis",
+    "wav",
+    "jpeg",
+    "bevy_gltf",
+    "bevy_gizmos",
+    "bevy_settings",
+    "picking",
+    "file_watcher",
+    "asset_processor",
+    "embedded_watcher",
+] }
+clap = { version = "4.5", features = ["derive"] }

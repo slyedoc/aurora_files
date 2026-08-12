@@ -1,0 +1,67 @@
+[package]
+name = "make_human"
+description = "MakeHuman integration for Bevy"
+keywords = ["bevy", "makehuman", "gamedev"]
+categories = ["game-development"]
+version = "0.1.1"
+edition = "2024"
+
+[features]
+default = ["debug_draw", "arkit"]
+# MIGRATE(make_human): clearcoat eye gloss needed bevy_pbr's multi-layer
+# material textures; StandardSolariMaterial has no clearcoat. Feature is inert.
+glossy_eyes = []
+arkit = []
+debug_draw = ["bevy/default_font"]
+# Emit ClusterMesh/RaytracingMesh3d instead of Mesh3d, for the aurora RT path.
+# (bevy_aurora is unconditional now: the material type is StandardSolariMaterial
+# either way, since bevy_pbr's StandardMaterial left the render-free stack.)
+aurora = []
+
+[dependencies]
+bevy_aurora = { path = "/home/slyedoc/code/p/bevy_aurora" }
+bevy = { git = "https://github.com/bevyengine/bevy", branch = "main", default-features = false, features = [
+    "bevy_asset",
+    "bevy_scene",
+    "bevy_animation",
+    # morph target weights (ARKit blend shapes) — render-free at this rev
+    "morph_animation",
+    "bevy_state",
+    "bevy_log",
+    "std",
+    "multi_threaded",
+    "transform_f64",
+    "bevy_camera",
+    "bevy_mesh",
+    "bevy_image",
+    "bevy_color",
+    "bevy_ui",
+    "bevy_ui_widgets",
+    "ui_picking",
+    "picking",
+    "bevy_input_focus",
+    "bevy_feathers_core",
+    "png",
+    "jpeg",
+    "serialize",
+    "default_font",
+] }
+avian3d = { git = "https://github.com/avianphysics/avian", branch = "main", default-features = false, features = ["3d", "f32", "parry-f32", "default-collider", "xpbd_joints", "parallel", "collider-from-mesh", "bevy_scene", "bevy_picking"] }
+# NOTE: the "2d" feature (TextureAtlas dynamic assets) pulled dep:bevy_render —
+# dropped with the render stack.
+bevy_asset_loader = { path = "/mnt/code/f/bevy_asset_loader/bevy_asset_loader", features = [
+    "standard_dynamic_assets",
+] }
+bevy_enhanced_input = { git = "https://github.com/simgine/bevy_enhanced_input", branch = "master", default-features = false }
+obj = "0.10.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+strum = { version = "0.27", features = ["derive"] }
+thiserror = "2.0"
+
+[build-dependencies]
+serde_json = "1.0"
+
+[lints.clippy]
+type_complexity = "allow"
+too_many_arguments = "allow"
