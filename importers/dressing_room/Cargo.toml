@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 bevy_aurora = { path = "../../../bevy_aurora" }
-make_human = { path = "../../crates/make_human", features = ["aurora"] }
+make_human = { path = "../../../make_human", features = ["aurora"] }
 bevy = { git = "https://github.com/bevyengine/bevy", branch = "main", default-features = false, features = [
     # aurora's baseline
     "default_app",

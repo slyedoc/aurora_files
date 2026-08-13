@@ -1,11 +1,13 @@
-//! General `.bsn` scene viewer on aurora — load any importer-baked scene under
+//! `bsn` — general `.bsn` scene viewer on aurora: load any baked scene under
 //! full ray tracing and fly a free camera through it.
 //!
-//!   cargo run --release -p aurora_view -- bistro/bistro.bsn
-//!   cargo run --release -p aurora_view -- san_miguel/SanMiguel.bsn --pos -8,2,4
+//!   cargo run --release -p bsn -- bistro/bistro.bsn
+//!   bsn assets/people/player.bsn        (installed, from any repo)
 //!
-//! Scene paths are relative to this workspace's `assets/` root (the bake
-//! output), which is also what the `.bsn`'s own mesh/texture strings assume.
+//! The asset root is `$BEVY_ASSET_ROOT` if set, else the current directory
+//! when it has an `assets/` folder (so the installed binary works from any
+//! repo), else this workspace. Scene paths resolve against that root, which
+//! is also what the `.bsn`'s own mesh/texture strings assume.
 //! `--timeout` auto-exits (always on under CLAUDECODE); F12 screenshots.
 //!
 //! This is the aurora rewrite of the old 1000-line fork viewer: the debug
@@ -31,7 +33,7 @@ use util::{
 };
 
 #[derive(Parser, Resource, Clone)]
-#[command(name = "aurora_view", about = "Aurora .bsn scene viewer")]
+#[command(name = "bsn", about = "Aurora .bsn scene viewer")]
 struct Args {
     /// One or more `.bsn` scenes — asset-relative (`bistro/bistro.bsn`) or
     /// filesystem paths (shell globs like `assets/lunarbase/*` work: non-.bsn
@@ -74,15 +76,18 @@ fn parse_vec3(s: &str) -> Result<Vec3, String> {
 }
 
 fn main() {
-    // Scene paths are workspace-assets-relative; bevy's asset root otherwise
-    // resolves to this crate's own (nonexistent) assets/. Overridable as ever.
+    // Root rule: explicit $BEVY_ASSET_ROOT > the current repo (a cwd with an
+    // assets/ dir — the installed-binary case) > this workspace (dev runs
+    // from crate dirs, where cwd has no assets/).
     if std::env::var_os("BEVY_ASSET_ROOT").is_none() {
+        let root = if std::path::Path::new("assets").is_dir() {
+            std::env::current_dir().expect("cwd")
+        } else {
+            std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+        };
         // SAFETY: single-threaded — before App construction spawns anything.
         unsafe {
-            std::env::set_var(
-                "BEVY_ASSET_ROOT",
-                concat!(env!("CARGO_MANIFEST_DIR"), "/../.."),
-            );
+            std::env::set_var("BEVY_ASSET_ROOT", &root);
         }
     }
     let args = Args::parse();
@@ -90,14 +95,17 @@ fn main() {
         .add_plugins(AuroraPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: match args.scenes.as_slice() {
-                    [one] => format!("aurora_view — {one}"),
-                    many => format!("aurora_view — {} scenes", many.len()),
+                    [one] => format!("bsn — {one}"),
+                    many => format!("bsn — {} scenes", many.len()),
                 },
                 ..default()
             }),
             ..default()
         }))
         .add_plugins((SunPlugin, HoverParkPlugin))
+        // Baked-person prefabs carry this marker; registering it is all a
+        // viewer needs to load them (no hydration — bind pose renders as-is).
+        .register_type::<make_human::BakedPerson>()
         .insert_resource(SunSettings {
             enabled: true,
             azimuth: args.azimuth,
@@ -115,10 +123,10 @@ fn main() {
 /// asset-root-relative; non-`.bsn` entries (globbed dirs) are dropped.
 fn normalize(raw: &str) -> Option<String> {
     if !raw.ends_with(".bsn") {
-        warn!("aurora_view: skipping non-.bsn arg {raw}");
+        warn!("bsn: skipping non-.bsn arg {raw}");
         return None;
     }
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+    let root = std::path::PathBuf::from(std::env::var_os("BEVY_ASSET_ROOT").expect("set in main")).join("assets");
     if let (Ok(abs), Ok(root)) = (std::fs::canonicalize(raw), std::fs::canonicalize(&root))
         && let Ok(rel) = abs.strip_prefix(&root)
     {

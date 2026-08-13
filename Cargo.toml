@@ -8,9 +8,8 @@
 resolver = "3"
 members = [
   "crates/aurora_bsn",
-  "crates/make_human",
   "crates/util",
-  "crates/viewer",
+  "crates/bsn",
   "crates/xtask",
   "importers/*",
 ]

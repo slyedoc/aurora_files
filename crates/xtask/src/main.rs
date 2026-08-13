@@ -64,7 +64,7 @@ fn main() {
 
     let status = match Task::parse() {
         Task::Furnace(p) => tool(root, "solari_furnace", &p.args),
-        Task::View(p) => tool(root, "solari_view", &p.args),
+        Task::View(p) => tool(root, "bsn", &p.args),
         Task::Grade(p) => tool(root, "solari_grader", &p.args),
         Task::Truth(p) => truth(root, &p.args),
         Task::Report => report(root),
