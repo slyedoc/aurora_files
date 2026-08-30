@@ -46,10 +46,6 @@ struct Args {
     /// Seconds before auto-exit.
     #[arg(long, short)]
     timeout: Option<f32>,
-
-    /// Start with frame accumulation on (converges while the camera is still; Space toggles).
-    #[arg(long)]
-    accumulate: bool,
 }
 
 fn parse_vec3(s: &str) -> Result<Vec3, String> {
@@ -134,7 +130,6 @@ fn setup(
     // lights baked scenes evenly instead of the white fallback texture blowing them out.
     render_config.skydome = None;
     render_config.sky_color = Vec4::new(0.75, 0.85, 1.0, 0.0) * 1.5;
-    render_config.accumulate = args.accumulate;
 
     if let Ok(mut window) = windows.single_mut() {
         window.title = match args.scenes.as_slice() {
