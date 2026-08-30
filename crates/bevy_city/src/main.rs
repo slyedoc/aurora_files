@@ -13,7 +13,6 @@
 
 use bevy::{
     camera_controller::free_camera::{FreeCamera, FreeCameraPlugin},
-    diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     prelude::*,
 };
 use bevy_aurora::{
@@ -110,15 +109,10 @@ fn main() {
         filter: util::LOG_FILTER.into(),
         ..default()
     }));
-    app.add_plugins((
-        DevShaderPlugin,
-        DevUIPlugin,
-        FreeCameraPlugin::default(),
-        FrameTimeDiagnosticsPlugin::default(),
-    ));
+    app.add_plugins((DevShaderPlugin, DevUIPlugin, FreeCameraPlugin::default()));
     app.insert_resource(args.clone());
     app.add_systems(Startup, (setup, load_assets, spawn).chain());
-    app.add_systems(Update, (simulate_cars, log_fps));
+    app.add_systems(Update, simulate_cars);
     if let Some(seconds) = timeout {
         app.insert_resource(Timeout(seconds));
         app.add_systems(Update, exit_on_timeout);
@@ -209,20 +203,6 @@ fn simulate_cars(args: Res<Args>, mut cars: Query<(&mut Car, &mut Transform)>, t
             }
             transforms.mark_all_as_changed();
         });
-}
-
-/// Average frame rate, logged every five seconds (for headless runs and comparisons).
-fn log_fps(diagnostics: Res<DiagnosticsStore>, time: Res<Time>, mut last: Local<f32>) {
-    if time.elapsed_secs() - *last < 5.0 {
-        return;
-    }
-    *last = time.elapsed_secs();
-    if let Some(fps) = diagnostics
-        .get(&FrameTimeDiagnosticsPlugin::FPS)
-        .and_then(|d| d.average())
-    {
-        info!("fps: {fps:.1} (t = {:.0}s)", time.elapsed_secs());
-    }
 }
 
 fn exit_on_timeout(time: Res<Time>, timeout: Res<Timeout>, mut exit: MessageWriter<AppExit>) {
