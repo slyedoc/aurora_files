@@ -622,7 +622,14 @@ fn material_fields(material: &gltf::Material, ctx: &Ctx) -> String {
             bsn::f(bc[0]), bsn::f(bc[1]), bsn::f(bc[2]), bsn::f(bc[3]),
         );
     }
-    let metallic = pbr.metallic_factor();
+    // glTF's metallicFactor defaults to 1.0 and is meant to scale a metallic-roughness texture.
+    // aurora samples a white fallback where the texture is missing, so a bare factor would make
+    // the whole material a mirror: only carry it when there is a texture to scale.
+    let metallic = if pbr.metallic_roughness_texture().is_some() {
+        pbr.metallic_factor()
+    } else {
+        0.0
+    };
     if metallic != 0.0 {
         let _ = write!(fields, " metallic: {},", bsn::f(metallic));
     }

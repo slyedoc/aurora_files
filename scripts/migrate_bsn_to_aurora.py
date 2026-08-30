@@ -8,6 +8,7 @@ Old (bevy_aurora_old, f64 transforms)          -> aurora (crate bevy_aurora, f32
   bevy_aurora::material::alpha::AlphaMode          bevy_material::alpha::AlphaMode
   glam::DVec3 / glam::DQuat                        glam::Vec3 / glam::Quat
   bevy_animation::animclip::AnimatedScene(..)      (dropped: no .animclip on this engine)
+  metallic: N on a material without an MR texture  (dropped: glTF's default 1.0, a mirror here)
 
 Idempotent; files already in the new vocabulary are left untouched.
 
@@ -28,6 +29,10 @@ SWAPS = [
     ("glam::DQuat", "glam::Quat"),
 ]
 ANIMCLIP = re.compile(r"^\s*bevy_animation::animclip::AnimatedScene\([^\n]*\)\n", re.M)
+# A `metallic:` factor on a material with no metallic-roughness texture: glTF's default 1.0 was
+# carried through, and aurora's white fallback texture turns it into a full mirror.
+MATERIAL = re.compile(r"StandardMaterial \{[^}]*\}")
+METALLIC = re.compile(r" metallic: [0-9.]+,")
 
 
 def migrate(path: Path) -> bool:
@@ -36,6 +41,14 @@ def migrate(path: Path) -> bool:
     for old, new in SWAPS:
         out = out.replace(old, new)
     out = ANIMCLIP.sub("", out)
+
+    def fix_metallic(m: re.Match) -> str:
+        literal = m.group(0)
+        if "metallic_roughness_texture" in literal:
+            return literal
+        return METALLIC.sub("", literal)
+
+    out = MATERIAL.sub(fix_metallic, out)
     if out == text:
         return False
     path.write_text(out)
