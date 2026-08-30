@@ -13,6 +13,6 @@ path = "src/main.rs"
 
 [dependencies]
 bevy = { workspace = true, features = ["bevy_camera_controller", "free_camera"] }
-bevy_aurora.workspace = true
+bevy_aurora = { workspace = true, features = ["dev"] }
 clap.workspace = true
 util = { path = "../util" }
