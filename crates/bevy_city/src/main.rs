@@ -131,9 +131,13 @@ fn setup(
     args: Res<Args>,
     mut windows: Query<&mut Window>,
     mut render_config: ResMut<RenderConfig>,
+    mut dev_ui: ResMut<bevy_aurora::dev_ui::DevUIState>,
 ) {
     render_config.skydome = None;
-    render_config.sky_color = Vec4::new(0.75, 0.85, 1.0, 0.0) * 1.5;
+    // Physical-ish daylight: the importers write emitters in nits (Bistro's lamps are 20,000),
+    // so the sky sits at ~8,000 and the camera at -13 EV (1/8192) to match.
+    render_config.sky_color = Vec4::new(0.75, 0.85, 1.0, 0.0) * 8000.0;
+    dev_ui.exposure_ev = -13.0;
     let dlss = bevy_aurora::dlss::AuroraDlss::parse(&args.dlss).unwrap_or_else(|| {
         warn!("unknown --dlss mode {:?}; staying off", args.dlss);
         default()
