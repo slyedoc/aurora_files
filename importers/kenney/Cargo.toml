@@ -1,0 +1,21 @@
+# Kenney kit importer for bevy_city: every `.glb` in the four kits becomes ONE merged
+# `.cluster_mesh` (Kenney props are a handful of primitives sharing the kit's colormap, so a
+# single mesh + one material per prop is lossless), and the kit colormaps are copied alongside.
+#
+#   scripts/fetch_kenney.sh
+#   cargo run --release -p kenney_import            # raw/kenney -> assets/kenney
+[package]
+name = "kenney_import"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "kenney_import"
+path = "src/main.rs"
+
+[dependencies]
+aurora_cluster_mesh.workspace = true
+bevy.workspace = true
+clap.workspace = true
+gltf = { version = "1.4.0", default-features = false, features = ["import", "utils", "names"] }

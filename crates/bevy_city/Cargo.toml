@@ -1,0 +1,23 @@
+# bevy_city on aurora: bevy's procedurally generated Kenney city (examples/large_scenes/bevy_city
+# on the fork), ray traced. Buildings, roads, trees, fences and simulated cars — the large-scene
+# stress test for the GPU transform hierarchy and the instance table.
+#
+#   scripts/fetch_kenney.sh && cargo run --release -p kenney_import
+#   cargo run --release -p bevy_city -- --size 30
+[package]
+name = "bevy_city"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "bevy_city"
+path = "src/main.rs"
+
+[dependencies]
+bevy = { workspace = true, features = ["bevy_camera_controller", "free_camera"] }
+bevy_aurora.workspace = true
+clap.workspace = true
+noise = "0.9"
+rand = "0.10"
+util = { path = "../util" }
