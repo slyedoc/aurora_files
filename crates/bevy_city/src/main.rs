@@ -45,6 +45,9 @@ struct Args {
     /// Freeze the cars.
     #[arg(long)]
     no_cars: bool,
+    /// DLSS Ray Reconstruction: off, dlaa, quality, balanced, performance, ultra-performance.
+    #[arg(long, default_value = "off")]
+    dlss: String,
     /// Seconds before auto-exit.
     #[arg(long, short)]
     timeout: Option<f32>,
@@ -131,6 +134,10 @@ fn setup(
 ) {
     render_config.skydome = None;
     render_config.sky_color = Vec4::new(0.75, 0.85, 1.0, 0.0) * 1.5;
+    let dlss = bevy_aurora::dlss::AuroraDlss::parse(&args.dlss).unwrap_or_else(|| {
+        warn!("unknown --dlss mode {:?}; staying off", args.dlss);
+        default()
+    });
     if let Ok(mut window) = windows.single_mut() {
         window.title = format!("bevy_city — {}x{} blocks", args.size, args.size);
     }
@@ -143,6 +150,7 @@ fn setup(
             ..default()
         }),
         FreeCamera::default(),
+        dlss,
         Transform::from_xyz(-extent, 6.0, -extent).looking_at(Vec3::new(0.0, 0.0, 0.0), Vec3::Y),
     ));
 }
