@@ -3,9 +3,11 @@
 
 Old (bevy_aurora_old, f64 transforms)          -> aurora (crate bevy_aurora, f32)
   bevy_aurora::bindings::types::RaytracingMesh3d   bevy_mesh::components::Mesh3d
-  bevy_aurora::material::AuroraMaterial3d(         bevy_aurora::bsn::RaytracingMaterial3d(
-      bevy_aurora::material::StandardAuroraMaterial   bevy_pbr::pbr_material::StandardMaterial
-  bevy_aurora::material::alpha::AlphaMode          bevy_material::alpha::AlphaMode
+  bevy_aurora::material::AuroraMaterial3d(         bevy_aurora::material::AuroraMaterial3d(
+      bevy_aurora::material::StandardAuroraMaterial   bevy_aurora::material::AuroraMaterial
+  bevy_aurora::material::alpha::AlphaMode          bevy_aurora::material::AlphaMode
+  (and the interim bevy_pbr StandardMaterial /     (same)
+   bevy_material AlphaMode vocabulary)
   glam::DVec3 / glam::DQuat                        glam::Vec3 / glam::Quat
   bevy_animation::animclip::AnimatedScene(..)      (dropped: no .animclip on this engine)
   metallic: N on a material without an MR texture  (dropped: glTF's default 1.0, a mirror here)
@@ -25,13 +27,19 @@ SWAPS = [
         "bevy_aurora::bsn::RaytracingMaterial3d(bevy_pbr::pbr_material::StandardMaterial {",
     ),
     ("bevy_aurora::material::alpha::AlphaMode::", "bevy_material::alpha::AlphaMode::"),
+    # Interim vocabulary (bevy_pbr's StandardMaterial) -> the engine's own material.
+    (
+        "bevy_aurora::bsn::RaytracingMaterial3d(bevy_pbr::pbr_material::StandardMaterial {",
+        "bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {",
+    ),
+    ("bevy_material::alpha::AlphaMode::", "bevy_aurora::material::AlphaMode::"),
     ("glam::DVec3", "glam::Vec3"),
     ("glam::DQuat", "glam::Quat"),
 ]
 ANIMCLIP = re.compile(r"^\s*bevy_animation::animclip::AnimatedScene\([^\n]*\)\n", re.M)
 # A `metallic:` factor on a material with no metallic-roughness texture: glTF's default 1.0 was
 # carried through, and aurora's white fallback texture turns it into a full mirror.
-MATERIAL = re.compile(r"StandardMaterial \{[^}]*\}")
+MATERIAL = re.compile(r"(?:StandardMaterial|AuroraMaterial) \{[^}]*\}")
 METALLIC = re.compile(r" metallic: [0-9.]+,")
 
 

@@ -419,7 +419,7 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
         let _ = write!(
             out,
             "{pad}bevy_mesh::components::Mesh3d(\"{}/meshes/{stem}.cluster_mesh\")\n\
-             {pad}bevy_aurora::bsn::RaytracingMaterial3d(bevy_pbr::pbr_material::StandardMaterial {{{mat_fields}}})\n",
+             {pad}bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {{{mat_fields}}})\n",
             ctx.asset_prefix,
         );
         ctx.emitted += 1;
@@ -441,7 +441,7 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
             "{cpad}bevy_ecs::name::Name(\"{name}#{i}\")\n\
              {cpad}bevy_transform::components::transform::Transform {{ translation: glam::Vec3 {{ x: 0.0, y: 0.0, z: 0.0 }}, rotation: glam::Quat {{ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }}, scale: glam::Vec3 {{ x: 1.0, y: 1.0, z: 1.0 }} }}\n\
              {cpad}bevy_mesh::components::Mesh3d(\"{}/meshes/{stem}.cluster_mesh\")\n\
-             {cpad}bevy_aurora::bsn::RaytracingMaterial3d(bevy_pbr::pbr_material::StandardMaterial {{{mat}}}),\n",
+             {cpad}bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {{{mat}}}),\n",
             ctx.asset_prefix,
         );
         ctx.emitted += 1;
@@ -600,7 +600,7 @@ pub(crate) fn lint_materials(
     report
 }
 
-/// Inline `SolariMaterial` field list for a glTF material: the scalar/colour factors, textures (by
+/// Inline `AuroraMaterial` field list for a glTF material: the scalar/colour factors, textures (by
 /// extracted file path), alpha-mode, and glass transmission/IOR.
 fn material_fields(material: &gltf::Material, ctx: &Ctx) -> String {
     let mut fields = String::new();
@@ -681,7 +681,7 @@ fn material_fields(material: &gltf::Material, ctx: &Ctx) -> String {
         let cutoff = material.alpha_cutoff().unwrap_or(0.5);
         let _ = write!(
             fields,
-            " alpha_mode: bevy_material::alpha::AlphaMode::Mask({}),",
+            " alpha_mode: bevy_aurora::material::AlphaMode::Mask({}),",
             bsn::f(cutoff)
         );
     }

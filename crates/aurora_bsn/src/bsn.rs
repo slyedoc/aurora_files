@@ -1,5 +1,5 @@
 //! Emit the Bevy Scene Notation (`.bsn`): per-submesh entities (a `Transform`, the baked mesh as
-//! `Mesh3d("….cluster_mesh")`, and an inline `StandardMaterial` in `RaytracingMaterial3d`)
+//! `Mesh3d("….cluster_mesh")`, and an inline `AuroraMaterial` in `RaytracingMaterial3d`)
 //! wrapped in the scene envelope. Type paths are what aurora's `.bsn` loader resolves.
 
 use std::fmt::Write as _;
@@ -65,12 +65,12 @@ pub fn write_entity(
         out,
         "    bevy_transform::components::transform::Transform {{ {transform} }}\n    \
          bevy_mesh::components::Mesh3d(\"{asset_prefix}/meshes/{mesh_stem}.cluster_mesh\")\n    \
-         bevy_aurora::bsn::RaytracingMaterial3d(bevy_pbr::pbr_material::StandardMaterial {{{}}}),\n\n",
+         bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {{{}}}),\n\n",
         material_fields(asset_prefix, material, is_cutmask, displacement_maps),
     );
 }
 
-/// Inline `StandardMaterial` field list for the `.bsn`. Absent fields fall back to the material's
+/// Inline `AuroraMaterial` field list for the `.bsn`. Absent fields fall back to the material's
 /// defaults (e.g. an omitted `base_color_texture` stays `None`).
 fn material_fields(
     asset_prefix: &str,
@@ -102,14 +102,14 @@ fn material_fields(
     if is_cutmask {
         let _ = write!(
             fields,
-            " alpha_mode: bevy_material::alpha::AlphaMode::Mask({:?}),",
+            " alpha_mode: bevy_aurora::material::AlphaMode::Mask({:?}),",
             img::MASK_CUTOFF,
         );
     }
     fields
 }
 
-/// Append one entity built from a pre-formatted `StandardMaterial` field list and a full
+/// Append one entity built from a pre-formatted `AuroraMaterial` field list and a full
 /// translation/rotation/scale `Transform` (the glTF path: node world transforms can carry
 /// non-uniform scale, so all three are always written).
 pub fn write_entity_trs(
@@ -137,7 +137,7 @@ pub fn write_entity_trs(
          rotation: glam::Quat {{ x: {}, y: {}, z: {}, w: {} }}, \
          scale: glam::Vec3 {{ x: {}, y: {}, z: {} }} }}\n    \
          bevy_mesh::components::Mesh3d(\"{asset_prefix}/meshes/{mesh_stem}.cluster_mesh\")\n    \
-         bevy_aurora::bsn::RaytracingMaterial3d(bevy_pbr::pbr_material::StandardMaterial {{{material_fields}}}),\n\n",
+         bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {{{material_fields}}}),\n\n",
         f(tx), f(ty), f(tz),
         f(qx), f(qy), f(qz), f(qw),
         f(sx), f(sy), f(sz),
