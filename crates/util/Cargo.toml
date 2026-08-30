@@ -1,6 +1,4 @@
-# Shared rig for the aurora tools (modeled on zero's crates/util): sun controls
-# and the common log filter. What the viewer and importer load-tests would
-# otherwise duplicate lives here.
+# Shared rig for the aurora tools: the hover-park camera helper and the common log filter.
 [package]
 name = "util"
 version = "0.1.0"
@@ -14,4 +12,3 @@ bevy = { workspace = true, features = [
   "bevy_ui",
   "ui_picking",
 ] }
-bevy_aurora.workspace = true

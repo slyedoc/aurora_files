@@ -1,18 +1,11 @@
-// RPATH for libGFSDK_Aftermath_Lib.x64.so. The link itself now comes from
-// bevy_aurora (its `aftermath` feature is default-on and its build.rs emits
-// the `-L`/`-l`, which ride the rlib here) — but `cargo:rustc-link-arg` does
-// NOT propagate from a dependency's build script, so this binary embed
-// their own rpath. Emitted only when the lib exists; without the SDK, aurora
-// compiles its no-op stubs and nothing here is needed.
-use std::{env, path::PathBuf};
-
+// RPATH for libshaderc_shared.so.1: bevy_aurora links shaderc from the Vulkan SDK, and the SDK's
+// setup-env.sh does not put $VULKAN_SDK/lib on LD_LIBRARY_PATH. `cargo:rustc-link-arg` does NOT
+// propagate from a dependency's build script, so this binary embeds the rpath itself (the engine's
+// own examples get it from the engine's build.rs).
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-env-changed=AFTERMATH_SDK");
-    let sdk = env::var("AFTERMATH_SDK")
-        .unwrap_or_else(|_| format!("{}/nvidia/aftermath", env::var("HOME").unwrap_or_default()));
-    let lib = PathBuf::from(sdk).join("lib/x64");
-    if lib.join("libGFSDK_Aftermath_Lib.x64.so").exists() {
-        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
+    println!("cargo:rerun-if-env-changed=VULKAN_SDK");
+    if let Ok(sdk) = std::env::var("VULKAN_SDK") {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{sdk}/lib");
     }
 }

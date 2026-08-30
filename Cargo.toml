@@ -1,35 +1,51 @@
 # `.bsn` importer workspace: the `aurora_bsn` library + per-asset importer binaries and a viewer.
-# Converts source OBJ/MTL or glTF into `bevy_aurora` `.cluster_mesh` assets and a `.bsn` scene,
-# sidestepping glTF's lack of displacement/depth maps; the viewer renders the result on aurora.
+# Converts source OBJ/MTL or glTF into `.cluster_mesh` assets and a `.bsn` scene, sidestepping
+# glTF's lack of displacement/depth maps; the viewer renders the result on aurora
+# (https://github.com/slyedoc/aurora, crate `bevy_aurora`).
 #
-# `furnace` and `grader` are PARKED (excluded): they still render on the old wgpu solari stack
-# and aren't worth carrying until the rendering pass they exist to grade gets its own rework.
+# PARKED (excluded): `furnace` / `grader` / `xtask` render on the old wgpu solari stack;
+# `g1` needs the `.animclip` transcoder from the old engine's bevy branch; `bake_person` /
+# `dressing_room` need make_human, which still path-depends on the old engine.
 [workspace]
 resolver = "3"
 members = [
   "crates/aurora_bsn",
   "crates/util",
   "crates/bsn",
-  "crates/xtask",
-  "importers/*",
+  "importers/bistro",
+  "importers/hoverboard",
+  "importers/lunarbase",
+  "importers/namaqualand_boulder",
+  "importers/polyhaven",
+  "importers/prop",
+  "importers/san_miguel",
+  "importers/speedtree",
+  "importers/zeroday",
 ]
-exclude = ["crates/furnace", "crates/grader"]
+exclude = [
+  "crates/furnace",
+  "crates/grader",
+  "crates/xtask",
+  "importers/g1",
+  "importers/bake_person",
+  "importers/dressing_room",
+]
 
 [workspace.dependencies]
-# The stacked bevy branch bevy_aurora pins (render-free: no bevy_render/wgpu anywhere in this
-# workspace anymore — the cluster bake and the wire-format writer live in bevy_aurora itself).
-# `bevy_animation` carries the `.animclip` parser the g1 importer round-trips.
+# The bevy branch the aurora engine tracks (upstream main + render-free feathers, the .bsn
+# loader, bevy_feathers_inspector). Importers only need the mesh/asset half; the viewer gets the
+# renderer's own feature set unioned in through `bevy_aurora`.
 bevy = { git = "https://github.com/slyedoc/bevy.git", branch = "aurora", default-features = false, features = [
   "default_app",
   "default_platform",
   "common_api",
   "std",
   "multi_threaded",
-  "transform_f64",
   "scene",
   "serialize",
-  "bevy_animation",
   "bevy_camera",
+  "bevy_camera_controller",
+  "free_camera",
   "bevy_mesh",
   "bevy_mikktspace",
   "bevy_image",
@@ -39,17 +55,12 @@ bevy = { git = "https://github.com/slyedoc/bevy.git", branch = "aurora", default
   "ktx2",
   "zstd_rust",
 ] }
-# The engine: `ClusterMesh` + `write_cluster_mesh_sync` (the SACRED wire format) + the
-# Mesh -> ClusterMesh bake, and everything the viewer renders with.
-bevy_aurora = { path = "../bevy_aurora" }
+# The `.cluster_mesh` wire format + flat bake, without the renderer (importers).
+aurora_cluster_mesh = { git = "https://github.com/slyedoc/aurora.git", branch = "main" }
+# The engine itself (viewer only).
+bevy_aurora = { git = "https://github.com/slyedoc/aurora.git", branch = "main" }
 # CLI parsing for the importer binaries.
 clap = { version = "4", features = ["derive"] }
-
-# bevy_aurora pins ash git master (NV cluster/PTLAS extensions); the patch must live at THIS
-# workspace root to apply.
-[patch.crates-io]
-ash = { git = "https://github.com/slyedoc/ash", branch = "aurora" }
-ash-window = { git = "https://github.com/slyedoc/ash", branch = "aurora" }
 
 # make_human's manifest reaches bevy/avian/enhanced_input by their upstream
 # URLs (same convention as zero); redirect them onto the one stacked graph.

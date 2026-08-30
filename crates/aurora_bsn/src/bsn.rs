@@ -1,5 +1,6 @@
-//! Emit the Bevy Scene Notation (`.bsn`): per-submesh entities (a `Transform`, the baked
-//! `RaytracingMesh3d`, and an inline `SolariMaterial3d`) wrapped in the scene envelope.
+//! Emit the Bevy Scene Notation (`.bsn`): per-submesh entities (a `Transform`, the baked mesh as
+//! `Mesh3d("….cluster_mesh")`, and an inline `StandardMaterial` in `RaytracingMaterial3d`)
+//! wrapped in the scene envelope. Type paths are what aurora's `.bsn` loader resolves.
 
 use std::fmt::Write as _;
 
@@ -25,7 +26,7 @@ pub fn scene_with_root(scene_name: &str, root_components: &str, entities: &str) 
 }
 
 /// Append one submesh's `.bsn` entity (comma-terminated): a `Transform` placing the local-space
-/// geometry at its world `translation`, the baked `RaytracingMesh3d`, and an inline `SolariMaterial3d`.
+/// geometry at its world `translation`, the baked `Mesh3d`, and an inline `RaytracingMaterial3d`.
 #[allow(clippy::too_many_arguments)]
 pub fn write_entity(
     out: &mut String,
@@ -42,35 +43,34 @@ pub fn write_entity(
     // quaternion terms). Rotation/scale are written only when non-trivial (instances); owners /
     // singletons get a translation-only `Transform` and the loader defaults rotation → identity,
     // scale → one.
-    // `Transform`'s fields are the precision aliases `TVec3`/`TQuat`; the fork builds at f64, so
-    // the `.bsn` MUST name `glam::DVec3`/`glam::DQuat` — an f32 `glam::Vec3` literal fails to
-    // coerce into the f64 field and silently zeroes it (collapsing the instance to a point).
+    // aurora builds `Transform` at f32, so the literals name `glam::Vec3` / `glam::Quat`; the
+    // loader does not coerce across precisions.
     let mut transform = format!(
-        "translation: glam::DVec3 {{ x: {}, y: {}, z: {} }}",
+        "translation: glam::Vec3 {{ x: {}, y: {}, z: {} }}",
         f(translation[0] as f32), f(translation[1] as f32), f(translation[2] as f32),
     );
     let [qw, qx, qy, qz] = rotation;
     if qx * qx + qy * qy + qz * qz > 1e-10 {
         let _ = write!(
             transform,
-            ", rotation: glam::DQuat {{ x: {}, y: {}, z: {}, w: {} }}",
+            ", rotation: glam::Quat {{ x: {}, y: {}, z: {}, w: {} }}",
             f(qx as f32), f(qy as f32), f(qz as f32), f(qw as f32),
         );
     }
     if (scale - 1.0).abs() > 1e-9 {
         let s = f(scale as f32);
-        let _ = write!(transform, ", scale: glam::DVec3 {{ x: {s}, y: {s}, z: {s} }}");
+        let _ = write!(transform, ", scale: glam::Vec3 {{ x: {s}, y: {s}, z: {s} }}");
     }
     let _ = write!(
         out,
         "    bevy_transform::components::transform::Transform {{ {transform} }}\n    \
-         bevy_aurora::bindings::types::RaytracingMesh3d(\"{asset_prefix}/meshes/{mesh_stem}.cluster_mesh\")\n    \
-         bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::StandardAuroraMaterial {{{}}}),\n\n",
+         bevy_mesh::components::Mesh3d(\"{asset_prefix}/meshes/{mesh_stem}.cluster_mesh\")\n    \
+         bevy_aurora::bsn::RaytracingMaterial3d(bevy_pbr::pbr_material::StandardMaterial {{{}}}),\n\n",
         material_fields(asset_prefix, material, is_cutmask, displacement_maps),
     );
 }
 
-/// Inline `SolariMaterial` field list for the `.bsn`. Absent fields fall back to the material's
+/// Inline `StandardMaterial` field list for the `.bsn`. Absent fields fall back to the material's
 /// defaults (e.g. an omitted `base_color_texture` stays `None`).
 fn material_fields(
     asset_prefix: &str,
@@ -96,20 +96,20 @@ fn material_fields(
     if let Some(tex) = material.normal_texture.as_deref() {
         let _ = write!(fields, " normal_map_texture: \"{asset_prefix}/textures/{}\",", img::basename(tex));
     }
-    // Genuine alpha cutout (foliage): emit `AlphaMode::Mask` so the ray tracer any-hit-tests it.
+    // Genuine alpha cutout (foliage): emit `AlphaMode::Mask` for the ray tracer.
     // The fully-qualified definition module is what the dynamic loader resolves (`Mask` is an enum
     // tuple variant); the cutoff matches the cutmask classifier.
     if is_cutmask {
         let _ = write!(
             fields,
-            " alpha_mode: bevy_aurora::material::alpha::AlphaMode::Mask({:?}),",
+            " alpha_mode: bevy_material::alpha::AlphaMode::Mask({:?}),",
             img::MASK_CUTOFF,
         );
     }
     fields
 }
 
-/// Append one entity built from a pre-formatted `SolariMaterial` field list and a full
+/// Append one entity built from a pre-formatted `StandardMaterial` field list and a full
 /// translation/rotation/scale `Transform` (the glTF path: node world transforms can carry
 /// non-uniform scale, so all three are always written).
 pub fn write_entity_trs(
@@ -133,11 +133,11 @@ pub fn write_entity_trs(
     let _ = write!(
         out,
         "    bevy_transform::components::transform::Transform {{ \
-         translation: glam::DVec3 {{ x: {}, y: {}, z: {} }}, \
-         rotation: glam::DQuat {{ x: {}, y: {}, z: {}, w: {} }}, \
-         scale: glam::DVec3 {{ x: {}, y: {}, z: {} }} }}\n    \
-         bevy_aurora::bindings::types::RaytracingMesh3d(\"{asset_prefix}/meshes/{mesh_stem}.cluster_mesh\")\n    \
-         bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::StandardAuroraMaterial {{{material_fields}}}),\n\n",
+         translation: glam::Vec3 {{ x: {}, y: {}, z: {} }}, \
+         rotation: glam::Quat {{ x: {}, y: {}, z: {}, w: {} }}, \
+         scale: glam::Vec3 {{ x: {}, y: {}, z: {} }} }}\n    \
+         bevy_mesh::components::Mesh3d(\"{asset_prefix}/meshes/{mesh_stem}.cluster_mesh\")\n    \
+         bevy_aurora::bsn::RaytracingMaterial3d(bevy_pbr::pbr_material::StandardMaterial {{{material_fields}}}),\n\n",
         f(tx), f(ty), f(tz),
         f(qx), f(qy), f(qz), f(qw),
         f(sx), f(sy), f(sz),

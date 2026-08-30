@@ -1,4 +1,15 @@
-# solari_files
+# aurora_files
+
+Offline importers that bake source scenes (OBJ/MTL, glTF, SpeedTree) into `.cluster_mesh`
+assets + `.bsn` scenes for [aurora](https://github.com/slyedoc/aurora) (crate `bevy_aurora`,
+bevy branch `slyedoc/bevy@aurora`), plus the `bsn` viewer that renders them there. `assets/` and
+`raw/` are generated / downloaded and stay out of git.
+
+Meshes are written as a flat single-LOD cluster set (`aurora_cluster_mesh::ClusterMeshData::from_mesh_flat`);
+the format is unchanged, so files baked by the old engine load too — `scripts/migrate_bsn_to_aurora.py`
+rewrites their `.bsn` vocabulary (type paths + f32 transforms) in place. Opacity micromaps and the
+`.animclip` transcoder were dropped with the old engine.
+
 
 Download San Miguel from <https://casual-effects.com/data> and extract into `raw/` so the OBJ is at
 `raw/San_Miguel/san-miguel.obj`, then:

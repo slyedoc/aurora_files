@@ -17,9 +17,9 @@ use std::path::{Path, PathBuf};
 use bevy::asset::RenderAssetUsages;
 use bevy::math::Mat4;
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
-use bevy_aurora::geometry::{write_cluster_mesh_sync, ClusterMesh};
+use aurora_cluster_mesh::{write_cluster_mesh_sync, ClusterMeshData};
 
-use crate::{bsn, mesh};
+use crate::bsn;
 
 /// Per-asset knobs for the glTF importer.
 pub struct GltfConfig {
@@ -39,12 +39,6 @@ pub struct GltfConfig {
     /// Per-scene fallback for emissive magnitude (nits), keyed on material name, used only when a
     /// material ships no `KHR_materials_emissive_strength`. `None` keeps the glTF value (×1).
     pub emissive_nits: Option<fn(&str) -> f32>,
-    /// Erosion radius (texels) applied to the cutout alpha mask before OMM baking; pulls the
-    /// conservative 2-state silhouette back in. See [`mesh::DEFAULT_ERODE_PX`]; `0` disables.
-    pub erode_px: u32,
-    /// Max OMM subdivision level (the baker caps per-triangle subdivision at this). See
-    /// [`mesh::DEFAULT_OMM_SUBDIV`].
-    pub omm_subdiv: u32,
 }
 
 /// Bake the scene described by `cfg`: extract textures, bake each unique primitive's
@@ -78,13 +72,9 @@ pub fn bake_gltf_scene(cfg: &GltfConfig) {
         buffers: &buffers,
         image_files: &image_files,
         meshes_dir: &meshes_dir,
-        textures_dir: &textures_dir,
         asset_prefix: &cfg.asset_prefix,
         replace: cfg.replace,
         emissive_nits: cfg.emissive_nits,
-        erode_px: cfg.erode_px,
-        omm_subdiv: cfg.omm_subdiv,
-        decoded_alpha: HashMap::new(),
         baked: HashMap::new(),
         entities: String::new(),
         emitted: 0,
@@ -148,13 +138,9 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
         buffers: &buffers,
         image_files: &image_files,
         meshes_dir: &meshes_dir,
-        textures_dir: &textures_dir,
         asset_prefix: &cfg.asset_prefix,
         replace: cfg.replace,
         emissive_nits: cfg.emissive_nits,
-        erode_px: cfg.erode_px,
-        omm_subdiv: cfg.omm_subdiv,
-        decoded_alpha: HashMap::new(),
         baked: HashMap::new(),
         entities: String::new(),
         emitted: 0,
@@ -245,15 +231,9 @@ struct Ctx<'a> {
     buffers: &'a [gltf::buffer::Data],
     image_files: &'a HashMap<usize, String>,
     meshes_dir: &'a Path,
-    textures_dir: &'a Path,
     asset_prefix: &'a str,
     replace: bool,
     emissive_nits: Option<fn(&str) -> f32>,
-    erode_px: u32,
-    omm_subdiv: u32,
-    /// Base-color images decoded for OMM bakes, by glTF image index — cutout atlases are
-    /// shared by many primitives, so decode each once (`None` caches a failed decode).
-    decoded_alpha: HashMap<usize, Option<image::RgbaImage>>,
     /// `(mesh index, primitive index) → owner stem`, so shared meshes bake once and instance nodes
     /// reuse the baked `.cluster_mesh`. `None` marks a primitive whose bake failed (entities skipped).
     baked: HashMap<(usize, usize), Option<String>>,
@@ -319,7 +299,7 @@ fn walk(node: &gltf::Node, parent: Mat4, ctx: &mut Ctx) {
 /// Bake the glTF **preserving the node hierarchy** — the animation-capable analogue of
 /// [`bake_gltf_scene`]. Instead of flattening every primitive to a world transform, this emits a
 /// nested `Children[]` tree: each node is one entity carrying its `Name` + LOCAL `Transform` (and,
-/// if it has geometry, `RaytracingMesh3d` + inline `SolariMaterial3d`). Keeping the tree + the Names
+/// if it has geometry, `Mesh3d` + inline `RaytracingMaterial3d`). Keeping the tree + the Names
 /// is what lets a runtime `AnimationPlayer` bind clips to nodes by name-path (`AnimationTargetId`)
 /// and drive them — the GPU transform table propagates an animated parent to its mesh children.
 /// Meshes/textures bake into shared `meshes/`/`textures/`, deduped by (mesh, primitive) index.
@@ -351,13 +331,9 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
         buffers: &buffers,
         image_files: &image_files,
         meshes_dir: &meshes_dir,
-        textures_dir: &textures_dir,
         asset_prefix: &cfg.asset_prefix,
         replace: cfg.replace,
         emissive_nits: cfg.emissive_nits,
-        erode_px: cfg.erode_px,
-        omm_subdiv: cfg.omm_subdiv,
-        decoded_alpha: HashMap::new(),
         baked: HashMap::new(),
         entities: String::new(),
         emitted: 0,
@@ -430,9 +406,9 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
     let _ = write!(
         out,
         "{pad}bevy_transform::components::transform::Transform {{ \
-         translation: glam::DVec3 {{ x: {}, y: {}, z: {} }}, \
-         rotation: glam::DQuat {{ x: {}, y: {}, z: {}, w: {} }}, \
-         scale: glam::DVec3 {{ x: {}, y: {}, z: {} }} }}\n",
+         translation: glam::Vec3 {{ x: {}, y: {}, z: {} }}, \
+         rotation: glam::Quat {{ x: {}, y: {}, z: {}, w: {} }}, \
+         scale: glam::Vec3 {{ x: {}, y: {}, z: {} }} }}\n",
         bsn::f(t[0]), bsn::f(t[1]), bsn::f(t[2]),
         bsn::f(r[0]), bsn::f(r[1]), bsn::f(r[2]), bsn::f(r[3]),
         bsn::f(s[0]), bsn::f(s[1]), bsn::f(s[2]),
@@ -442,8 +418,8 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
     if let Some(stem) = prims.first() {
         let _ = write!(
             out,
-            "{pad}bevy_aurora::bindings::types::RaytracingMesh3d(\"{}/meshes/{stem}.cluster_mesh\")\n\
-             {pad}bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::StandardAuroraMaterial {{{mat_fields}}})\n",
+            "{pad}bevy_mesh::components::Mesh3d(\"{}/meshes/{stem}.cluster_mesh\")\n\
+             {pad}bevy_aurora::bsn::RaytracingMaterial3d(bevy_pbr::pbr_material::StandardMaterial {{{mat_fields}}})\n",
             ctx.asset_prefix,
         );
         ctx.emitted += 1;
@@ -463,9 +439,9 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
         let _ = write!(
             kids,
             "{cpad}bevy_ecs::name::Name(\"{name}#{i}\")\n\
-             {cpad}bevy_transform::components::transform::Transform {{ translation: glam::DVec3 {{ x: 0.0, y: 0.0, z: 0.0 }}, rotation: glam::DQuat {{ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }}, scale: glam::DVec3 {{ x: 1.0, y: 1.0, z: 1.0 }} }}\n\
-             {cpad}bevy_aurora::bindings::types::RaytracingMesh3d(\"{}/meshes/{stem}.cluster_mesh\")\n\
-             {cpad}bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::StandardAuroraMaterial {{{mat}}}),\n",
+             {cpad}bevy_transform::components::transform::Transform {{ translation: glam::Vec3 {{ x: 0.0, y: 0.0, z: 0.0 }}, rotation: glam::Quat {{ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }}, scale: glam::Vec3 {{ x: 1.0, y: 1.0, z: 1.0 }} }}\n\
+             {cpad}bevy_mesh::components::Mesh3d(\"{}/meshes/{stem}.cluster_mesh\")\n\
+             {cpad}bevy_aurora::bsn::RaytracingMaterial3d(bevy_pbr::pbr_material::StandardMaterial {{{mat}}}),\n",
             ctx.asset_prefix,
         );
         ctx.emitted += 1;
@@ -490,9 +466,8 @@ fn bake_primitive(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> O
     }
 
     let bevy_mesh = build_primitive_mesh(prim, ctx.buffers)?;
-    match ClusterMesh::try_from(&bevy_mesh) {
-        Ok(mut cm) => {
-            attach_primitive_omm(prim, &mut cm, ctx);
+    match ClusterMeshData::from_mesh_flat(&bevy_mesh) {
+        Ok(cm) => {
             let w = BufWriter::new(File::create(&mesh_file).expect("create .cluster_mesh"));
             write_cluster_mesh_sync(&cm, w).expect("write .cluster_mesh");
             ctx.baked_count += 1;
@@ -506,41 +481,6 @@ fn bake_primitive(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> O
             ctx.failed_count += 1;
             None
         }
-    }
-}
-
-/// Bake and embed an opacity micromap when the primitive is an alpha cutout
-/// (`AlphaMode::Mask` with a base-color texture): decode the texture's alpha and hand it to
-/// the 2-state OMM baker, so RT cores resolve the cutout in hardware instead of any-hit
-/// testing every triangle — without one, cutouts render holes-solid (the runtime assumes
-/// alpha-tested geometry carries an OMM).
-fn attach_primitive_omm(prim: &gltf::Primitive, cm: &mut ClusterMesh, ctx: &mut Ctx) {
-    let material = prim.material();
-    if material.alpha_mode() != gltf::material::AlphaMode::Mask {
-        return;
-    }
-    let Some(info) = material.pbr_metallic_roughness().base_color_texture() else {
-        return;
-    };
-    let source = info.texture().source();
-    let idx = source.index();
-    // Copy the shared field references out so they don't hold the `&mut Ctx` reborrow
-    // across the `decoded_alpha` entry.
-    let (files, textures_dir) = (ctx.image_files, ctx.textures_dir);
-    let Some(file) = files.get(&idx) else {
-        return;
-    };
-    let rgba = ctx.decoded_alpha.entry(idx).or_insert_with(|| {
-        match image::open(textures_dir.join(file)) {
-            Ok(img) => Some(img.into_rgba8()),
-            Err(err) => {
-                eprintln!("  omm skipped ({file}): {err}");
-                None
-            }
-        }
-    });
-    if let Some(rgba) = rgba {
-        mesh::attach_omm_rgba(cm, rgba, ctx.erode_px, ctx.omm_subdiv, file);
     }
 }
 
@@ -562,7 +502,7 @@ pub fn bake_glb_primitive(glb_path: &Path, out_file: &Path, replace: bool) -> Re
         .find(|p| p.mode() == gltf::mesh::Mode::Triangles)
         .ok_or_else(|| "no triangle primitive".to_string())?;
     let mesh = build_primitive_mesh(&prim, &buffers).ok_or_else(|| "empty mesh".to_string())?;
-    let cm = ClusterMesh::try_from(&mesh).map_err(|e| format!("cluster bake: {e:?}"))?;
+    let cm = ClusterMeshData::from_mesh_flat(&mesh).map_err(|e| format!("cluster bake: {e:?}"))?;
     if let Some(parent) = out_file.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
     }
@@ -573,7 +513,7 @@ pub fn bake_glb_primitive(glb_path: &Path, out_file: &Path, replace: bool) -> Re
 
 /// Build a bevy [`Mesh`] from a glTF primitive (positions in node-local space; the node's world
 /// `Transform` places it). Loads only what the glTF carries — missing normals / UVs /
-/// tangents are synthesized downstream by `ClusterMesh::try_from`, so bare CAD/URDF
+/// tangents default downstream in `ClusterMeshData::from_mesh_flat`, so bare CAD/URDF
 /// primitives (POSITION only) still bake.
 pub(crate) fn build_primitive_mesh(prim: &gltf::Primitive, buffers: &[gltf::buffer::Data]) -> Option<Mesh> {
     let reader = prim.reader(|b| buffers.get(b.index()).map(|d| d.0.as_slice()));
@@ -734,7 +674,7 @@ fn material_fields(material: &gltf::Material, ctx: &Ctx) -> String {
         let cutoff = material.alpha_cutoff().unwrap_or(0.5);
         let _ = write!(
             fields,
-            " alpha_mode: bevy_aurora::material::alpha::AlphaMode::Mask({}),",
+            " alpha_mode: bevy_material::alpha::AlphaMode::Mask({}),",
             bsn::f(cutoff)
         );
     }

@@ -14,7 +14,7 @@ use clap::Parser;
 use aurora_bsn::{bake_speedtree, SpeedTreeConfig};
 
 #[derive(Parser)]
-#[command(about = "Bake staged SpeedTree .glb trees → per-tree .bsn (+OMM cutouts)")]
+#[command(about = "Bake staged SpeedTree .glb trees → per-tree .bsn")]
 struct Args {
     /// Directory of stage-A `.glb` trees.
     glb_dir: PathBuf,
@@ -29,12 +29,6 @@ struct Args {
     /// Re-bake `.cluster_mesh` files even if they already exist.
     #[arg(long)]
     replace: bool,
-    /// Erosion radius (texels) on the cutout mask before OMM baking.
-    #[arg(long, default_value_t = 2)]
-    erode: u32,
-    /// Max OMM subdivision level.
-    #[arg(long, default_value_t = 6)]
-    level: u32,
 
     /// Also bake `<Tree>_clump<K>.bsn`: K trees merged into one BLAS per material.
     #[arg(long, default_value_t = 0)]
@@ -53,8 +47,6 @@ fn main() {
         asset_prefix: args.asset_prefix,
         replace: args.replace,
         scale: args.scale,
-        erode_px: args.erode,
-        omm_subdiv: args.level,
         clump: args.clump,
         clump_radius: args.clump_radius,
     });

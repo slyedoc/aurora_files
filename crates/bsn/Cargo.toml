@@ -1,7 +1,6 @@
-# `bsn` — the general bevy_aurora `.bsn` scene viewer. Loads any baked `.bsn`
-# under full ray tracing and flies a free camera through it. Install once
-# (`cargo install --path crates/bsn`) and run from any repo with an assets/
-# dir: `bsn assets/people/player.bsn`.
+# `bsn` — the general aurora `.bsn` scene viewer. Loads any baked `.bsn` under hardware ray
+# tracing and flies a free camera through it. Install once (`cargo install --path crates/bsn`)
+# and run from any repo with an assets/ dir: `bsn assets/lunarbase/KB3D_LNB_Lamp_A.bsn`.
 [package]
 name = "bsn"
 version = "0.1.0"
@@ -17,5 +16,3 @@ bevy = { workspace = true, features = ["bevy_camera_controller", "free_camera"] 
 bevy_aurora.workspace = true
 clap.workspace = true
 util = { path = "../util" }
-# Wire types for baked-person prefabs (BakedPerson) — types only, no runtime.
-make_human = { path = "../../../make_human", default-features = false }

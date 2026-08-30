@@ -23,20 +23,13 @@ struct Args {
     /// Emit only the `piso` floor submeshes (the displacement surface) → `Floor.bsn`.
     #[arg(long, conflicts_with = "cutout_only")]
     floor_only: bool,
-    /// Emit only the cutout (cutmask) submeshes of one texture — a single OMM-bearing object →
+    /// Emit only the cutout (cutmask) submeshes of one texture — a single cutout object →
     /// `Cutout.bsn`. Optional value is the diffuse texture stem to match (default `FL11pet3`).
     #[arg(long, num_args = 0..=1, default_missing_value = DEFAULT_CUTOUT_TEX)]
     cutout_only: Option<String>,
     /// Re-bake `.cluster_mesh` files even if they already exist (no more `rm -rf meshes`).
     #[arg(long)]
     replace: bool,
-    /// OMM cutout alpha-mask erosion radius in texels (pulls the conservative silhouette in;
-    /// `0` disables, 1-3 useful).
-    #[arg(long, default_value_t = aurora_bsn::mesh::DEFAULT_ERODE_PX)]
-    erode: u32,
-    /// Max OMM subdivision level (per-triangle cap; higher = finer cutout edge, larger data).
-    #[arg(long, default_value_t = aurora_bsn::mesh::DEFAULT_OMM_SUBDIV)]
-    level: u32,
 }
 
 fn main() {
@@ -73,8 +66,6 @@ fn main() {
         // Share geometry across the courtyard's repeated props (chairs, plates, colonnade).
         dedup: true,
         replace: args.replace,
-        erode_px: args.erode,
-        omm_subdiv: args.level,
     };
     bake_scene(&cfg);
 }

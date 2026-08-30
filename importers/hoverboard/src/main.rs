@@ -60,8 +60,6 @@ fn main() {
         replace: args.replace,
         root_components: String::new(),
         emissive_nits: Some(emissive_nits),
-        erode_px: aurora_bsn::mesh::DEFAULT_ERODE_PX,
-        omm_subdiv: aurora_bsn::mesh::DEFAULT_OMM_SUBDIV,
     };
     bake_gltf_scene(&cfg);
 }

@@ -16,10 +16,10 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use aurora_bsn::{bake_gltf_hierarchy, transcode_gltf_to_animclip, GltfConfig};
+use aurora_bsn::{bake_gltf_hierarchy, GltfConfig};
 
 #[derive(Parser)]
-#[command(about = "Bake a Zero-Day geometry glb → .cluster_mesh + hierarchy .bsn (+ stage anim glb)")]
+#[command(about = "Bake a Zero-Day geometry glb → .cluster_mesh + hierarchy .bsn")]
 struct Args {
     /// Source geometry `.glb` (from `scripts/zeroday_to_glb.py`, animations stripped).
     gltf: PathBuf,
@@ -31,9 +31,6 @@ struct Args {
     /// Asset-server-relative prefix the `.bsn` uses to reference meshes/textures.
     #[arg(long, default_value = "zeroday")]
     asset_prefix: String,
-    /// Meshless animation glb to stage alongside the `.bsn`. Defaults to `<gltf-stem>_anim.glb`.
-    #[arg(long)]
-    anim: Option<PathBuf>,
     /// Re-bake `.cluster_mesh` files even if they already exist.
     #[arg(long)]
     replace: bool,
@@ -41,19 +38,8 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-
-    let anim_src = args.anim.clone().unwrap_or_else(|| {
-        let stem = args.gltf.file_stem().and_then(|s| s.to_str()).unwrap_or("scene");
-        args.gltf.with_file_name(format!("{stem}_anim.glb"))
-    });
-
-    // Marker on the `.bsn` root: `bevy_animation` sees it, loads the `.animclip`, builds the
-    // AnimationGraph/Player, and binds the tree's nodes to the clip by name-path. `clip` is a
-    // `Handle<AnimationClip>` resolved from the asset path by the `AnimClipLoader` (`.animclip`).
-    let root_components = format!(
-        "    bevy_animation::animclip::AnimatedScene(\"{}/{}.animclip\")\n",
-        args.asset_prefix, args.scene_name,
-    );
+    // No animation marker: the `.animclip` path lived in the old engine's bevy branch.
+    let root_components = String::new();
 
     let cfg = GltfConfig {
         gltf_path: args.gltf,
@@ -63,22 +49,9 @@ fn main() {
         replace: args.replace,
         root_components,
         emissive_nits: None,
-        erode_px: aurora_bsn::mesh::DEFAULT_ERODE_PX,
-        omm_subdiv: aurora_bsn::mesh::DEFAULT_OMM_SUBDIV,
     };
     bake_gltf_hierarchy(&cfg);
 
     // Transcode the meshless anim glb's clips into a compact `.animclip` binary next to the `.bsn`
     // (no runtime glTF dependency). One target per animated node; bound at runtime by name-path.
-    let clip_dst = args.out_dir.join(format!("{}.animclip", args.scene_name));
-    match transcode_gltf_to_animclip(&anim_src, &clip_dst) {
-        Ok(n) => {
-            let sz = std::fs::metadata(&clip_dst).map(|m| m.len()).unwrap_or(0);
-            println!("transcoded {n} anim targets ({:.2} MB) -> {}", sz as f64 / 1e6, clip_dst.display());
-        }
-        Err(e) => eprintln!(
-            "WARN: could not transcode anim glb {} -> {}: {e}\n      (bake the _anim.glb in stage A, or pass --anim)",
-            anim_src.display(), clip_dst.display()
-        ),
-    }
 }

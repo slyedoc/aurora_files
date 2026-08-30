@@ -23,13 +23,6 @@ struct Args {
     /// Re-bake `.cluster_mesh` files even if they already exist (no more `rm -rf meshes`).
     #[arg(long)]
     replace: bool,
-    /// OMM cutout alpha-mask erosion radius in texels (pulls the conservative silhouette in;
-    /// `0` disables, 1-3 useful).
-    #[arg(long, default_value_t = aurora_bsn::mesh::DEFAULT_ERODE_PX)]
-    erode: u32,
-    /// Max OMM subdivision level (per-triangle cap; higher = finer cutout edge, larger data).
-    #[arg(long, default_value_t = aurora_bsn::mesh::DEFAULT_OMM_SUBDIV)]
-    level: u32,
 }
 
 /// Bistro emitters ship no `KHR_materials_emissive_strength`; assign physical nits by material name
@@ -55,8 +48,6 @@ fn main() {
         replace: args.replace,
         root_components: String::new(),
         emissive_nits: Some(emissive_nits_default),
-        erode_px: args.erode,
-        omm_subdiv: args.level,
     };
     bake_gltf_scene(&cfg);
 }

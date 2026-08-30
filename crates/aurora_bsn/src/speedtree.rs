@@ -11,10 +11,10 @@ use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 use bevy::math::Mat4;
-use bevy_aurora::geometry::{write_cluster_mesh_sync, ClusterMesh};
+use aurora_cluster_mesh::{write_cluster_mesh_sync, ClusterMeshData};
 
 use crate::gltf::build_primitive_mesh;
-use crate::{bsn, img, mesh};
+use crate::{bsn, img};
 
 /// Per-run knobs for the SpeedTree importer.
 pub struct SpeedTreeConfig {
@@ -28,10 +28,6 @@ pub struct SpeedTreeConfig {
     pub replace: bool,
     /// Uniform scale applied to every tree (SpeedTree FBX come in at author units).
     pub scale: f32,
-    /// Erosion radius (texels) on the cutout mask before OMM baking. See [`mesh::DEFAULT_ERODE_PX`].
-    pub erode_px: u32,
-    /// Max OMM subdivision level. See [`mesh::DEFAULT_OMM_SUBDIV`].
-    pub omm_subdiv: u32,
     /// Trees per merged clump asset (0/1 = no clump baking). A clump merges K
     /// deterministic placements of the whole tree into ONE ClusterMesh per
     /// material — one BLAS per clump instead of K overlapping ones, so rays
@@ -90,14 +86,12 @@ fn bake_tree(stem: &str, glb: &Path, meshes_dir: &Path, textures_dir: &Path, cfg
         stem,
         buffers: &buffers,
         image_files: &image_files,
-        textures_dir,
         meshes_dir,
         cutmask: &cutmask,
         cfg,
         baked: HashMap::new(),
         entities: String::new(),
         emitted: 0,
-        omm_baked: 0,
         aabb: None,
         clump_sources: Vec::new(),
     };
@@ -112,8 +106,8 @@ fn bake_tree(stem: &str, glb: &Path, meshes_dir: &Path, textures_dir: &Path, cfg
     fs::write(cfg.out_dir.join(format!("{stem}.bsn")), bsn).expect("write .bsn");
     let height = ctx.aabb.map(|(mn, mx)| mx[1] - mn[1]).unwrap_or(0.0);
     println!(
-        "  {stem}: {} entities, {} OMM cutouts, ~{height:.2}m tall",
-        ctx.emitted, ctx.omm_baked,
+        "  {stem}: {} entities, ~{height:.2}m tall",
+        ctx.emitted,
     );
     if cfg.clump > 1 {
         bake_clump(stem, &ctx, cfg);
@@ -127,38 +121,18 @@ fn bake_clump(tree: &str, ctx: &Tree, cfg: &SpeedTreeConfig) {
     let placements = clump_placements(tree, k, cfg.clump_radius);
     let mut entities = String::new();
     let mut emitted = 0;
-    let mut omm = 0;
     for (i, src) in ctx.clump_sources.iter().enumerate() {
         let stem = format!("{tree}_clump{k}_p{i}");
         let file = ctx.meshes_dir.join(format!("{stem}.cluster_mesh"));
         if cfg.replace || !file.exists() {
             let merged = merge_placements(&src.mesh, &placements);
-            let mut cm = match ClusterMesh::try_from(&merged) {
+            let cm = match ClusterMeshData::from_mesh_flat(&merged) {
                 Ok(cm) => cm,
                 Err(err) => {
                     eprintln!("  clump bake failed {stem}: {err:?}");
                     continue;
                 }
             };
-            if src.cut {
-                if let Some(rgba) = src
-                    .image_idx
-                    .and_then(|i| ctx.image_files.get(&i))
-                    .and_then(|f| image::open(ctx.textures_dir.join(f)).ok())
-                {
-                    if mesh::attach_omm_rgba(
-                        &mut cm,
-                        &rgba.into_rgba8(),
-                        cfg.erode_px,
-                        cfg.omm_subdiv,
-                        &stem,
-                    )
-                    .is_some()
-                    {
-                        omm += 1;
-                    }
-                }
-            }
             let w = BufWriter::new(File::create(&file).expect("create .cluster_mesh"));
             write_cluster_mesh_sync(&cm, w).expect("write .cluster_mesh");
         }
@@ -177,7 +151,7 @@ fn bake_clump(tree: &str, ctx: &Tree, cfg: &SpeedTreeConfig) {
     let name = format!("{tree}_clump{k}");
     let bsn = bsn::scene(&name, &entities);
     fs::write(cfg.out_dir.join(format!("{name}.bsn")), bsn).expect("write clump .bsn");
-    println!("  {name}: {emitted} entities ({k} trees merged, {omm} OMM)");
+    println!("  {name}: {emitted} entities ({k} trees merged)");
 }
 
 /// K deterministic placements: golden-spiral spread over the footprint disc,
@@ -292,8 +266,6 @@ fn merge_placements(
 struct ClumpSource {
     fields: String,
     name: String,
-    cut: bool,
-    image_idx: Option<usize>,
     mesh: bevy::mesh::Mesh,
 }
 
@@ -301,7 +273,6 @@ struct Tree<'a> {
     stem: &'a str,
     buffers: &'a [gltf::buffer::Data],
     image_files: &'a HashMap<usize, String>,
-    textures_dir: &'a Path,
     meshes_dir: &'a Path,
     cutmask: &'a HashMap<usize, bool>,
     cfg: &'a SpeedTreeConfig,
@@ -310,7 +281,6 @@ struct Tree<'a> {
     baked: HashMap<(usize, usize, [u32; 16]), Option<String>>,
     entities: String,
     emitted: usize,
-    omm_baked: usize,
     aabb: Option<([f32; 3], [f32; 3])>,
     clump_sources: Vec<ClumpSource>,
 }
@@ -392,8 +362,6 @@ fn bake_primitive(
         ctx.clump_sources.push(ClumpSource {
             fields,
             name: format!("{}.{}", ctx.stem, prim.material().name().unwrap_or("part")),
-            cut,
-            image_idx: base_color_image(&prim.material()),
             mesh: bevy_mesh.clone(),
         });
     }
@@ -401,25 +369,13 @@ fn bake_primitive(
         return Some(stem); // re-runs only re-emit the `.bsn`
     }
 
-    let mut cm = match ClusterMesh::try_from(&bevy_mesh) {
+    let cm = match ClusterMeshData::from_mesh_flat(&bevy_mesh) {
         Ok(cm) => cm,
         Err(err) => {
             eprintln!("  bake failed {stem}: {err:?}");
             return None;
         }
     };
-    if cut {
-        if let Some(rgba) = base_color_image(&prim.material())
-            .and_then(|i| ctx.image_files.get(&i))
-            .and_then(|f| image::open(ctx.textures_dir.join(f)).ok())
-        {
-            if mesh::attach_omm_rgba(&mut cm, &rgba.into_rgba8(), ctx.cfg.erode_px, ctx.cfg.omm_subdiv, &stem)
-                .is_some()
-            {
-                ctx.omm_baked += 1;
-            }
-        }
-    }
     let w = BufWriter::new(File::create(&file).expect("create .cluster_mesh"));
     write_cluster_mesh_sync(&cm, w).expect("write .cluster_mesh");
     Some(stem)
@@ -435,7 +391,7 @@ fn material_fields(material: &gltf::Material, cut: bool, ctx: &Tree) -> String {
         let _ = write!(f, " normal_map_texture: \"{}/textures/{p}\",", ctx.cfg.asset_prefix);
     }
     if cut {
-        let _ = write!(f, " alpha_mode: bevy_aurora::material::alpha::AlphaMode::Mask({}),", bsn::f(img::MASK_CUTOFF));
+        let _ = write!(f, " alpha_mode: bevy_material::alpha::AlphaMode::Mask({}),", bsn::f(img::MASK_CUTOFF));
     }
     f
 }

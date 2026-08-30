@@ -1,8 +1,9 @@
-//! Offline importer core: OBJ/MTL → `bevy_aurora` `.cluster_mesh` assets + a `.bsn` scene.
+//! Offline importer core: OBJ/MTL → `.cluster_mesh` assets + a `.bsn` scene for aurora.
 //!
-//! Sidesteps glTF: each OBJ submesh is baked to a `bevy_aurora` `.cluster_mesh` and the scene is
-//! emitted as Bevy Scene Notation referencing those meshes plus inline `SolariMaterial`s (which,
-//! unlike glTF, can carry a displacement/depth texture). Per-asset importer binaries fill a
+//! Sidesteps glTF: each OBJ submesh is baked to a `.cluster_mesh` (a flat single-LOD cluster set,
+//! see `aurora_cluster_mesh`) and the scene is emitted as Bevy Scene Notation referencing those
+//! meshes plus inline `StandardMaterial`s (which, unlike glTF, can carry a displacement/depth
+//! texture). Per-asset importer binaries fill a
 //! [`SceneConfig`] and call [`bake_scene`]; everything reusable lives in the submodules.
 
 use std::collections::{HashMap, HashSet};
@@ -10,9 +11,8 @@ use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-use bevy_aurora::geometry::{write_cluster_mesh_sync, ClusterMesh};
+use aurora_cluster_mesh::{write_cluster_mesh_sync, ClusterMeshData};
 
-pub mod animclip;
 pub mod bsn;
 pub mod dedup;
 pub mod discovery;
@@ -20,21 +20,19 @@ pub mod gltf;
 pub mod img;
 pub mod lint;
 pub mod mesh;
-pub mod omm;
 pub mod speedtree;
 
-pub use animclip::transcode_gltf_to_animclip;
 pub use gltf::{bake_gltf_hierarchy, bake_gltf_per_group, bake_gltf_scene, GltfConfig};
 pub use speedtree::{bake_speedtree, SpeedTreeConfig};
 
 /// Per-submesh facts a [`SubmeshFilter`] can decide on (e.g. keep only floor surfaces, or only
-/// alpha-cutout objects that carry a baked OMM).
+/// alpha-cutout objects).
 pub struct SubmeshInfo<'a> {
     /// The OBJ object name.
     pub name: &'a str,
     /// Basename of the material's diffuse texture, if any.
     pub diffuse_basename: Option<&'a str>,
-    /// Whether this submesh's material is a genuine alpha cutout (gets `AlphaMode::Mask` + an OMM).
+    /// Whether this submesh's material is a genuine alpha cutout (gets `AlphaMode::Mask`).
     pub is_cutmask: bool,
 }
 
@@ -60,18 +58,12 @@ pub struct SceneConfig {
     /// Re-bake `.cluster_mesh` files even when they already exist (overwrite). When `false`, an
     /// existing mesh file is left as-is and only the `.bsn` is re-emitted.
     pub replace: bool,
-    /// Erosion radius (texels) applied to the cutout alpha mask before OMM baking; pulls the
-    /// conservative 2-state silhouette back in. See [`mesh::DEFAULT_ERODE_PX`]; `0` disables.
-    pub erode_px: u32,
-    /// Max OMM subdivision level (the baker caps per-triangle subdivision at this). See
-    /// [`mesh::DEFAULT_OMM_SUBDIV`].
-    pub omm_subdiv: u32,
 }
 
 type V3 = dedup::V3;
 
 /// Bake the scene described by `cfg`: copy + normalize textures, bake each submesh's
-/// `.cluster_mesh` (with an OMM for alpha cutouts), and write the `.bsn`.
+/// `.cluster_mesh`, and write the `.bsn`.
 pub fn bake_scene(cfg: &SceneConfig) {
     let meshes_dir = cfg.out_dir.join("meshes");
     fs::create_dir_all(&meshes_dir).expect("create meshes dir");
@@ -212,7 +204,6 @@ pub fn bake_scene(cfg: &SceneConfig) {
     // Pass 1 — bake each NEEDED owner's centroid-centered geometry once (instances reuse it). A bake
     // that fails (e.g. missing UVs) marks the owner so its entities are dropped below.
     let mut baked = 0usize;
-    let mut omm_baked = 0usize;
     let mut failed: HashSet<usize> = HashSet::new();
     for i in 0..models.len() {
         if owner[i] != i || !needed_owner[i] {
@@ -225,29 +216,8 @@ pub fn bake_scene(cfg: &SceneConfig) {
             continue; // re-runs only re-emit the `.bsn` (use `replace` to overwrite)
         }
         let m = mesh::build_mesh(&models[i].mesh, centroid);
-        match ClusterMesh::try_from(&m) {
-            Ok(mut cm) => {
-                // Alpha-cutout owners get a baked opacity micro-map so the RT cores resolve known
-                // opaque/transparent micro-regions without invoking the any-hit shader. Baked
-                // against the FINAL (post-cluster) triangle order.
-                let is_cutmask = models[i]
-                    .mesh
-                    .material_id
-                    .is_some_and(|id| cutmask.get(id).copied().unwrap_or(false));
-                if is_cutmask {
-                    if let Some(material) =
-                        models[i].mesh.material_id.and_then(|id| materials.get(id))
-                    {
-                        if let Some((omms, bytes)) =
-                            mesh::attach_omm(&mut cm, &obj_dir, material, cfg.erode_px, cfg.omm_subdiv)
-                        {
-                            omm_baked += 1;
-                            if omm_baked % 20 == 0 {
-                                println!("  OMM baked {omm_baked} (latest: {omms} omms, {bytes} B)");
-                            }
-                        }
-                    }
-                }
+        match ClusterMeshData::from_mesh_flat(&m) {
+            Ok(cm) => {
                 let w = BufWriter::new(File::create(&mesh_file).expect("create .cluster_mesh"));
                 write_cluster_mesh_sync(&cm, w).expect("write .cluster_mesh");
                 baked += 1;
@@ -299,7 +269,7 @@ pub fn bake_scene(cfg: &SceneConfig) {
     let bsn_path = cfg.out_dir.join(format!("{}.bsn", cfg.scene_name));
     fs::write(&bsn_path, bsn).expect("write .bsn");
 
-    println!("baked {baked} meshes ({omm_baked} with OMM) -> {}", meshes_dir.display());
+    println!("baked {baked} meshes -> {}", meshes_dir.display());
     println!("wrote {emitted} entities -> {}", bsn_path.display());
 }
 

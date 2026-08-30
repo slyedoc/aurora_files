@@ -39,11 +39,6 @@ struct Args {
     /// freeze where they were baked - leaving the game nothing to rotate.
     #[arg(long)]
     hierarchy: bool,
-    /// Meshless animation glb to transcode into `<scene_name>.animclip`, and stamp on the `.bsn`
-    /// root as `bevy_animation::AnimatedScene` so the runtime loads, binds and plays it. Node names
-    /// must match the geometry glb's — the clip binds by NAME-PATH. Implies `--hierarchy`.
-    #[arg(long)]
-    anim: Option<PathBuf>,
     /// Multiply every emissive that ships no `KHR_materials_emissive_strength` by this, in nits.
     /// The rescue hatch for factor-convention sources (glTF clamps `emissiveFactor` to [0,1], so
     /// pre-extension assets encode emitters in 0..1 and render ~1000x too dim). See `aurora_bsn::lint`.
@@ -82,23 +77,12 @@ fn main() {
         EMISSIVE_NITS.store(n.to_bits(), std::sync::atomic::Ordering::Relaxed);
         emissive_nits_resolver as fn(&str) -> f32
     });
-
-    // An anim clip is only bindable against a preserved hierarchy — the flat path emits no entity
-    // for a joint, so there would be nothing for the clip's name-paths to resolve to.
-    let hierarchy = args.hierarchy || args.anim.is_some();
+    let hierarchy = args.hierarchy;
     if args.per_group && hierarchy {
-        eprintln!("--per-group cannot be combined with --hierarchy/--anim");
+        eprintln!("--per-group cannot be combined with --hierarchy");
         std::process::exit(2);
     }
-
-    let root_components = match &args.anim {
-        Some(_) => format!(
-            "    bevy_animation::animclip::AnimatedScene(\"{asset_prefix}/{scene_name}.animclip\")\n"
-        ),
-        None => String::new(),
-    };
-
-    let clip_dst = args.out_dir.join(format!("{scene_name}.animclip"));
+    let root_components = String::new();
     let cfg = GltfConfig {
         gltf_path: args.glb,
         out_dir: args.out_dir,
@@ -107,8 +91,6 @@ fn main() {
         replace: args.replace,
         root_components,
         emissive_nits,
-        erode_px: aurora_bsn::mesh::DEFAULT_ERODE_PX,
-        omm_subdiv: aurora_bsn::mesh::DEFAULT_OMM_SUBDIV,
     };
 
     if args.per_group {
@@ -117,22 +99,5 @@ fn main() {
         bake_gltf_hierarchy(&cfg);
     } else {
         bake_gltf_scene(&cfg);
-    }
-
-    if let Some(anim_src) = &args.anim {
-        match aurora_bsn::transcode_gltf_to_animclip(anim_src, &clip_dst) {
-            Ok(n) => println!(
-                "transcoded {n} animation target(s) -> {}",
-                clip_dst.display()
-            ),
-            Err(e) => {
-                eprintln!(
-                    "ERROR: could not transcode anim glb {} -> {}: {e}",
-                    anim_src.display(),
-                    clip_dst.display()
-                );
-                std::process::exit(1);
-            }
-        }
     }
 }
