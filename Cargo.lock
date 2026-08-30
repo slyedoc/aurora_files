@@ -7409,11 +7409,11 @@ version = "0.8.0-dev"
 source = "git+https://github.com/slyedoc/avian?branch=aurora#c36fbc8a45bec3f19af1946849c5b715fb81116e"
 
 [[patch.unused]]
-name = "bevy_gltf"
-version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#48249fa2489b2c2a8ce700c4988b713373848420"
-
-[[patch.unused]]
 name = "bevy_enhanced_input"
 version = "0.26.0"
 source = "git+https://github.com/slyedoc/bevy_enhanced_input?branch=aurora#120b9dfe3e19a6ce4f4cb4c1265565838151e240"
+
+[[patch.unused]]
+name = "bevy_gltf"
+version = "0.20.0-dev"
+source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#48249fa2489b2c2a8ce700c4988b713373848420"

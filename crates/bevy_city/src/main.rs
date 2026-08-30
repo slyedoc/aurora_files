@@ -13,6 +13,7 @@
 
 use bevy::{
     camera_controller::free_camera::{FreeCamera, FreeCameraPlugin},
+    diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     prelude::*,
 };
 use bevy_aurora::{
@@ -52,12 +53,29 @@ struct Args {
 #[derive(Resource)]
 struct Timeout(f32);
 
-/// Moving cars: set every frame by [`simulate_cars`].
+/// A moving car: its lane baked as a segment at spawn (upstream keeps `Road` + lane offset
+/// and looks the road up per car; here the per-frame update is a pure per-element function so
+/// the whole table can be swept contiguously).
 #[derive(Component)]
 pub struct Car {
-    pub offset: Vec3,
+    /// Lane start in the road's frame (`road.start + lane offset`).
+    pub origin: Vec3,
+    /// Lane end minus start, already signed by direction of travel.
+    pub travel: Vec3,
+    pub road_len: f32,
     pub distance_traveled: f32,
-    pub dir: f32,
+}
+
+impl Car {
+    pub fn new(road: &Road, offset: Vec3, dir: f32, distance_traveled: f32) -> Self {
+        let span = road.end - road.start;
+        Self {
+            origin: road.start + offset,
+            travel: span * dir,
+            road_len: span.length(),
+            distance_traveled,
+        }
+    }
 }
 
 #[derive(Component)]
@@ -89,10 +107,15 @@ fn main() {
         filter: util::LOG_FILTER.into(),
         ..default()
     }));
-    app.add_plugins((DevShaderPlugin, DevUIPlugin, FreeCameraPlugin::default()));
+    app.add_plugins((
+        DevShaderPlugin,
+        DevUIPlugin,
+        FreeCameraPlugin::default(),
+        FrameTimeDiagnosticsPlugin::default(),
+    ));
     app.insert_resource(args.clone());
     app.add_systems(Startup, (setup, load_assets, spawn).chain());
-    app.add_systems(Update, simulate_cars);
+    app.add_systems(Update, (simulate_cars, log_fps));
     if let Some(seconds) = timeout {
         app.insert_resource(Timeout(seconds));
         app.add_systems(Update, exit_on_timeout);
@@ -148,31 +171,45 @@ fn spawn(mut commands: Commands, assets: Res<CityAssets>, args: Res<Args>) {
     );
 }
 
-/// Same motion as upstream: each car rides its road's segment back and forth on its lane offset.
-fn simulate_cars(
-    args: Res<Args>,
-    roads: Query<(&Road, &Children), Without<Car>>,
-    mut cars: Query<(&mut Car, &mut Transform), Without<Road>>,
-    time: Res<Time>,
-) {
+/// Same motion as upstream (each car loops along its lane), swept as contiguous table slices
+/// in parallel: no per-car `Query::get`, no per-element change ticks. `Car` writes bypass
+/// change detection (nothing reads them); `Transform` is stamped changed once per chunk, which
+/// is what the GPU transform table's extraction listens for.
+fn simulate_cars(args: Res<Args>, mut cars: Query<(&mut Car, &mut Transform)>, time: Res<Time>) {
     if args.no_cars {
         return;
     }
-    let speed = 1.5;
-    for (road, children) in &roads {
-        for child in children.iter() {
-            let Ok((mut car, mut car_transform)) = cars.get_mut(child) else {
-                continue;
-            };
-            car.distance_traveled += speed * time.delta_secs();
-            let road_len = (road.end - road.start).length();
-            if car.distance_traveled > road_len {
-                car.distance_traveled = 0.0;
+    let step = 1.5 * time.delta_secs();
+    cars.contiguous_par_iter_mut()
+        .expect("Car + Transform are table components")
+        .for_each(|(mut cars, mut transforms)| {
+            {
+                let cars = cars.bypass_change_detection();
+                let transforms = transforms.bypass_change_detection();
+                for (car, transform) in cars.iter_mut().zip(transforms.iter_mut()) {
+                    car.distance_traveled += step;
+                    if car.distance_traveled > car.road_len {
+                        car.distance_traveled = 0.0;
+                    }
+                    let progress = car.distance_traveled / car.road_len;
+                    transform.translation = car.origin + car.travel * progress;
+                }
             }
-            let direction = (road.end - road.start).normalize() * car.dir;
-            let progress = car.distance_traveled / road_len;
-            car_transform.translation = (road.start + car.offset) + direction * road_len * progress;
-        }
+            transforms.mark_all_as_changed();
+        });
+}
+
+/// Average frame rate, logged every five seconds (for headless runs and comparisons).
+fn log_fps(diagnostics: Res<DiagnosticsStore>, time: Res<Time>, mut last: Local<f32>) {
+    if time.elapsed_secs() - *last < 5.0 {
+        return;
+    }
+    *last = time.elapsed_secs();
+    if let Some(fps) = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|d| d.average())
+    {
+        info!("fps: {fps:.1} (t = {:.0}s)", time.elapsed_secs());
     }
 }
 

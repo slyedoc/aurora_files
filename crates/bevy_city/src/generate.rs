@@ -149,8 +149,10 @@ fn spawn_car<R: RngExt>(
     assets: &CityAssets,
     rng: &mut R,
     transform: Transform,
-    car: Car,
+    road: &Road,
+    (offset, dir, distance_traveled): (Vec3, f32, f32),
 ) {
+    let car = Car::new(road, offset, dir, distance_traveled);
     let (mesh, material) = assets.random_car(rng);
     commands
         .spawn((transform, Visibility::default(), car))
@@ -175,14 +177,15 @@ fn spawn_roads_and_cars<R: RngExt>(
 
     // Roads are one stretched segment each; the magic numbers are upstream's hand-tuned layout.
     let car_count = 9;
+    let road = Road {
+        start: Vec3::new(0.75, 0.0, 0.0),
+        end: Vec3::new(0.75 + (0.5 * car_count as f32), 0.0, 0.0),
+    };
     commands
         .spawn((
             Transform::from_translation(offset),
             Visibility::default(),
-            Road {
-                start: Vec3::new(0.75, 0.0, 0.0),
-                end: Vec3::new(0.75 + (0.5 * car_count as f32), 0.0, 0.0),
-            },
+            Road { ..road },
         ))
         .with_children(|commands| {
             spawn_prop(
@@ -206,11 +209,8 @@ fn spawn_roads_and_cars<R: RngExt>(
                                 Vec3::Y,
                                 3.0 * std::f32::consts::FRAC_PI_2,
                             )),
-                        Car {
-                            distance_traveled: i as f32 * 0.5,
-                            dir: -1.0,
-                            offset: Vec3::new(4.25, 0.0, -0.15),
-                        },
+                        &road,
+                        (Vec3::new(4.25, 0.0, -0.15), -1.0, i as f32 * 0.5),
                     );
                     stats.cars += 1;
                 }
@@ -225,11 +225,8 @@ fn spawn_roads_and_cars<R: RngExt>(
                                 Vec3::Y,
                                 std::f32::consts::FRAC_PI_2,
                             )),
-                        Car {
-                            distance_traveled: i as f32 * 0.5,
-                            dir: 1.0,
-                            offset: Vec3::new(-0.25, 0.0, 0.15),
-                        },
+                        &road,
+                        (Vec3::new(-0.25, 0.0, 0.15), 1.0, i as f32 * 0.5),
                     );
                     stats.cars += 1;
                 }
@@ -237,14 +234,15 @@ fn spawn_roads_and_cars<R: RngExt>(
         });
 
     let car_count = 6;
+    let road = Road {
+        start: Vec3::new(0.0, 0.0, 0.75),
+        end: Vec3::new(0.0, 0.0, 0.75 + (0.5 * car_count as f32)),
+    };
     commands
         .spawn((
             Transform::from_translation(offset),
             Visibility::default(),
-            Road {
-                start: Vec3::new(0.0, 0.0, 0.75),
-                end: Vec3::new(0.0, 0.0, 0.75 + (0.5 * car_count as f32)),
-            },
+            Road { ..road },
         ))
         .with_children(|commands| {
             spawn_prop(
@@ -265,11 +263,8 @@ fn spawn_roads_and_cars<R: RngExt>(
                         rng,
                         Transform::from_translation(car_pos + Vec3::new(0.15, 0.0, 0.0))
                             .with_scale(Vec3::splat(0.15)),
-                        Car {
-                            distance_traveled: i as f32 * 0.5,
-                            dir: 1.0,
-                            offset: Vec3::new(-0.15, 0.0, -0.25),
-                        },
+                        &road,
+                        (Vec3::new(-0.15, 0.0, -0.25), 1.0, i as f32 * 0.5),
                     );
                     stats.cars += 1;
                 }
@@ -281,11 +276,8 @@ fn spawn_roads_and_cars<R: RngExt>(
                         Transform::from_translation(car_pos + Vec3::new(-0.15, 0.0, 0.0))
                             .with_scale(Vec3::splat(0.15))
                             .with_rotation(Quat::from_axis_angle(Vec3::Y, std::f32::consts::PI)),
-                        Car {
-                            distance_traveled: i as f32 * 0.5,
-                            dir: -1.0,
-                            offset: Vec3::new(0.15, 0.0, 2.75),
-                        },
+                        &road,
+                        (Vec3::new(0.15, 0.0, 2.75), -1.0, i as f32 * 0.5),
                     );
                     stats.cars += 1;
                 }
