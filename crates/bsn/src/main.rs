@@ -55,6 +55,11 @@ struct Args {
     /// Nits per HDR texel unit for `--sky`.
     #[arg(long, default_value_t = 8000.0)]
     sky_scale: f32,
+
+    /// Camera exposure in stops (the frame is scaled by 2^ev). -15 suits full sunlight
+    /// (~115 klux from the procedural sun); -13 an overcast / interior scene.
+    #[arg(long, default_value_t = -15.0)]
+    exposure_ev: f32,
 }
 
 fn parse_vec3(s: &str) -> Result<Vec3, String> {
@@ -135,9 +140,9 @@ fn setup(
     mut windows: Query<&mut Window>,
     mut dev_ui: ResMut<bevy_aurora::dev_ui::DevUIState>,
 ) {
-    // Physical-ish daylight: the importers write emitters in nits (Bistro's lamps are 20,000),
-    // the procedural sky sits at ~8,000 and the camera at -13 EV (1/8192) to match.
-    dev_ui.exposure_ev = -13.0;
+    // Physical daylight: the importers write emitters in nits (Bistro's lamps are 20,000),
+    // the procedural sky is ~8,000 with a ~115 klux sun, and the exposure is set for the sun.
+    dev_ui.exposure_ev = args.exposure_ev;
     if let Some(path) = &args.sky {
         commands.insert_resource(Sky::Hdr {
             image: asset_server.load(path.clone()),

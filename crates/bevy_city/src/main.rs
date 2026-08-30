@@ -49,6 +49,10 @@ struct Args {
     /// Seconds before auto-exit.
     #[arg(long, short)]
     timeout: Option<f32>,
+
+    /// Camera exposure in stops (the frame is scaled by 2^ev); -15 suits the procedural sun.
+    #[arg(long, default_value_t = -15.0)]
+    exposure_ev: f32,
 }
 
 #[derive(Resource)]
@@ -125,9 +129,9 @@ fn setup(
     mut windows: Query<&mut Window>,
     mut dev_ui: ResMut<bevy_aurora::dev_ui::DevUIState>,
 ) {
-    // Physical-ish daylight: the importers write emitters in nits (Bistro's lamps are 20,000),
-    // the procedural sky sits at ~8,000 and the camera at -13 EV (1/8192) to match.
-    dev_ui.exposure_ev = -13.0;
+    // Physical daylight: the procedural sky is ~8,000 nits with a ~115 klux sun; the exposure
+    // is set for the sun.
+    dev_ui.exposure_ev = args.exposure_ev;
     let dlss = bevy_aurora::dlss::AuroraDlss::parse(&args.dlss).unwrap_or_else(|| {
         warn!("unknown --dlss mode {:?}; staying off", args.dlss);
         default()
