@@ -463,7 +463,7 @@ dependencies = [
 [[package]]
 name = "aurora_cluster_mesh"
 version = "0.1.0"
-source = "git+https://github.com/slyedoc/aurora.git?branch=main#cccbc40c12ffb216c78f3901476e8c28db32f487"
+source = "git+https://github.com/slyedoc/aurora.git?branch=main#97c2fa70b5fb239880d33f14515cbfc1577e9500"
 dependencies = [
  "bevy",
  "bytemuck",
@@ -675,7 +675,7 @@ dependencies = [
 [[package]]
 name = "bevy_aurora"
 version = "0.1.0"
-source = "git+https://github.com/slyedoc/aurora.git?branch=main#cccbc40c12ffb216c78f3901476e8c28db32f487"
+source = "git+https://github.com/slyedoc/aurora.git?branch=main#97c2fa70b5fb239880d33f14515cbfc1577e9500"
 dependencies = [
  "ash",
  "ash-window",
@@ -7404,11 +7404,6 @@ dependencies = [
 ]
 
 [[patch.unused]]
-name = "avian3d"
-version = "0.8.0-dev"
-source = "git+https://github.com/slyedoc/avian?branch=aurora#c36fbc8a45bec3f19af1946849c5b715fb81116e"
-
-[[patch.unused]]
 name = "bevy_gltf"
 version = "0.20.0-dev"
 source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#48249fa2489b2c2a8ce700c4988b713373848420"
@@ -7417,3 +7412,8 @@ source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#48249fa2489b2c2a
 name = "bevy_enhanced_input"
 version = "0.26.0"
 source = "git+https://github.com/slyedoc/bevy_enhanced_input?branch=aurora#120b9dfe3e19a6ce4f4cb4c1265565838151e240"
+
+[[patch.unused]]
+name = "avian3d"
+version = "0.8.0-dev"
+source = "git+https://github.com/slyedoc/avian?branch=aurora#c36fbc8a45bec3f19af1946849c5b715fb81116e"
