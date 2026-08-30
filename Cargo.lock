@@ -463,7 +463,7 @@ dependencies = [
 [[package]]
 name = "aurora_cluster_mesh"
 version = "0.1.0"
-source = "git+https://github.com/slyedoc/aurora.git?branch=main#cd7a53e887ffcd0869921f49dd78e2c9fbf47378"
+source = "git+https://github.com/slyedoc/aurora.git?branch=main#5834eac9547f551482af593be83c67a1153cee4f"
 dependencies = [
  "bevy",
  "bytemuck",
@@ -675,7 +675,7 @@ dependencies = [
 [[package]]
 name = "bevy_aurora"
 version = "0.1.0"
-source = "git+https://github.com/slyedoc/aurora.git?branch=main#cd7a53e887ffcd0869921f49dd78e2c9fbf47378"
+source = "git+https://github.com/slyedoc/aurora.git?branch=main#5834eac9547f551482af593be83c67a1153cee4f"
 dependencies = [
  "ash",
  "ash-window",
