@@ -50,9 +50,6 @@ struct Args {
     #[arg(long, short)]
     timeout: Option<f32>,
 
-    /// Camera exposure in stops (the frame is scaled by 2^ev); -15 suits the procedural sun.
-    #[arg(long, default_value_t = -15.0)]
-    exposure_ev: f32,
 }
 
 #[derive(Resource)]
@@ -127,13 +124,9 @@ fn setup(
     mut commands: Commands,
     args: Res<Args>,
     mut windows: Query<&mut Window>,
-    mut dev_ui: ResMut<bevy_aurora::dev_ui::DevUIState>,
 ) {
-    // Physical daylight: the procedural sky is ~8,000 nits with a ~115 klux sun; the exposure
-    // is set for the sun.
-    dev_ui.exposure_ev = args.exposure_ev;
     let dlss = bevy_aurora::dlss::AuroraDlss::parse(&args.dlss).unwrap_or_else(|| {
-        warn!("unknown --dlss mode {:?}; staying off", args.dlss);
+        warn!("unknown --dlss mode {:?}; using dlaa", args.dlss);
         default()
     });
     if let Ok(mut window) = windows.single_mut() {

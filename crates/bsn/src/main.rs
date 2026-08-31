@@ -16,6 +16,7 @@ use bevy::{
     scene::ScenePatchInstance,
 };
 use bevy_aurora::{
+    auto_exposure::AuroraExposure,
     dev_shaders::DevShaderPlugin,
     dev_ui::DevUIPlugin,
     dlss::{DlssPlugin, RrPreset},
@@ -59,16 +60,6 @@ struct Args {
     /// Nits per HDR texel unit for `--sky`.
     #[arg(long, default_value_t = 8000.0)]
     sky_scale: f32,
-
-    /// Camera exposure in stops (the frame is scaled by 2^ev). -15 suits full sunlight
-    /// (~115 klux from the procedural sun); -13 an overcast / interior scene.
-    #[arg(long, default_value_t = -15.0)]
-    exposure_ev: f32,
-
-    /// Load the NGX development snippet: adds the DLSS-RR status HUD and its input
-    /// visualiser -- cycle with ctl+shift+f12, size with ctl+shift+f11 (window focused).
-    #[arg(long)]
-    dlss_dev: bool,
 
     /// Ray Reconstruction model preset: `default` (NVIDIA's pick, currently D), `d`, or `e`
     /// (latest transformer).
@@ -120,7 +111,6 @@ fn main() {
                 ..default()
             })
             .set(DlssPlugin {
-                dev_snippet: args.dlss_dev,
                 preset: args.dlss_preset,
             }),
     );
@@ -160,11 +150,7 @@ fn setup(
     args: Res<Args>,
     asset_server: Res<AssetServer>,
     mut windows: Query<&mut Window>,
-    mut dev_ui: ResMut<bevy_aurora::dev_ui::DevUIState>,
 ) {
-    // Physical daylight: the importers write emitters in nits (Bistro's lamps are 20,000),
-    // the procedural sky is ~8,000 with a ~115 klux sun, and the exposure is set for the sun.
-    dev_ui.exposure_ev = args.exposure_ev;
     if let Some(path) = &args.sky {
         commands.insert_resource(Sky::Hdr {
             image: asset_server.load(path.clone()),
@@ -202,6 +188,9 @@ fn setup(
             ..default()
         }),
         FreeCamera::default(),
+        // A locked look (tune it live on the camera in the F1 inspector; RR's input is
+        // metered underneath either way).
+        AuroraExposure::SUNLIGHT,
         Transform::from_translation(args.pos).looking_at(args.target, Vec3::Y),
     ));
 }
