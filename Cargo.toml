@@ -64,6 +64,9 @@ bevy_aurora = { git = "https://github.com/slyedoc/aurora.git", branch = "main" }
 # CLI parsing for the importer binaries.
 clap = { version = "4", features = ["derive"] }
 
+[patch."https://github.com/slyedoc/aurora"]
+bevy_aurora = { path = "../aurora" }
+
 # make_human's manifest reaches bevy/avian/enhanced_input by their upstream
 # URLs (same convention as zero); redirect them onto the one stacked graph.
 [patch."https://github.com/bevyengine/bevy"]

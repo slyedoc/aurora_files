@@ -16,8 +16,12 @@ use bevy::{
     scene::ScenePatchInstance,
 };
 use bevy_aurora::{
-    dev_shaders::DevShaderPlugin, dev_ui::DevUIPlugin, ray_default_plugins::RayDefaultPlugins,
+    dev_shaders::DevShaderPlugin,
+    dev_ui::DevUIPlugin,
+    dlss::{DlssPlugin, RrPreset},
+    ray_default_plugins::RayDefaultPlugins,
     sky::Sky,
+    util::{ScreenshotExt, TimeoutAppExt},
 };
 use clap::Parser;
 use util::park::HoverParkPlugin;
@@ -60,6 +64,25 @@ struct Args {
     /// (~115 klux from the procedural sun); -13 an overcast / interior scene.
     #[arg(long, default_value_t = -15.0)]
     exposure_ev: f32,
+
+    /// Load the NGX development snippet: adds the DLSS-RR status HUD and its input
+    /// visualiser -- cycle with ctl+shift+f12, size with ctl+shift+f11 (window focused).
+    #[arg(long)]
+    dlss_dev: bool,
+
+    /// Ray Reconstruction model preset: `default` (NVIDIA's pick, currently D), `d`, or `e`
+    /// (latest transformer).
+    #[arg(long, default_value = "default", value_parser = parse_preset)]
+    dlss_preset: RrPreset,
+}
+
+fn parse_preset(s: &str) -> Result<RrPreset, String> {
+    match s {
+        "default" => Ok(RrPreset::Default),
+        "d" => Ok(RrPreset::D),
+        "e" => Ok(RrPreset::E),
+        _ => Err("expected default|d|e".into()),
+    }
 }
 
 fn parse_vec3(s: &str) -> Result<Vec3, String> {
@@ -72,9 +95,6 @@ fn parse_vec3(s: &str) -> Result<Vec3, String> {
         _ => Err("expected x,y,z".into()),
     }
 }
-
-#[derive(Resource)]
-struct Timeout(f32);
 
 fn main() {
     // Root rule: explicit $BEVY_ASSET_ROOT > the current repo (a cwd with an assets/ dir — the
@@ -91,27 +111,29 @@ fn main() {
         }
     }
     let args = Args::parse();
-    let timeout = args
-        .timeout
-        .or_else(|| std::env::var_os("CLAUDECODE").map(|_| 60.0));
 
     let mut app = App::new();
-    app.add_plugins(RayDefaultPlugins.set(bevy::log::LogPlugin {
-        filter: util::LOG_FILTER.into(),
-        ..default()
-    }));
+    app.add_plugins(
+        RayDefaultPlugins
+            .set(bevy::log::LogPlugin {
+                filter: util::LOG_FILTER.into(),
+                ..default()
+            })
+            .set(DlssPlugin {
+                dev_snippet: args.dlss_dev,
+                preset: args.dlss_preset,
+            }),
+    );
     app.add_plugins((
         DevShaderPlugin,
         DevUIPlugin,
         FreeCameraPlugin::default(),
         HoverParkPlugin,
     ));
+    app.add_screenshot(KeyCode::F12);
+    app.add_timeout_exit(args.timeout, 60.0);
     app.insert_resource(args.clone());
     app.add_systems(Startup, setup);
-    if let Some(seconds) = timeout {
-        app.insert_resource(Timeout(seconds));
-        app.add_systems(Update, exit_on_timeout);
-    }
     app.run();
 }
 
@@ -184,8 +206,3 @@ fn setup(
     ));
 }
 
-fn exit_on_timeout(time: Res<Time>, timeout: Res<Timeout>, mut exit: MessageWriter<AppExit>) {
-    if time.elapsed_secs() >= timeout.0 {
-        exit.write(AppExit::Success);
-    }
-}
