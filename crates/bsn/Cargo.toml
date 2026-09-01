@@ -11,6 +11,12 @@ publish = false
 name = "bsn"
 path = "src/main.rs"
 
+[features]
+# VR: `cargo run --release -p bsn --features xr -- bistro/bistro.bsn` renders into the active
+# OpenXR runtime (WiVRn for a Quest). The camera position anchors the headset's tracking
+# origin, so keep `--pos` / `--target` level.
+xr = ["bevy_aurora/xr"]
+
 [dependencies]
 bevy = { workspace = true, features = ["bevy_camera_controller", "free_camera"] }
 bevy_aurora = { workspace = true, features = ["dev"] }

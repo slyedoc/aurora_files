@@ -104,7 +104,7 @@ fn main() {
     let args = Args::parse();
 
     let mut app = App::new();
-    app.add_plugins(
+    app.add_plugins((
         RayDefaultPlugins
             .set(bevy::log::LogPlugin {
                 filter: util::LOG_FILTER.into(),
@@ -113,13 +113,11 @@ fn main() {
             .set(DlssPlugin {
                 preset: args.dlss_preset,
             }),
-    );
-    app.add_plugins((
         DevShaderPlugin,
         DevUIPlugin,
         FreeCameraPlugin::default(),
         HoverParkPlugin,
-    ));
+    ));    
     app.add_screenshot(KeyCode::F12);
     app.add_timeout_exit(args.timeout, 60.0);
     app.insert_resource(args.clone());

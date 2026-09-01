@@ -318,7 +318,7 @@ version = "0.38.0+1.3.281"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -455,6 +455,7 @@ version = "0.1.0"
 dependencies = [
  "aurora_cluster_mesh 0.1.0 (git+https://github.com/slyedoc/aurora.git?branch=main)",
  "bevy",
+ "cc",
  "gltf",
  "image",
  "tobj",
@@ -500,6 +501,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
+
+[[package]]
 name = "bevy"
 version = "0.20.0-dev"
 source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
@@ -540,6 +547,7 @@ dependencies = [
  "bevy_derive",
  "bevy_ecs",
  "bevy_math",
+ "bevy_mesh",
  "bevy_platform",
  "bevy_reflect",
  "bevy_time",
@@ -697,6 +705,7 @@ dependencies = [
  "gpu-allocator",
  "half",
  "log",
+ "openxr",
  "png 0.17.16",
  "rand 0.8.8",
  "rand_chacha",
@@ -1102,6 +1111,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_gltf"
+version = "0.20.0-dev"
+source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
+dependencies = [
+ "async-lock",
+ "base64 0.23.1",
+ "bevy_animation",
+ "bevy_app",
+ "bevy_asset",
+ "bevy_camera",
+ "bevy_color",
+ "bevy_ecs",
+ "bevy_image",
+ "bevy_light",
+ "bevy_material",
+ "bevy_math",
+ "bevy_mesh",
+ "bevy_platform",
+ "bevy_reflect",
+ "bevy_tasks",
+ "bevy_transform",
+ "bevy_world_serialization",
+ "fixedbitset",
+ "gltf",
+ "itertools 0.14.0",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "thiserror 2.0.20",
+ "tracing",
+ "wgpu-types",
+]
+
+[[package]]
 name = "bevy_image"
 version = "0.20.0-dev"
 source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
@@ -1189,6 +1233,7 @@ dependencies = [
  "bevy_gilrs",
  "bevy_gizmos",
  "bevy_gizmos_render",
+ "bevy_gltf",
  "bevy_image",
  "bevy_input",
  "bevy_input_focus",
@@ -1374,6 +1419,7 @@ dependencies = [
  "bevy_diagnostic",
  "bevy_ecs",
  "bevy_extract",
+ "bevy_gltf",
  "bevy_image",
  "bevy_light",
  "bevy_log",
@@ -2679,7 +2725,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -3701,7 +3747,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
 dependencies = [
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "pkg-config",
 ]
 
@@ -3863,6 +3909,16 @@ name = "libloading"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
+
+[[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
 dependencies = [
  "cfg-if",
  "windows-link",
@@ -4721,6 +4777,27 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+
+[[package]]
+name = "openxr"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c2f814a47d257c79c762bc64042859661b6aa2f57cfa1f0ad4d778f419aeb0e"
+dependencies = [
+ "libc",
+ "libloading 0.9.0",
+ "ndk-context",
+ "openxr-sys",
+]
+
+[[package]]
+name = "openxr-sys"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b8d66081de28c2fa40216182a37292fe38aeea20bc184612504d5e64daf5359"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "orbclient"
@@ -6630,7 +6707,7 @@ dependencies = [
  "js-sys",
  "khronos-egl",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "log",
  "naga",
  "naga-types",
@@ -7211,7 +7288,7 @@ dependencies = [
  "as-raw-xcb-connection",
  "gethostname",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "once_cell",
  "rustix 1.1.4",
  "x11rb-protocol",
@@ -7414,16 +7491,11 @@ dependencies = [
 ]
 
 [[patch.unused]]
-name = "avian3d"
-version = "0.8.0-dev"
-source = "git+https://github.com/slyedoc/avian?branch=aurora#c36fbc8a45bec3f19af1946849c5b715fb81116e"
-
-[[patch.unused]]
 name = "bevy_enhanced_input"
 version = "0.26.0"
 source = "git+https://github.com/slyedoc/bevy_enhanced_input?branch=aurora#120b9dfe3e19a6ce4f4cb4c1265565838151e240"
 
 [[patch.unused]]
-name = "bevy_gltf"
-version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
+name = "avian3d"
+version = "0.8.0-dev"
+source = "git+https://github.com/slyedoc/avian?branch=aurora#c36fbc8a45bec3f19af1946849c5b715fb81116e"

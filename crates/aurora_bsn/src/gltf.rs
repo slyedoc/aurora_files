@@ -14,12 +14,13 @@ use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
+use aurora_cluster_mesh::{ClusterMeshData, write_cluster_mesh_sync};
 use bevy::asset::RenderAssetUsages;
 use bevy::math::Mat4;
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
-use aurora_cluster_mesh::{write_cluster_mesh_sync, ClusterMeshData};
 
 use crate::bsn;
+use crate::mesh;
 
 /// Per-asset knobs for the glTF importer.
 pub struct GltfConfig {
@@ -66,12 +67,17 @@ pub fn bake_gltf_scene(cfg: &GltfConfig) {
 
     // Extract every embedded/sourced image once (raw bytes, no re-encode) → `image index → file`.
     let image_files = extract_images(doc, &buffers, base, &textures_dir);
-    println!("extracted {} textures -> {}", image_files.len(), textures_dir.display());
+    println!(
+        "extracted {} textures -> {}",
+        image_files.len(),
+        textures_dir.display()
+    );
 
     let mut ctx = Ctx {
         buffers: &buffers,
         image_files: &image_files,
         meshes_dir: &meshes_dir,
+        textures_dir: &textures_dir,
         asset_prefix: &cfg.asset_prefix,
         replace: cfg.replace,
         emissive_nits: cfg.emissive_nits,
@@ -132,12 +138,17 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
     lint_materials(doc, cfg.emissive_nits).print();
 
     let image_files = extract_images(doc, &buffers, base, &textures_dir);
-    println!("extracted {} textures -> {}", image_files.len(), textures_dir.display());
+    println!(
+        "extracted {} textures -> {}",
+        image_files.len(),
+        textures_dir.display()
+    );
 
     let mut ctx = Ctx {
         buffers: &buffers,
         image_files: &image_files,
         meshes_dir: &meshes_dir,
+        textures_dir: &textures_dir,
         asset_prefix: &cfg.asset_prefix,
         replace: cfg.replace,
         emissive_nits: cfg.emissive_nits,
@@ -231,6 +242,7 @@ struct Ctx<'a> {
     buffers: &'a [gltf::buffer::Data],
     image_files: &'a HashMap<usize, String>,
     meshes_dir: &'a Path,
+    textures_dir: &'a Path,
     asset_prefix: &'a str,
     replace: bool,
     emissive_nits: Option<fn(&str) -> f32>,
@@ -325,12 +337,17 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
     lint_materials(doc, cfg.emissive_nits).print();
 
     let image_files = extract_images(doc, &buffers, base, &textures_dir);
-    println!("extracted {} textures -> {}", image_files.len(), textures_dir.display());
+    println!(
+        "extracted {} textures -> {}",
+        image_files.len(),
+        textures_dir.display()
+    );
 
     let mut ctx = Ctx {
         buffers: &buffers,
         image_files: &image_files,
         meshes_dir: &meshes_dir,
+        textures_dir: &textures_dir,
         asset_prefix: &cfg.asset_prefix,
         replace: cfg.replace,
         emissive_nits: cfg.emissive_nits,
@@ -357,9 +374,15 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
 
     println!(
         "baked {} meshes ({} failed) -> {}",
-        ctx.baked_count, ctx.failed_count, meshes_dir.display()
+        ctx.baked_count,
+        ctx.failed_count,
+        meshes_dir.display()
     );
-    println!("wrote {} node entities (hierarchy) -> {}", ctx.emitted, bsn_path.display());
+    println!(
+        "wrote {} node entities (hierarchy) -> {}",
+        ctx.emitted,
+        bsn_path.display()
+    );
 }
 
 /// Emit one node as a `.bsn` entity block (comma-terminated) at `depth`, recursing into children.
@@ -398,7 +421,10 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
     }
     let mat_fields = node
         .mesh()
-        .and_then(|m| m.primitives().find(|p| p.mode() == gltf::mesh::Mode::Triangles))
+        .and_then(|m| {
+            m.primitives()
+                .find(|p| p.mode() == gltf::mesh::Mode::Triangles)
+        })
         .map(|p| material_fields(&p.material(), ctx))
         .unwrap_or_default();
 
@@ -409,9 +435,16 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
          translation: glam::Vec3 {{ x: {}, y: {}, z: {} }}, \
          rotation: glam::Quat {{ x: {}, y: {}, z: {}, w: {} }}, \
          scale: glam::Vec3 {{ x: {}, y: {}, z: {} }} }}\n",
-        bsn::f(t[0]), bsn::f(t[1]), bsn::f(t[2]),
-        bsn::f(r[0]), bsn::f(r[1]), bsn::f(r[2]), bsn::f(r[3]),
-        bsn::f(s[0]), bsn::f(s[1]), bsn::f(s[2]),
+        bsn::f(t[0]),
+        bsn::f(t[1]),
+        bsn::f(t[2]),
+        bsn::f(r[0]),
+        bsn::f(r[1]),
+        bsn::f(r[2]),
+        bsn::f(r[3]),
+        bsn::f(s[0]),
+        bsn::f(s[1]),
+        bsn::f(s[2]),
     );
     // Single-primitive mesh: inline it on the node (the common case). Extra primitives drop to
     // identity-transform children below so this entity keeps the node's Name for animation.
@@ -467,7 +500,18 @@ fn bake_primitive(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> O
 
     let bevy_mesh = build_primitive_mesh(prim, ctx.buffers)?;
     match ClusterMeshData::from_mesh_flat(&bevy_mesh) {
-        Ok(cm) => {
+        Ok(mut cm) => {
+            // Alpha-cutout primitives get a baked opacity micromap against their base-colour
+            // alpha (the material's own cutoff).
+            let material = prim.material();
+            if material.alpha_mode() == gltf::material::AlphaMode::Mask
+                && let Some(info) = material.pbr_metallic_roughness().base_color_texture()
+                && let Some(file) = ctx.image_files.get(&info.texture().source().index())
+                && let Ok(img) = image::open(ctx.textures_dir.join(file))
+            {
+                let cutoff = material.alpha_cutoff().unwrap_or(0.5);
+                mesh::attach_omm_rgba(&mut cm, &img.into_rgba8(), cutoff, file);
+            }
             let w = BufWriter::new(File::create(&mesh_file).expect("create .cluster_mesh"));
             write_cluster_mesh_sync(&cm, w).expect("write .cluster_mesh");
             ctx.baked_count += 1;
@@ -515,7 +559,10 @@ pub fn bake_glb_primitive(glb_path: &Path, out_file: &Path, replace: bool) -> Re
 /// `Transform` places it). Loads only what the glTF carries — missing normals / UVs /
 /// tangents default downstream in `ClusterMeshData::from_mesh_flat`, so bare CAD/URDF
 /// primitives (POSITION only) still bake.
-pub(crate) fn build_primitive_mesh(prim: &gltf::Primitive, buffers: &[gltf::buffer::Data]) -> Option<Mesh> {
+pub(crate) fn build_primitive_mesh(
+    prim: &gltf::Primitive,
+    buffers: &[gltf::buffer::Data],
+) -> Option<Mesh> {
     let reader = prim.reader(|b| buffers.get(b.index()).map(|d| d.0.as_slice()));
     let positions: Vec<[f32; 3]> = reader.read_positions()?.collect();
     if positions.is_empty() {
@@ -523,7 +570,10 @@ pub(crate) fn build_primitive_mesh(prim: &gltf::Primitive, buffers: &[gltf::buff
     }
     let n = positions.len();
 
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD);
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
 
     if let Some(normals) = reader.read_normals() {
@@ -531,7 +581,10 @@ pub(crate) fn build_primitive_mesh(prim: &gltf::Primitive, buffers: &[gltf::buff
     }
     // Only accept UVs that cover every vertex; a partial/absent set is left to the bake
     // to fill (zero UV + identity tangent), which is correct for these untextured meshes.
-    if let Some(uvs) = reader.read_tex_coords(0).map(|t| t.into_f32().collect::<Vec<[f32; 2]>>()) {
+    if let Some(uvs) = reader
+        .read_tex_coords(0)
+        .map(|t| t.into_f32().collect::<Vec<[f32; 2]>>())
+    {
         if uvs.len() == n {
             mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
         }
@@ -565,7 +618,11 @@ pub(crate) fn emissive_radiance(
         .unwrap_or_else(|| emissive_nits.map_or(1.0, |f| f(material.name().unwrap_or(""))));
     // A textured emissive with a zero factor would be invisible (emissive = factor × texture);
     // default such a material to unit factor so the texture shows.
-    let [r, g, b] = if has_emissive_texture && ef == [0.0, 0.0, 0.0] { [1.0, 1.0, 1.0] } else { ef };
+    let [r, g, b] = if has_emissive_texture && ef == [0.0, 0.0, 0.0] {
+        [1.0, 1.0, 1.0]
+    } else {
+        ef
+    };
     Some([r * strength, g * strength, b * strength])
 }
 
@@ -619,7 +676,10 @@ fn material_fields(material: &gltf::Material, ctx: &Ctx) -> String {
             fields,
             " base_color: bevy_color::color::Color::LinearRgba(bevy_color::linear_rgba::LinearRgba \
              {{ red: {}, green: {}, blue: {}, alpha: {} }}),",
-            bsn::f(bc[0]), bsn::f(bc[1]), bsn::f(bc[2]), bsn::f(bc[3]),
+            bsn::f(bc[0]),
+            bsn::f(bc[1]),
+            bsn::f(bc[2]),
+            bsn::f(bc[3]),
         );
     }
     // glTF's metallicFactor defaults to 1.0 and is meant to scale a metallic-roughness texture.
@@ -663,13 +723,17 @@ fn material_fields(material: &gltf::Material, ctx: &Ctx) -> String {
     // Emissive: factor × KHR_materials_emissive_strength as linear radiance. When the asset ships no
     // strength, fall back to the per-scene `emissive_nits` resolver (keyed on material name) so
     // relative emitter brightness bakes in physically. `None` keeps the glTF value. View with exposure.
-    let emissive_tex = material.emissive_texture().and_then(|info| tex_file(info.texture(), ctx));
+    let emissive_tex = material
+        .emissive_texture()
+        .and_then(|info| tex_file(info.texture(), ctx));
     let radiance = emissive_radiance(material, ctx.emissive_nits, emissive_tex.is_some());
     if let Some([r, g, b]) = radiance {
         let _ = write!(
             fields,
             " emissive: bevy_color::linear_rgba::LinearRgba {{ red: {}, green: {}, blue: {}, alpha: 1.0 }},",
-            bsn::f(r), bsn::f(g), bsn::f(b),
+            bsn::f(r),
+            bsn::f(g),
+            bsn::f(b),
         );
         if let Some(p) = emissive_tex {
             let _ = write!(fields, " emissive_texture: \"{p}\",");
@@ -768,16 +832,17 @@ fn ext_for_mime(mime: &str) -> &'static str {
 }
 
 /// A filesystem-safe, collision-free filename for an extracted image.
-fn unique_name(
-    name: Option<&str>,
-    idx: usize,
-    ext: &str,
-    used: &mut HashSet<String>,
-) -> String {
+fn unique_name(name: Option<&str>, idx: usize, ext: &str, used: &mut HashSet<String>) -> String {
     let stem = name
         .map(|n| {
             n.chars()
-                .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
                 .collect::<String>()
         })
         .filter(|s| !s.is_empty())

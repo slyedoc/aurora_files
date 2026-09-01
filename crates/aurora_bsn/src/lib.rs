@@ -11,7 +11,7 @@ use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-use aurora_cluster_mesh::{write_cluster_mesh_sync, ClusterMeshData};
+use aurora_cluster_mesh::{ClusterMeshData, write_cluster_mesh_sync};
 
 pub mod bsn;
 pub mod dedup;
@@ -20,10 +20,12 @@ pub mod gltf;
 pub mod img;
 pub mod lint;
 pub mod mesh;
+#[cfg(feature = "omm")]
+pub mod omm;
 pub mod speedtree;
 
-pub use gltf::{bake_gltf_hierarchy, bake_gltf_per_group, bake_gltf_scene, GltfConfig};
-pub use speedtree::{bake_speedtree, SpeedTreeConfig};
+pub use gltf::{GltfConfig, bake_gltf_hierarchy, bake_gltf_per_group, bake_gltf_scene};
+pub use speedtree::{SpeedTreeConfig, bake_speedtree};
 
 /// Per-submesh facts a [`SubmeshFilter`] can decide on (e.g. keep only floor surfaces, or only
 /// alpha-cutout objects).
@@ -133,8 +135,10 @@ pub fn bake_scene(cfg: &SceneConfig) {
     // mesh placed by a recovered rigid+scale `Transform`. `centroids[i]` is both the local pivot and
     // the world translation; `owner[i]` points each submesh at the mesh it reuses (itself when
     // unique); `rot`/`scale` carry the fit of the owner's geometry onto this submesh.
-    let centroids: Vec<Option<V3>> =
-        models.iter().map(|m| mesh::submesh_centroid(&m.mesh)).collect();
+    let centroids: Vec<Option<V3>> = models
+        .iter()
+        .map(|m| mesh::submesh_centroid(&m.mesh))
+        .collect();
     let mut owner: Vec<usize> = (0..models.len()).collect();
     let mut rot: Vec<[f64; 4]> = vec![[1.0, 0.0, 0.0, 0.0]; models.len()]; // quaternion (w,x,y,z)
     let mut scale: Vec<f64> = vec![1.0; models.len()];
@@ -204,20 +208,42 @@ pub fn bake_scene(cfg: &SceneConfig) {
     // Pass 1 — bake each NEEDED owner's centroid-centered geometry once (instances reuse it). A bake
     // that fails (e.g. missing UVs) marks the owner so its entities are dropped below.
     let mut baked = 0usize;
+    let mut omm_baked = 0usize;
     let mut failed: HashSet<usize> = HashSet::new();
     for i in 0..models.len() {
         if owner[i] != i || !needed_owner[i] {
             continue; // not an owner, or no kept submesh references it
         }
-        let Some(centroid) = centroids[i] else { continue };
-        let mesh_file =
-            meshes_dir.join(format!("{}_{i}.cluster_mesh", discovery::sanitize(&models[i].name)));
+        let Some(centroid) = centroids[i] else {
+            continue;
+        };
+        let mesh_file = meshes_dir.join(format!(
+            "{}_{i}.cluster_mesh",
+            discovery::sanitize(&models[i].name)
+        ));
         if mesh_file.exists() && !cfg.replace {
             continue; // re-runs only re-emit the `.bsn` (use `replace` to overwrite)
         }
         let m = mesh::build_mesh(&models[i].mesh, centroid);
         match ClusterMeshData::from_mesh_flat(&m) {
-            Ok(cm) => {
+            Ok(mut cm) => {
+                // Alpha-cutout owners get a baked opacity micromap (the RT cores then resolve
+                // known opaque/transparent micro-regions without the any-hit shader), against
+                // the final post-cluster triangle order.
+                let is_cutmask = models[i]
+                    .mesh
+                    .material_id
+                    .is_some_and(|id| cutmask.get(id).copied().unwrap_or(false));
+                if is_cutmask
+                    && let Some(material) =
+                        models[i].mesh.material_id.and_then(|id| materials.get(id))
+                    && let Some((omms, bytes)) = mesh::attach_omm(&mut cm, &obj_dir, material)
+                {
+                    omm_baked += 1;
+                    if omm_baked % 20 == 0 {
+                        println!("  OMM baked {omm_baked} (latest: {omms} omms, {bytes} B)");
+                    }
+                }
                 let w = BufWriter::new(File::create(&mesh_file).expect("create .cluster_mesh"));
                 write_cluster_mesh_sync(&cm, w).expect("write .cluster_mesh");
                 baked += 1;
@@ -269,7 +295,10 @@ pub fn bake_scene(cfg: &SceneConfig) {
     let bsn_path = cfg.out_dir.join(format!("{}.bsn", cfg.scene_name));
     fs::write(&bsn_path, bsn).expect("write .bsn");
 
-    println!("baked {baked} meshes -> {}", meshes_dir.display());
+    println!(
+        "baked {baked} meshes ({omm_baked} with OMM) -> {}",
+        meshes_dir.display()
+    );
     println!("wrote {emitted} entities -> {}", bsn_path.display());
 }
 

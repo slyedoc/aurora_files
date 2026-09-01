@@ -6,6 +6,16 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+default = ["omm"]
+# Opacity-micromap baking for alpha cutouts through the NVIDIA OMM SDK's CPU baker
+# (csrc/omm_shim.cpp, linked from `$OMM_SDK`, default /mnt/code/f/OMM -- see build.rs).
+# Without it meshes bake exactly as before, minus the OMM slices.
+omm = ["dep:cc"]
+
+[build-dependencies]
+cc = { version = "1", optional = true }
+
 [dependencies]
 bevy.workspace = true
 aurora_cluster_mesh.workspace = true
@@ -24,4 +34,6 @@ gltf = { version = "1.4.0", default-features = false, features = [
   "KHR_materials_specular",
   "KHR_materials_volume",
   "KHR_materials_emissive_strength",
+  # Bistro.glb lists this in extensionsRequired; the lights themselves are not imported.
+  "KHR_lights_punctual",
 ] }

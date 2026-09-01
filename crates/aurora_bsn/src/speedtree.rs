@@ -10,8 +10,8 @@ use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
+use aurora_cluster_mesh::{ClusterMeshData, write_cluster_mesh_sync};
 use bevy::math::Mat4;
-use aurora_cluster_mesh::{write_cluster_mesh_sync, ClusterMeshData};
 
 use crate::gltf::build_primitive_mesh;
 use crate::{bsn, img};
@@ -59,7 +59,13 @@ pub fn bake_speedtree(cfg: &SpeedTreeConfig) {
 }
 
 /// Bake one tree glb: extract its textures, bake each primitive (+OMM on cutouts), write `<stem>.bsn`.
-fn bake_tree(stem: &str, glb: &Path, meshes_dir: &Path, textures_dir: &Path, cfg: &SpeedTreeConfig) {
+fn bake_tree(
+    stem: &str,
+    glb: &Path,
+    meshes_dir: &Path,
+    textures_dir: &Path,
+    cfg: &SpeedTreeConfig,
+) {
     let bytes = fs::read(glb).expect("read glb");
     let gltf = gltf::Gltf::from_slice(&bytes).expect("parse glb");
     let doc: &gltf::Document = &gltf;
@@ -87,6 +93,7 @@ fn bake_tree(stem: &str, glb: &Path, meshes_dir: &Path, textures_dir: &Path, cfg
         buffers: &buffers,
         image_files: &image_files,
         meshes_dir,
+        textures_dir,
         cutmask: &cutmask,
         cfg,
         baked: HashMap::new(),
@@ -96,7 +103,10 @@ fn bake_tree(stem: &str, glb: &Path, meshes_dir: &Path, textures_dir: &Path, cfg
         clump_sources: Vec::new(),
     };
 
-    let scene = doc.default_scene().or_else(|| doc.scenes().next()).expect("glb has no scene");
+    let scene = doc
+        .default_scene()
+        .or_else(|| doc.scenes().next())
+        .expect("glb has no scene");
     let root = Mat4::from_scale(bevy::math::Vec3::splat(cfg.scale));
     for node in scene.nodes() {
         walk(&node, root, &mut ctx);
@@ -105,10 +115,7 @@ fn bake_tree(stem: &str, glb: &Path, meshes_dir: &Path, textures_dir: &Path, cfg
     let bsn = bsn::scene(stem, &ctx.entities);
     fs::write(cfg.out_dir.join(format!("{stem}.bsn")), bsn).expect("write .bsn");
     let height = ctx.aabb.map(|(mn, mx)| mx[1] - mn[1]).unwrap_or(0.0);
-    println!(
-        "  {stem}: {} entities, ~{height:.2}m tall",
-        ctx.emitted,
-    );
+    println!("  {stem}: {} entities, ~{height:.2}m tall", ctx.emitted,);
     if cfg.clump > 1 {
         bake_clump(stem, &ctx, cfg);
     }
@@ -126,13 +133,18 @@ fn bake_clump(tree: &str, ctx: &Tree, cfg: &SpeedTreeConfig) {
         let file = ctx.meshes_dir.join(format!("{stem}.cluster_mesh"));
         if cfg.replace || !file.exists() {
             let merged = merge_placements(&src.mesh, &placements);
-            let cm = match ClusterMeshData::from_mesh_flat(&merged) {
+            let mut cm = match ClusterMeshData::from_mesh_flat(&merged) {
                 Ok(cm) => cm,
                 Err(err) => {
                     eprintln!("  clump bake failed {stem}: {err:?}");
                     continue;
                 }
             };
+            if let Some(file) = src.cut_image.and_then(|i| ctx.image_files.get(&i))
+                && let Ok(img) = image::open(ctx.textures_dir.join(file))
+            {
+                crate::mesh::attach_omm_rgba(&mut cm, &img.into_rgba8(), img::MASK_CUTOFF, file);
+            }
             let w = BufWriter::new(File::create(&file).expect("create .cluster_mesh"));
             write_cluster_mesh_sync(&cm, w).expect("write .cluster_mesh");
         }
@@ -184,10 +196,7 @@ fn clump_placements(seed_name: &str, k: u32, radius: f32) -> Vec<Mat4> {
 
 /// Concatenate `src` under each placement into one mesh (positions by the full
 /// transform, normals/tangents rotation-only — placements are uniform-scale).
-fn merge_placements(
-    src: &bevy::mesh::Mesh,
-    placements: &[Mat4],
-) -> bevy::mesh::Mesh {
+fn merge_placements(src: &bevy::mesh::Mesh, placements: &[Mat4]) -> bevy::mesh::Mesh {
     use bevy::math::Vec3;
     use bevy::mesh::{Indices, Mesh, VertexAttributeValues};
 
@@ -267,6 +276,8 @@ struct ClumpSource {
     fields: String,
     name: String,
     mesh: bevy::mesh::Mesh,
+    /// Base-colour image index of a classified cutout: the merged clump re-bakes its OMM.
+    cut_image: Option<usize>,
 }
 
 struct Tree<'a> {
@@ -274,6 +285,7 @@ struct Tree<'a> {
     buffers: &'a [gltf::buffer::Data],
     image_files: &'a HashMap<usize, String>,
     meshes_dir: &'a Path,
+    textures_dir: &'a Path,
     cutmask: &'a HashMap<usize, bool>,
     cfg: &'a SpeedTreeConfig,
     /// `(mesh, prim, world) → owner stem` — identical instances bake once;
@@ -348,7 +360,11 @@ fn bake_primitive(
     // First bake of a primitive keeps the legacy stem; further distinct
     // worlds get a suffix so they don't clobber each other's files.
     let base = format!("{}_m{}p{}", ctx.stem, mesh.index(), prim.index());
-    let stem = if ctx.baked.keys().any(|(m, p, _)| (*m, *p) == (mesh.index(), prim.index())) {
+    let stem = if ctx
+        .baked
+        .keys()
+        .any(|(m, p, _)| (*m, *p) == (mesh.index(), prim.index()))
+    {
         format!("{base}_w{unique}")
     } else {
         base
@@ -363,42 +379,79 @@ fn bake_primitive(
             fields,
             name: format!("{}.{}", ctx.stem, prim.material().name().unwrap_or("part")),
             mesh: bevy_mesh.clone(),
+            cut_image: cut.then(|| base_color_image(&prim.material())).flatten(),
         });
     }
     if file.exists() && !ctx.cfg.replace {
         return Some(stem); // re-runs only re-emit the `.bsn`
     }
 
-    let cm = match ClusterMeshData::from_mesh_flat(&bevy_mesh) {
+    let mut cm = match ClusterMeshData::from_mesh_flat(&bevy_mesh) {
         Ok(cm) => cm,
         Err(err) => {
             eprintln!("  bake failed {stem}: {err:?}");
             return None;
         }
     };
+    if cut {
+        attach_cutout_omm(&mut cm, &prim.material(), ctx);
+    }
     let w = BufWriter::new(File::create(&file).expect("create .cluster_mesh"));
     write_cluster_mesh_sync(&cm, w).expect("write .cluster_mesh");
     Some(stem)
+}
+
+/// Bake the cutout's opacity micromap from its base-colour image (the tree-prefixed extracted
+/// PNG) and attach it to `cm`.
+fn attach_cutout_omm(cm: &mut ClusterMeshData, material: &gltf::Material, ctx: &Tree) {
+    if let Some(file) = base_color_image(material).and_then(|i| ctx.image_files.get(&i))
+        && let Ok(img) = image::open(ctx.textures_dir.join(file))
+    {
+        crate::mesh::attach_omm_rgba(cm, &img.into_rgba8(), img::MASK_CUTOFF, file);
+    }
 }
 
 /// Inline `AuroraMaterial` fields: base-color + normal textures and `Mask` for classified cutouts.
 fn material_fields(material: &gltf::Material, cut: bool, ctx: &Tree) -> String {
     let mut f = String::new();
     if let Some(p) = base_color_image(material).and_then(|i| ctx.image_files.get(&i)) {
-        let _ = write!(f, " base_color_texture: \"{}/textures/{p}\",", ctx.cfg.asset_prefix);
+        let _ = write!(
+            f,
+            " base_color_texture: \"{}/textures/{p}\",",
+            ctx.cfg.asset_prefix
+        );
     }
-    if let Some(p) = material.normal_texture().map(|t| t.texture().source().index()).and_then(|i| ctx.image_files.get(&i)) {
-        let _ = write!(f, " normal_map_texture: \"{}/textures/{p}\",", ctx.cfg.asset_prefix);
+    if let Some(p) = material
+        .normal_texture()
+        .map(|t| t.texture().source().index())
+        .and_then(|i| ctx.image_files.get(&i))
+    {
+        let _ = write!(
+            f,
+            " normal_map_texture: \"{}/textures/{p}\",",
+            ctx.cfg.asset_prefix
+        );
     }
     if cut {
-        let _ = write!(f, " alpha_mode: bevy_aurora::material::AlphaMode::Mask({}),", bsn::f(img::MASK_CUTOFF));
+        let _ = write!(
+            f,
+            " alpha_mode: bevy_aurora::material::AlphaMode::Mask({}),",
+            bsn::f(img::MASK_CUTOFF)
+        );
     }
     f
 }
 
 /// The `image` index a material samples for base color, if any.
 fn base_color_image(material: &gltf::Material) -> Option<usize> {
-    Some(material.pbr_metallic_roughness().base_color_texture()?.texture().source().index())
+    Some(
+        material
+            .pbr_metallic_roughness()
+            .base_color_texture()?
+            .texture()
+            .source()
+            .index(),
+    )
 }
 
 /// Bake `world` into the mesh attributes: positions by the full transform,
@@ -410,14 +463,18 @@ fn bake_world_into_mesh(mesh: &mut bevy::mesh::Mesh, world: Mat4) {
         mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
     {
         for p in positions.iter_mut() {
-            *p = world.transform_point3(bevy::math::Vec3::from(*p)).to_array();
+            *p = world
+                .transform_point3(bevy::math::Vec3::from(*p))
+                .to_array();
         }
     }
     if let Some(VertexAttributeValues::Float32x3(normals)) =
         mesh.attribute_mut(Mesh::ATTRIBUTE_NORMAL)
     {
         for n in normals.iter_mut() {
-            *n = (rotation * bevy::math::Vec3::from(*n)).normalize_or_zero().to_array();
+            *n = (rotation * bevy::math::Vec3::from(*n))
+                .normalize_or_zero()
+                .to_array();
         }
     }
     if let Some(VertexAttributeValues::Float32x4(tangents)) =
@@ -433,9 +490,16 @@ fn bake_world_into_mesh(mesh: &mut bevy::mesh::Mesh, world: Mat4) {
 
 /// Grow the running WORLD-space AABB from a primitive's positions (diagnostic height report);
 /// `world` carries the node transform chain (incl. `cfg.scale`), so the reported size is true.
-fn grow_aabb(aabb: &mut Option<([f32; 3], [f32; 3])>, prim: &gltf::Primitive, buffers: &[gltf::buffer::Data], world: Mat4) {
+fn grow_aabb(
+    aabb: &mut Option<([f32; 3], [f32; 3])>,
+    prim: &gltf::Primitive,
+    buffers: &[gltf::buffer::Data],
+    world: Mat4,
+) {
     let reader = prim.reader(|b| buffers.get(b.index()).map(|d| d.0.as_slice()));
-    let Some(positions) = reader.read_positions() else { return };
+    let Some(positions) = reader.read_positions() else {
+        return;
+    };
     let (mut mn, mut mx) = aabb.unwrap_or(([f32::MAX; 3], [f32::MIN; 3]));
     for p in positions {
         let w = world.transform_point3(bevy::math::Vec3::from(p)).to_array();
@@ -486,8 +550,18 @@ fn safe(name: &str, idx: usize) -> String {
         .unwrap_or("")
         .trim()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let clean = clean.trim_matches('_').to_string();
-    if clean.is_empty() { format!("img{idx}") } else { clean }
+    if clean.is_empty() {
+        format!("img{idx}")
+    } else {
+        clean
+    }
 }
