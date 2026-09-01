@@ -52,8 +52,9 @@ struct Args {
     #[arg(long, short)]
     timeout: Option<f32>,
 
-    /// Equirectangular HDR sky (asset-relative path, e.g. `sky.hdr`); default is the
-    /// procedural clear sky. Texels are scaled by `--sky-scale` to nits.
+    /// Equirectangular HDR sky to start with (asset-relative path, e.g. `sky/x.hdr`); default
+    /// is the procedural clear sky. `1` / `2` cycle through the procedural sky and every
+    /// `.hdr` / `.exr` under `assets/sky/`. Texels are scaled by `--sky-scale` to nits.
     #[arg(long)]
     sky: Option<String>,
 
@@ -122,7 +123,87 @@ fn main() {
     app.add_timeout_exit(args.timeout, 60.0);
     app.insert_resource(args.clone());
     app.add_systems(Startup, setup);
+    app.add_systems(Update, cycle_sky);
     app.run();
+}
+
+/// The skies `1` / `2` cycle through: `None` is the procedural sky, then each `.hdr` / `.exr`
+/// under `assets/sky/` as an asset path.
+#[derive(Resource)]
+struct SkyCycle {
+    entries: Vec<Option<String>>,
+    index: usize,
+}
+
+impl SkyCycle {
+    fn discover(start: Option<&str>) -> Self {
+        let dir = std::path::PathBuf::from(std::env::var_os("BEVY_ASSET_ROOT").expect("set in main"))
+            .join("assets/sky");
+        let mut files: Vec<String> = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+                (ext == "hdr" || ext == "exr").then(|| format!("sky/{name}"))
+            })
+            .collect();
+        files.sort();
+        let mut entries: Vec<Option<String>> = std::iter::once(None).chain(files.into_iter().map(Some)).collect();
+        let index = match start {
+            None => 0,
+            Some(path) => match entries.iter().position(|e| e.as_deref() == Some(path)) {
+                Some(i) => i,
+                None => {
+                    entries.push(Some(path.to_string()));
+                    entries.len() - 1
+                }
+            },
+        };
+        Self { entries, index }
+    }
+
+    fn current(&self) -> Option<&str> {
+        self.entries[self.index].as_deref()
+    }
+
+    fn apply(&self, commands: &mut Commands, asset_server: &AssetServer, scale: f32) {
+        match self.current() {
+            None => commands.insert_resource(Sky::Procedural),
+            Some(path) => commands.insert_resource(Sky::Hdr {
+                image: asset_server.load(path.to_string()),
+                scale,
+            }),
+        }
+        info!(
+            "sky {}/{}: {}",
+            self.index + 1,
+            self.entries.len(),
+            self.current().unwrap_or("procedural")
+        );
+    }
+}
+
+fn cycle_sky(
+    input: Res<ButtonInput<KeyCode>>,
+    mut cycle: ResMut<SkyCycle>,
+    args: Res<Args>,
+    asset_server: Res<AssetServer>,
+    mut commands: Commands,
+) {
+    let step = if input.just_pressed(KeyCode::Digit2) {
+        1
+    } else if input.just_pressed(KeyCode::Digit1) {
+        cycle.entries.len() - 1
+    } else {
+        return;
+    };
+    if cycle.entries.len() < 2 {
+        return;
+    }
+    cycle.index = (cycle.index + step) % cycle.entries.len();
+    cycle.apply(&mut commands, &asset_server, args.sky_scale);
 }
 
 /// A scene arg as the asset server wants it: filesystem paths (absolute, cwd-relative, or
@@ -149,12 +230,11 @@ fn setup(
     asset_server: Res<AssetServer>,
     mut windows: Query<&mut Window>,
 ) {
-    if let Some(path) = &args.sky {
-        commands.insert_resource(Sky::Hdr {
-            image: asset_server.load(path.clone()),
-            scale: args.sky_scale,
-        });
+    let cycle = SkyCycle::discover(args.sky.as_deref());
+    if cycle.current().is_some() {
+        cycle.apply(&mut commands, &asset_server, args.sky_scale);
     }
+    commands.insert_resource(cycle);
 
     if let Ok(mut window) = windows.single_mut() {
         window.title = match args.scenes.as_slice() {

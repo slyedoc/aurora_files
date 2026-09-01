@@ -40,7 +40,7 @@ fn main() {
     let args = Args::parse();
 
     let cfg = GltfConfig {
-        gltf_path: args.gltf,
+        gltf_path: args.gltf,a
         out_dir: args.out_dir,
         asset_prefix: args.asset_prefix,
         // Lowercase so the output is `bistro.bsn` (the path the bevy bistro example loads).
