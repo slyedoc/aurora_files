@@ -31,7 +31,11 @@ fn emissive_nits_default(name: &str) -> f32 {
     let n = name.to_ascii_lowercase();
     if n.contains("sign") || n.contains("neon") || n.contains("letter") { 2000.0 }
     else if n.contains("screen") || n.contains("monitor") || n.contains("display") || n.contains("tv") { 350.0 }
-    else if n.contains("lamp") || n.contains("bulb") || n.contains("light") { 20000.0 }
+    // Fixtures: lamps, bulbs, lanterns and the ceiling-fan lights. `lantern`/`fan` matter --
+    // Bistro's interior is lit by `MASTER_Interior_01_Paris_Lantern1` and `Paris_CeilingFan`,
+    // which used to miss every keyword and bake at the 100-nit fallback (a dark interior).
+    else if n.contains("lamp") || n.contains("bulb") || n.contains("light")
+        || n.contains("lantern") || n.contains("fan") { 40000.0 }
     else if n.contains("candle") || n.contains("fire") || n.contains("ember") || n.contains("flame") { 6000.0 }
     else { 100.0 }
 }
@@ -40,7 +44,7 @@ fn main() {
     let args = Args::parse();
 
     let cfg = GltfConfig {
-        gltf_path: args.gltf,a
+        gltf_path: args.gltf,
         out_dir: args.out_dir,
         asset_prefix: args.asset_prefix,
         // Lowercase so the output is `bistro.bsn` (the path the bevy bistro example loads).
