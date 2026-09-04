@@ -72,7 +72,7 @@ pub fn write_entity(
 
 /// Inline `AuroraMaterial` field list for the `.bsn`. Absent fields fall back to the material's
 /// defaults (e.g. an omitted `base_color_texture` stays `None`).
-fn material_fields(
+pub fn material_fields(
     asset_prefix: &str,
     material: Option<&tobj::Material>,
     is_cutmask: bool,

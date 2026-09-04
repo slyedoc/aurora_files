@@ -22,6 +22,7 @@ members = [
   "importers/prop",
   "importers/san_miguel",
   "importers/speedtree",
+  "importers/wow",
   "importers/zeroday",
 ]
 exclude = [

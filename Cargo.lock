@@ -7254,6 +7254,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "wow_import"
+version = "0.1.0"
+dependencies = [
+ "aurora_bsn",
+ "aurora_cluster_mesh 0.1.0 (git+https://github.com/slyedoc/aurora.git?branch=main)",
+ "bevy",
+ "clap",
+ "image",
+ "serde",
+ "serde_json",
+ "tobj",
+]
+
+[[package]]
 name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7491,11 +7505,11 @@ dependencies = [
 ]
 
 [[patch.unused]]
-name = "avian3d"
-version = "0.8.0-dev"
-source = "git+https://github.com/slyedoc/avian?branch=aurora#d1071c079fec99e042fb407d3679cffe7903cff7"
-
-[[patch.unused]]
 name = "bevy_enhanced_input"
 version = "0.26.0"
 source = "git+https://github.com/slyedoc/bevy_enhanced_input?branch=aurora#120b9dfe3e19a6ce4f4cb4c1265565838151e240"
+
+[[patch.unused]]
+name = "avian3d"
+version = "0.8.0-dev"
+source = "git+https://github.com/slyedoc/avian?branch=aurora#d1071c079fec99e042fb407d3679cffe7903cff7"
