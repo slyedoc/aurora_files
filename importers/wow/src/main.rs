@@ -30,6 +30,28 @@
 //! `core/tools/import_wow` works in the `+wow_x/+wow_z` tile-local frame; our frame is that
 //! rotated 180° about Y, so placements get `t → (−t.x, t.y, −t.z)` and `R → RotY(π) · R`.
 //!
+//! Emissives: wow.export writes a `.json` beside each model. For an M2 it carries the
+//! materials (flags, blend mode) and the skin's texture units, which map an OBJ `Geoset<i>`
+//! group to its material; for a WMO the materials (flags, self-illuminated colour) and each
+//! group's render batches, which map an OBJ `<GroupName><batch>` group. An additive-blended
+//! M2 material (blend 3/4/7) is a glow card: the base-colour texture becomes the emissive
+//! texture at `--emissive-nits`. An unlit material (flag 1) is WoW's fullbright: lantern
+//! glass and lit windows, but also campfire logs and lava, so it glows at the lower
+//! `--unlit-nits`. A WMO material with a self-illuminated (sidn) colour glows in that colour
+//! at `--sidn-nits` (WoW only shows it at night).
+//!
+//! What emits is baked into derived textures under `textures/`. A glow CARD (any emissive
+//! material whose texture has real alpha -- the shape lives there, the RGB is bright
+//! everywhere) is WoW's additive billboard halo, which a flat emitter cannot be: a path
+//! tracer shows it as a disc. So a card becomes two things: its CORE (`<tex>_card.png`,
+//! black RGB with the alpha, cut at 0.5, emitting `<tex>_glow.png` = RGB x alpha) -- the
+//! visible flame -- and a `PointLight` at the card's centre carrying the whole card's flux
+//! (pi x radiance x area), which is the halo's illumination without the halo. A FULLBRIGHT
+//! material (opaque alpha) keeps its base colour and emits `<tex>_glow.png` =
+//! RGB^`--unlit-contrast`, so a lantern's bright glass glows and its dark frame does not.
+//! The tracer's light table averages the emissive texture, so an emitter lights the scene
+//! by what it actually emits.
+//!
 //! Ground clutter: each splat layer's `effectID` (wow.export tex json) -> GroundEffectTexture
 //! (density, up to four doodads with weights) -> GroundEffectDoodad (model file id) -> the
 //! community listfile (path) -> `maps/<map>/foliage/<basename>.obj`. The plants are baked
@@ -38,7 +60,7 @@
 //! the chunks at runtime from those (game/wow_clutter.rs). Plant `.bsn`s and `clutter.ron`
 //! are never overwritten without `--replace`.
 //!
-//! Deferred: liquids, creatures, M2 blend-mode JSONs.
+//! Deferred: liquids, creatures.
 //!
 //!   cargo run --release -p wow_import                        # Northshire (31-33 × 47-49)
 
@@ -99,6 +121,221 @@ struct Args {
     /// model ids to plant model names.
     #[arg(long, default_value = "/home/slyedoc/code/p/core/assets/terrain/dbc/listfile.csv")]
     listfile: PathBuf,
+    /// Radiance (nits) of additive-blended materials: lamp glows, flames, fireflies.
+    #[arg(long, default_value_t = 20000.0)]
+    emissive_nits: f32,
+    /// Radiance (nits) of unlit (fullbright) materials: lantern glass, lit logs.
+    #[arg(long, default_value_t = 8000.0)]
+    unlit_nits: f32,
+    /// Radiance (nits) of WMO self-illuminated colours (lit windows).
+    #[arg(long, default_value_t = 5000.0)]
+    sidn_nits: f32,
+    /// Exponent on a fullbright material's linear colour for its glow map: higher keeps the
+    /// emission to the texture's brightest parts (lantern glass, not its frame).
+    #[arg(long, default_value_t = 3.0)]
+    unlit_contrast: f32,
+}
+
+// ---- emissive materials from the wow.export json sidecars ----------------------------------
+
+/// What a submesh emits, from its model's json: a tint (linear, 1 = white) and whether the
+/// material is additive-blended (a glow card whose alpha is coverage).
+#[derive(Clone, Copy, Debug)]
+struct Emissive {
+    tint: [f32; 3],
+    nits: f32,
+    additive: bool,
+}
+
+/// Per OBJ submesh (tobj model order), the emissive its material carries.
+fn model_emissives(args: &Args, obj_path: &Path, models: &[tobj::Model]) -> Vec<Option<Emissive>> {
+    let json_path = obj_path.with_extension("json");
+    let Ok(text) = fs::read_to_string(&json_path) else {
+        return vec![None; models.len()];
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return vec![None; models.len()];
+    };
+    match json["fileType"].as_str() {
+        Some("m2") => m2_emissives(args, &json, models),
+        Some("wmo") => wmo_emissives(args, &json, models),
+        _ => vec![None; models.len()],
+    }
+}
+
+fn m2_emissives(args: &Args, json: &serde_json::Value, models: &[tobj::Model]) -> Vec<Option<Emissive>> {
+    let materials = json["materials"].as_array();
+    let units = json["skin"]["textureUnits"].as_array();
+    let (Some(materials), Some(units)) = (materials, units) else {
+        return vec![None; models.len()];
+    };
+    models
+        .iter()
+        .map(|m| {
+            // `Geoset<i>` = skin section i; its first texture unit names the material.
+            let section: u64 = m.name.strip_prefix("Geoset")?.parse().ok()?;
+            let unit = units
+                .iter()
+                .find(|u| u["skinSectionIndex"].as_u64() == Some(section))?;
+            let material = materials.get(unit["materialIndex"].as_u64()? as usize)?;
+            let flags = material["flags"].as_u64().unwrap_or(0);
+            let blend = material["blendingMode"].as_u64().unwrap_or(0);
+            let unlit = flags & 1 != 0;
+            let additive = matches!(blend, 3 | 4 | 7);
+            (unlit || additive).then_some(Emissive {
+                tint: [1.0; 3],
+                nits: if additive { args.emissive_nits } else { args.unlit_nits },
+                additive,
+            })
+        })
+        .collect()
+}
+
+fn wmo_emissives(args: &Args, json: &serde_json::Value, models: &[tobj::Model]) -> Vec<Option<Emissive>> {
+    let (Some(materials), Some(groups)) = (json["materials"].as_array(), json["groups"].as_array())
+    else {
+        return vec![None; models.len()];
+    };
+    // OBJ group `<GroupName><batch>` -> WMO material id, from each group's render batches.
+    let mut by_name: HashMap<String, usize> = HashMap::new();
+    for group in groups {
+        let Some(name) = group["groupName"].as_str() else { continue };
+        for (batch, info) in group["renderBatches"].as_array().into_iter().flatten().enumerate() {
+            if let Some(id) = info["materialID"].as_u64() {
+                by_name.entry(format!("{name}{batch}")).or_insert(id as usize);
+            }
+        }
+    }
+    models
+        .iter()
+        .map(|m| {
+            let material = materials.get(*by_name.get(&m.name)?)?;
+            let flags = material["flags"].as_u64().unwrap_or(0);
+            let unlit = flags & 1 != 0;
+            // Self-illuminated day/night colour, 0xAARRGGBB.
+            let sidn = material["color1"].as_u64().unwrap_or(0) & 0x00ff_ffff;
+            if !unlit && sidn == 0 {
+                return None;
+            }
+            let (tint, nits) = if sidn != 0 {
+                let c = |shift: u32| srgb_to_linear(((sidn >> shift) & 0xff) as f32 / 255.0);
+                ([c(16), c(8), c(0)], args.sidn_nits)
+            } else {
+                ([1.0; 3], args.unlit_nits)
+            };
+            Some(Emissive {
+                tint,
+                nits,
+                additive: false,
+            })
+        })
+        .collect()
+}
+
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// The `.bsn` material fields for an emissive submesh, baking its derived glow (and card)
+/// textures on the way. `None` (no texture / unreadable) leaves the material as it was.
+fn emissive_fields(
+    args: &Args,
+    obj_dir: &Path,
+    textures_dir: &Path,
+    material: Option<&tobj::Material>,
+    is_cutmask: bool,
+    emissive: &Emissive,
+    derived: &mut DerivedGlows,
+) -> Option<(String, bool, [f32; 3])> {
+    let tex = material?.diffuse_texture.as_deref()?;
+    let name = aurora_bsn::img::basename(tex);
+    let stem = Path::new(name).file_stem()?.to_string_lossy().into_owned();
+    let glow_name = format!("{stem}_glow.png");
+    let card_name = format!("{stem}_card.png");
+    let prefix = &args.asset_prefix;
+
+    // Decide (and bake) once per source texture.
+    let (card, mean) = if let Some(&d) = derived.get(&stem) {
+        d
+    } else {
+        let img = image::open(obj_dir.join(tex.replace('\\', "/"))).ok()?.into_rgba8();
+        // A card keeps its shape in alpha; a fullbright texture is opaque throughout.
+        let card = img.pixels().any(|p| p.0[3] < 128);
+        let lin = |v: u8| srgb_to_linear(v as f32 / 255.0);
+        let enc = |v: f32| (linear_to_srgb(v.clamp(0.0, 1.0)) * 255.0).round() as u8;
+        let mut glow = image::RgbaImage::new(img.width(), img.height());
+        let mut sum = [0.0f64; 3];
+        for (x, y, p) in img.enumerate_pixels() {
+            let a = p.0[3] as f32 / 255.0;
+            let rgb = if card {
+                [lin(p.0[0]) * a, lin(p.0[1]) * a, lin(p.0[2]) * a]
+            } else {
+                [lin(p.0[0]), lin(p.0[1]), lin(p.0[2])].map(|c| c.powf(args.unlit_contrast))
+            };
+            for c in 0..3 {
+                sum[c] += rgb[c] as f64;
+            }
+            glow.put_pixel(x, y, image::Rgba([enc(rgb[0]), enc(rgb[1]), enc(rgb[2]), 255]));
+        }
+        glow.save(textures_dir.join(&glow_name)).ok()?;
+        let n = (img.width() * img.height()).max(1) as f64;
+        let mean = sum.map(|s| (s / n) as f32);
+        if card {
+            let mut base = image::RgbaImage::new(img.width(), img.height());
+            for (x, y, p) in img.enumerate_pixels() {
+                base.put_pixel(x, y, image::Rgba([0, 0, 0, p.0[3]]));
+            }
+            base.save(textures_dir.join(&card_name)).ok()?;
+        }
+        derived.insert(stem.clone(), (card, mean));
+        (card, mean)
+    };
+
+    let mut fields = String::new();
+    if card {
+        // The card's core only: a black cutout that emits; the halo is the point light's.
+        let _ = write!(
+            fields,
+            " base_color_texture: \"{prefix}/textures/{card_name}\", \
+             alpha_mode: bevy_aurora::material::AlphaMode::Mask(0.5),"
+        );
+    } else {
+        fields.push_str(&material_fields(prefix, material, is_cutmask, &[]));
+    }
+    let [r, g, b] = emissive.tint.map(|t| t * emissive.nits);
+    let _ = write!(
+        fields,
+        " emissive: bevy_color::linear_rgba::LinearRgba {{ red: {}, green: {}, blue: {}, alpha: 1.0 }}, \
+         emissive_texture: \"{prefix}/textures/{glow_name}\",",
+        fmt_f(r),
+        fmt_f(g),
+        fmt_f(b)
+    );
+    Some((fields, card, mean))
+}
+
+/// Area (model units squared) of a submesh.
+fn submesh_area(m: &tobj::Mesh) -> f32 {
+    let p = |i: u32| {
+        let i = i as usize * 3;
+        Vec3::new(m.positions[i], m.positions[i + 1], m.positions[i + 2])
+    };
+    m.indices
+        .chunks_exact(3)
+        .map(|t| 0.5 * (p(t[1]) - p(t[0])).cross(p(t[2]) - p(t[0])).length())
+        .sum()
+}
+
+fn linear_to_srgb(c: f32) -> f32 {
+    if c <= 0.0031308 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
 }
 
 /// One model placement in OUR tile-local frame (tile center at origin, +Y up, heights absolute).
@@ -123,7 +360,14 @@ struct BakedSubmesh {
     material_fields: String,
     /// Local centroid the geometry was centered on (translation of an un-instanced entity).
     centroid: Vec3,
+    /// A glow card's halo as a point light at the centroid: (linear colour, lumens at unit
+    /// scale, emitter radius).
+    glow_light: Option<([f32; 3], f32, f32)>,
 }
+
+/// A source texture's derived emissive bake: whether it is a card, and the glow map's mean
+/// linear colour (what the card emits on average).
+type DerivedGlows = HashMap<String, (bool, [f32; 3])>;
 
 fn main() {
     let args = Args::parse();
@@ -178,6 +422,7 @@ fn main() {
     println!("baking {} unique models…", unique_models.len());
     let mut baked_models: HashMap<String, Vec<BakedSubmesh>> = HashMap::new();
     let mut cutmask_cache: HashMap<String, bool> = HashMap::new();
+    let mut derived: DerivedGlows = HashMap::new();
     for rel in &unique_models {
         let submeshes = bake_model(
             &args,
@@ -186,6 +431,7 @@ fn main() {
             &textures_dir,
             &mut cutmask_cache,
             &OmmOptions::from_env(),
+            &mut derived,
         );
         baked_models.insert(rel.clone(), submeshes);
     }
@@ -218,6 +464,16 @@ fn main() {
                     [p.scale, p.scale, p.scale],
                 );
                 instanced += 1;
+                if let Some((color, lumens, radius)) = sub.glow_light {
+                    write_point_light(
+                        &mut entities,
+                        &format!("{name} glow"),
+                        t.to_array(),
+                        color,
+                        lumens * p.scale * p.scale,
+                        radius * p.scale,
+                    );
+                }
             }
         }
 
@@ -234,7 +490,7 @@ fn main() {
         emit_tile_map(&args, &map_dir, ax, ay, &mut palette, &mut texture_effects);
     }
     palette.write(&args);
-    emit_clutter(&args, &map_dir, &textures_dir, &texture_effects, &mut cutmask_cache);
+    emit_clutter(&args, &map_dir, &textures_dir, &texture_effects, &mut cutmask_cache, &mut derived);
     println!("done.");
 }
 
@@ -321,6 +577,7 @@ fn emit_clutter(
     textures_dir: &Path,
     texture_effects: &BTreeMap<String, BTreeSet<u32>>,
     cutmask_cache: &mut HashMap<String, bool>,
+    derived: &mut DerivedGlows,
 ) {
     let effects = load_ground_effects(&args.wow_root);
     let doodads = load_ground_doodads(&args.wow_root);
@@ -379,6 +636,7 @@ fn emit_clutter(
                     textures_dir,
                     cutmask_cache,
                     &plant_omm,
+                    derived,
                 );
                 if submeshes.is_empty() {
                     continue;
@@ -476,6 +734,30 @@ fn write_plant_entity(
         fmt_f(c.z),
         sub.mesh_stem,
         sub.material_fields,
+    );
+}
+
+/// A point light entity: a glow card's halo as illumination.
+fn write_point_light(out: &mut String, name: &str, t: [f32; 3], color: [f32; 3], lumens: f32, radius: f32) {
+    let _ = write!(
+        out,
+        "    bevy_ecs::name::Name(\"{}\")\n    \
+         bevy_transform::components::transform::Transform {{ \
+         translation: glam::Vec3 {{ x: {}, y: {}, z: {} }}, \
+         rotation: glam::Quat {{ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }}, \
+         scale: glam::Vec3 {{ x: 1.0, y: 1.0, z: 1.0 }} }}\n    \
+         bevy_light::point_light::PointLight {{ \
+         color: bevy_color::color::Color::LinearRgba(bevy_color::linear_rgba::LinearRgba {{ red: {}, green: {}, blue: {}, alpha: 1.0 }}), \
+         intensity: {}, radius: {} }},\n\n",
+        name.replace('"', "'"),
+        fmt_f(t[0]),
+        fmt_f(t[1]),
+        fmt_f(t[2]),
+        fmt_f(color[0]),
+        fmt_f(color[1]),
+        fmt_f(color[2]),
+        fmt_f(lumens),
+        fmt_f(radius),
     );
 }
 
@@ -728,12 +1010,14 @@ fn bake_model(
     textures_dir: &Path,
     cutmask_cache: &mut HashMap<String, bool>,
     omm: &OmmOptions,
+    derived: &mut DerivedGlows,
 ) -> Vec<BakedSubmesh> {
     let Some((models, materials)) = load_obj(obj_path) else {
         return Vec::new();
     };
     copy_textures(obj_path, &materials, &models, textures_dir);
     let obj_dir = obj_path.parent().unwrap_or_else(|| Path::new("."));
+    let emissives = model_emissives(args, obj_path, &models);
 
     // Unique, filesystem-safe stem from the wow-root-relative path (basenames collide:
     // several zones ship a `bush01.obj`).
@@ -745,6 +1029,7 @@ fn bake_model(
             continue;
         };
         let material = m.mesh.material_id.and_then(|id| materials.get(id));
+        let emissive = emissives.get(i).copied().flatten();
         let is_cutmask =
             material.is_some_and(|mat| material_is_cutmask(obj_dir, mat, cutmask_cache));
 
@@ -770,10 +1055,30 @@ fn bake_model(
             write_cluster_mesh_sync(&cm, w).expect("write .cluster_mesh");
         }
 
+        let mut glow_light = None;
+        let fields = match &emissive {
+            Some(e) => match emissive_fields(args, obj_dir, textures_dir, material, is_cutmask, e, derived) {
+                Some((fields, card, mean)) => {
+                    if card {
+                        // The whole card's flux, as a Lambertian emitter of its mean radiance.
+                        let area = submesh_area(&m.mesh);
+                        let radiance = mean.map(|c| c * e.nits);
+                        let lumens = PI * (0.2126 * radiance[0] + 0.7152 * radiance[1] + 0.0722 * radiance[2]) * area;
+                        let luma = (0.2126 * mean[0] + 0.7152 * mean[1] + 0.0722 * mean[2]).max(1e-6);
+                        let color = mean.map(|c| c / luma);
+                        glow_light = Some((color, lumens, (area / PI).sqrt() * 0.5));
+                    }
+                    fields
+                }
+                None => material_fields(&args.asset_prefix, material, is_cutmask, &[]),
+            },
+            None => material_fields(&args.asset_prefix, material, is_cutmask, &[]),
+        };
         out.push(BakedSubmesh {
-            material_fields: material_fields(&args.asset_prefix, material, is_cutmask, &[]),
+            material_fields: fields,
             mesh_stem,
             centroid: Vec3::new(centroid[0] as f32, centroid[1] as f32, centroid[2] as f32),
+            glow_light,
         });
     }
     out
