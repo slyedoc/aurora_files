@@ -143,7 +143,13 @@ fn bake_clump(tree: &str, ctx: &Tree, cfg: &SpeedTreeConfig) {
             if let Some(file) = src.cut_image.and_then(|i| ctx.image_files.get(&i))
                 && let Ok(img) = image::open(ctx.textures_dir.join(file))
             {
-                crate::mesh::attach_omm_rgba(&mut cm, &img.into_rgba8(), img::MASK_CUTOFF, file);
+                crate::mesh::attach_omm_rgba(
+                    &mut cm,
+                    &img.into_rgba8(),
+                    img::MASK_CUTOFF,
+                    file,
+                    &crate::mesh::OmmOptions::from_env(),
+                );
             }
             let w = BufWriter::new(File::create(&file).expect("create .cluster_mesh"));
             write_cluster_mesh_sync(&cm, w).expect("write .cluster_mesh");
@@ -407,7 +413,13 @@ fn attach_cutout_omm(cm: &mut ClusterMeshData, material: &gltf::Material, ctx: &
     if let Some(file) = base_color_image(material).and_then(|i| ctx.image_files.get(&i))
         && let Ok(img) = image::open(ctx.textures_dir.join(file))
     {
-        crate::mesh::attach_omm_rgba(cm, &img.into_rgba8(), img::MASK_CUTOFF, file);
+        crate::mesh::attach_omm_rgba(
+            cm,
+            &img.into_rgba8(),
+            img::MASK_CUTOFF,
+            file,
+            &crate::mesh::OmmOptions::from_env(),
+        );
     }
 }
 

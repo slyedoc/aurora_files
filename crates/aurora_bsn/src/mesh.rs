@@ -102,6 +102,35 @@ const MIN_ISLAND_FRACTION: f32 = 0.02;
 /// hugging the texture border. `0` disables; 1-3 is the useful range.
 pub const DEFAULT_ERODE_PX: u32 = 2;
 
+/// One bake's settings. [`OmmOptions::from_env`] is the historical default (the `OMM_*`
+/// environment overrides); an importer picks finer settings for geometry whose every
+/// triangle is a whole cutout card (ground-clutter plants).
+#[derive(Clone, Copy, Debug)]
+pub struct OmmOptions {
+    /// Cap on the per-triangle subdivision level (4^level micro-triangles).
+    pub max_subdiv: u32,
+    /// Erosion radius in texels.
+    pub erode_px: u32,
+    /// Texels per micro-triangle edge the per-triangle level aims for (2 = SDK default).
+    pub scale: f32,
+    /// 4-state (exact any-hit band) instead of 2-state.
+    pub four_state: bool,
+}
+
+impl OmmOptions {
+    pub fn from_env() -> Self {
+        Self {
+            max_subdiv: env_u32("OMM_SUBDIV", DEFAULT_OMM_SUBDIV),
+            erode_px: env_u32("OMM_ERODE", DEFAULT_ERODE_PX),
+            scale: std::env::var("OMM_SCALE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(2.0),
+            four_state: env_u32("OMM_FORMAT", 2) == 4,
+        }
+    }
+}
+
 fn env_u32(name: &str, default: u32) -> u32 {
     std::env::var(name)
         .ok()
@@ -117,10 +146,11 @@ pub fn attach_omm(
     cm: &mut ClusterMeshData,
     obj_dir: &Path,
     material: &tobj::Material,
+    options: &OmmOptions,
 ) -> Option<(usize, usize)> {
     let tex = material.diffuse_texture.as_deref()?;
     let img = image::open(obj_dir.join(tex.replace('\\', "/"))).ok()?;
-    attach_omm_rgba(cm, &img.into_rgba8(), img::MASK_CUTOFF, tex)
+    attach_omm_rgba(cm, &img.into_rgba8(), img::MASK_CUTOFF, tex, options)
 }
 
 #[cfg(not(feature = "omm"))]
@@ -128,6 +158,7 @@ pub fn attach_omm(
     _cm: &mut ClusterMeshData,
     _obj_dir: &Path,
     _material: &tobj::Material,
+    _options: &OmmOptions,
 ) -> Option<(usize, usize)> {
     None
 }
@@ -141,15 +172,16 @@ pub fn attach_omm_rgba(
     rgba: &RgbaImage,
     cutoff: f32,
     label: &str,
+    options: &OmmOptions,
 ) -> Option<(usize, usize)> {
     use aurora_cluster_mesh::{OmmDesc, OmmUsage};
 
-    let subdiv = env_u32("OMM_SUBDIV", DEFAULT_OMM_SUBDIV);
-    let erode_px = env_u32("OMM_ERODE", DEFAULT_ERODE_PX);
+    let subdiv = options.max_subdiv;
+    let erode_px = options.erode_px;
     // 2-state by default: no "unknown" micro-triangles, so the any-hit never runs on the cutout
-    // (a micro-tri-quantized edge, hidden by DLSS). `OMM_FORMAT=4` keeps an exact any-hit edge
-    // band instead.
-    let format = if env_u32("OMM_FORMAT", 2) == 4 {
+    // (a micro-tri-quantized edge, hidden by DLSS). 4-state keeps an exact any-hit edge band
+    // instead.
+    let format = if options.four_state {
         omm::OMM_FORMAT_OC1_4_STATE
     } else {
         omm::OMM_FORMAT_OC1_2_STATE
@@ -183,7 +215,7 @@ pub fn attach_omm_rgba(
     }
 
     // REPEAT to match the runtime sampler.
-    let bake = omm::bake(&alpha, w, h, &uvs, &indices, cutoff, format, subdiv, true).ok()?;
+    let bake = omm::bake(&alpha, w, h, &uvs, &indices, cutoff, format, subdiv, true, options.scale).ok()?;
     if bake.descs.is_empty() {
         return None; // wholly uniform (all opaque / transparent): special indices only
     }
@@ -238,6 +270,7 @@ pub fn attach_omm_rgba(
     _rgba: &RgbaImage,
     _cutoff: f32,
     _label: &str,
+    _options: &OmmOptions,
 ) -> Option<(usize, usize)> {
     None
 }

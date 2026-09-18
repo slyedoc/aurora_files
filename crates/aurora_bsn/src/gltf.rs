@@ -510,7 +510,7 @@ fn bake_primitive(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> O
                 && let Ok(img) = image::open(ctx.textures_dir.join(file))
             {
                 let cutoff = material.alpha_cutoff().unwrap_or(0.5);
-                mesh::attach_omm_rgba(&mut cm, &img.into_rgba8(), cutoff, file);
+                mesh::attach_omm_rgba(&mut cm, &img.into_rgba8(), cutoff, file, &mesh::OmmOptions::from_env());
             }
             let w = BufWriter::new(File::create(&mesh_file).expect("create .cluster_mesh"));
             write_cluster_mesh_sync(&cm, w).expect("write .cluster_mesh");

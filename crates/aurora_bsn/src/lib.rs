@@ -237,7 +237,8 @@ pub fn bake_scene(cfg: &SceneConfig) {
                 if is_cutmask
                     && let Some(material) =
                         models[i].mesh.material_id.and_then(|id| materials.get(id))
-                    && let Some((omms, bytes)) = mesh::attach_omm(&mut cm, &obj_dir, material)
+                    && let Some((omms, bytes)) =
+                        mesh::attach_omm(&mut cm, &obj_dir, material, &mesh::OmmOptions::from_env())
                 {
                     omm_baked += 1;
                     if omm_baked % 20 == 0 {

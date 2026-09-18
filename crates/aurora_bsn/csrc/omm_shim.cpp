@@ -83,6 +83,9 @@ extern "C" int omm_shim_bake(const OmmShimInput* in, OmmShimResult* out) {
     // texel density instead of paying 4^maxLevel on every triangle. Deterministic at
     // bake time (the ray-cone mip-bias that would make it view-dependent is runtime-only).
     bakeDesc.maxSubdivisionLevel = (uint8_t)in->maxSubdivisionLevel;
+    if (in->subdivisionScale > 0.0f) {
+        bakeDesc.dynamicSubdivisionScale = in->subdivisionScale;
+    }
     bakeDesc.bakeFlags = ommCpuBakeFlags_EnableInternalThreads;
 
     ommCpuBakeResult bakeResult = 0;

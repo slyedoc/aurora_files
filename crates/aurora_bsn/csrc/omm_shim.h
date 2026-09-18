@@ -40,6 +40,10 @@ typedef struct OmmShimInput {
     uint32_t        format;      // 1 = OC1_2_State, 2 = OC1_4_State
     uint32_t        maxSubdivisionLevel; // [0,12]
     uint32_t        addressModeWrap;     // 1 = Wrap, 0 = Clamp
+    // Texels per micro-triangle edge the per-triangle level aims for (SDK
+    // dynamicSubdivisionScale; 2 = the SDK default, <= 0 leaves the default). Smaller =
+    // finer micro-triangles for the same texture.
+    float           subdivisionScale;
 } OmmShimInput;
 
 typedef struct OmmShimResult {

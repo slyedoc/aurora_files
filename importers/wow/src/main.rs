@@ -15,6 +15,11 @@
 //!   assets/wow/map/<map>_X_Y_alpha.png              1024² RGBA alphamap atlas (16×16 × 64²)
 //!   assets/wow/map/<map>_X_Y_layers.json            per-chunk palette indices + height range
 //!   assets/wow/map/palette.json + map/tileset/*.png the shared splat palette
+//!   assets/wow/plants/<plant>.bsn                    one prefab per ground-clutter plant
+//!                                                    (mesh + material + WindSway; edit freely)
+//!   assets/wow/clutter.ron                           ground texture -> plants + density
+//!                                                    (seeded from the GroundEffect tables;
+//!                                                    edit freely)
 //!
 //! Terrain is NOT baked to a mesh: zero builds it at runtime with
 //! `bevy_aurora::terrain::terrain_mesh` and edits it on the GPU. Existing map files are left
@@ -25,19 +30,28 @@
 //! `core/tools/import_wow` works in the `+wow_x/+wow_z` tile-local frame; our frame is that
 //! rotated 180° about Y, so placements get `t → (−t.x, t.y, −t.z)` and `R → RotY(π) · R`.
 //!
-//! Deferred: liquids, ground-clutter grass effects, creatures, M2 blend-mode JSONs.
+//! Ground clutter: each splat layer's `effectID` (wow.export tex json) -> GroundEffectTexture
+//! (density, up to four doodads with weights) -> GroundEffectDoodad (model file id) -> the
+//! community listfile (path) -> `maps/<map>/foliage/<basename>.obj`. The plants are baked
+//! like any model (cutmask -> Mask + opacity micromap), each gets a `.bsn` prefab, and
+//! `clutter.ron` maps every ground texture that has an effect to its plants. Zero assembles
+//! the chunks at runtime from those (game/wow_clutter.rs). Plant `.bsn`s and `clutter.ron`
+//! are never overwritten without `--replace`.
+//!
+//! Deferred: liquids, creatures, M2 blend-mode JSONs.
 //!
 //!   cargo run --release -p wow_import                        # Northshire (31-33 × 47-49)
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::f32::consts::PI;
+use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 use aurora_bsn::bsn::{material_fields, scene, write_entity_trs};
 use aurora_bsn::discovery::{copy_textures, material_is_cutmask, sanitize};
-use aurora_bsn::mesh::{attach_omm, build_mesh, submesh_centroid};
+use aurora_bsn::mesh::{OmmOptions, attach_omm, build_mesh, submesh_centroid};
 use aurora_cluster_mesh::{ClusterMeshData, write_cluster_mesh_sync};
 use bevy::math::{EulerRot, Quat, Vec3};
 use clap::Parser;
@@ -81,6 +95,10 @@ struct Args {
     /// Re-bake meshes and REWRITE map files even when they exist (discards in-game edits!).
     #[arg(long)]
     replace: bool,
+    /// The community listfile (`<file id>;<path>` per line): resolves GroundEffectDoodad
+    /// model ids to plant model names.
+    #[arg(long, default_value = "/home/slyedoc/code/p/core/assets/terrain/dbc/listfile.csv")]
+    listfile: PathBuf,
 }
 
 /// One model placement in OUR tile-local frame (tile center at origin, +Y up, heights absolute).
@@ -161,12 +179,20 @@ fn main() {
     let mut baked_models: HashMap<String, Vec<BakedSubmesh>> = HashMap::new();
     let mut cutmask_cache: HashMap<String, bool> = HashMap::new();
     for rel in &unique_models {
-        let submeshes = bake_model(&args, &args.wow_root.join(rel), rel, &textures_dir, &mut cutmask_cache);
+        let submeshes = bake_model(
+            &args,
+            &args.wow_root.join(rel),
+            rel,
+            &textures_dir,
+            &mut cutmask_cache,
+            &OmmOptions::from_env(),
+        );
         baked_models.insert(rel.clone(), submeshes);
     }
 
     // Pass 3 — write each tile's `.bsn` (doodads/WMOs only) and its terrain map data.
     let mut palette = PaletteBuilder::default();
+    let mut texture_effects: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
     for (&(ax, ay), placements) in &tile_placements {
         let mut entities = String::new();
         let mut instanced = 0usize;
@@ -205,10 +231,263 @@ fn main() {
             bsn_path.display()
         );
 
-        emit_tile_map(&args, &map_dir, ax, ay, &mut palette);
+        emit_tile_map(&args, &map_dir, ax, ay, &mut palette, &mut texture_effects);
     }
     palette.write(&args);
+    emit_clutter(&args, &map_dir, &textures_dir, &texture_effects, &mut cutmask_cache);
     println!("done.");
+}
+
+// ---- ground clutter -------------------------------------------------------------------------
+
+/// One GroundEffectTexture row: density (doodads per 8×8 chunk cell, WoW's own unit) and the
+/// (doodad id, weight) pairs.
+struct GroundEffect {
+    density: u32,
+    doodads: Vec<(u32, f32)>,
+}
+
+fn load_ground_effects(wow_root: &Path) -> HashMap<u32, GroundEffect> {
+    let mut map = HashMap::new();
+    let path = wow_root.join("GroundEffectTexture.csv");
+    let Ok(content) = fs::read_to_string(&path) else {
+        eprintln!("clutter: cannot read {}", path.display());
+        return map;
+    };
+    // ID;Density;Sound;DoodadID;DoodadWeight (the last two comma-separated x4).
+    for line in content.lines().skip(1) {
+        let fields: Vec<&str> = line.split(';').collect();
+        if fields.len() < 5 {
+            continue;
+        }
+        let Ok(id) = fields[0].trim().parse::<u32>() else {
+            continue;
+        };
+        let density = fields[1].trim().parse().unwrap_or(0);
+        let ids = fields[3].split(',').map(|s| s.trim().parse::<u32>().unwrap_or(0));
+        let weights = fields[4].split(',').map(|s| s.trim().parse::<f32>().unwrap_or(1.0));
+        let doodads = ids
+            .zip(weights.chain(std::iter::repeat(1.0)))
+            .filter(|(id, _)| *id != 0)
+            .collect();
+        map.insert(id, GroundEffect { density, doodads });
+    }
+    map
+}
+
+/// GroundEffectDoodad: doodad id -> (model file id, Animscale). Animscale is WoW's own
+/// "sways in the wind" amount: 1 for grass and flowers, 0 for rocks and stumps.
+fn load_ground_doodads(wow_root: &Path) -> HashMap<u32, (u32, f32)> {
+    let path = wow_root.join("GroundEffectDoodad.csv");
+    let Ok(content) = fs::read_to_string(&path) else {
+        eprintln!("clutter: cannot read {}", path.display());
+        return HashMap::new();
+    };
+    content
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let mut it = line.split(';');
+            let id = it.next()?.trim().parse::<u32>().ok()?;
+            let file = it.next()?.trim().parse::<u32>().ok()?;
+            let _flags = it.next();
+            let animscale = it.next().and_then(|s| s.trim().parse::<f32>().ok()).unwrap_or(1.0);
+            Some((id, (file, animscale)))
+        })
+        .collect()
+}
+
+/// The listfile rows for the given file ids only (2M lines; one pass).
+fn load_listfile(path: &Path, wanted: &HashSet<u32>) -> HashMap<u32, String> {
+    let Ok(content) = fs::read_to_string(path) else {
+        eprintln!("clutter: cannot read listfile {}", path.display());
+        return HashMap::new();
+    };
+    content
+        .lines()
+        .filter_map(|line| {
+            let (id, file) = line.split_once(';')?;
+            let id = id.trim().parse::<u32>().ok()?;
+            wanted.contains(&id).then(|| (id, file.trim().to_string()))
+        })
+        .collect()
+}
+
+/// Bake every plant the tiles' ground textures reference, write a `.bsn` prefab per plant and
+/// the `clutter.ron` texture -> plants table.
+fn emit_clutter(
+    args: &Args,
+    map_dir: &Path,
+    textures_dir: &Path,
+    texture_effects: &BTreeMap<String, BTreeSet<u32>>,
+    cutmask_cache: &mut HashMap<String, bool>,
+) {
+    let effects = load_ground_effects(&args.wow_root);
+    let doodads = load_ground_doodads(&args.wow_root);
+    let wanted: HashSet<u32> = doodads.values().map(|(file, _)| *file).collect();
+    let listfile = load_listfile(&args.listfile, &wanted);
+    let plants_dir = args.out_dir.join("plants");
+    fs::create_dir_all(&plants_dir).expect("create plants dir");
+
+    // Plant name -> (bsn asset path) once baked.
+    let mut baked: BTreeMap<String, String> = BTreeMap::new();
+    let mut layers: BTreeMap<String, (u32, Vec<(String, f32)>)> = BTreeMap::new();
+    // A texture's chunks can carry several effect ids (some rows are missing from the table,
+    // some have no doodads): every candidate is tried, the densest with plants wins.
+    for (texture, effect_ids) in texture_effects {
+      for effect_id in effect_ids {
+        let Some(effect) = effects.get(effect_id) else {
+            continue;
+        };
+        if effect.density == 0 || effect.doodads.is_empty() {
+            continue;
+        }
+        // The same doodad may fill several of the four slots: sum its weights.
+        let mut plants: BTreeMap<String, f32> = BTreeMap::new();
+        for &(doodad, weight) in &effect.doodads {
+            let Some((file_id, animscale)) = doodads.get(&doodad) else { continue };
+            let Some(path) = listfile.get(file_id) else {
+                eprintln!("clutter: doodad {doodad}: file id {file_id} not in the listfile");
+                continue;
+            };
+            let name = Path::new(path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_ascii_lowercase())
+                .unwrap_or_default();
+            if name.is_empty() {
+                continue;
+            }
+            if !baked.contains_key(&name) {
+                let obj = map_dir.join("foliage").join(format!("{name}.obj"));
+                if !obj.exists() {
+                    eprintln!("clutter: {name}: no foliage export at {}", obj.display());
+                    continue;
+                }
+                // Every plant triangle is a whole cutout card, so the micromap is the
+                // silhouette: finer than a tree's leaves (a quarter texel per micro-triangle,
+                // a texel of erosion) at a still-small cost, some KB per plant.
+                let plant_omm = OmmOptions {
+                    max_subdiv: 9,
+                    erode_px: 1,
+                    scale: 0.25,
+                    ..OmmOptions::from_env()
+                };
+                let submeshes = bake_model(
+                    args,
+                    &obj,
+                    &format!("foliage/{name}.obj"),
+                    textures_dir,
+                    cutmask_cache,
+                    &plant_omm,
+                );
+                if submeshes.is_empty() {
+                    continue;
+                }
+                let bsn_path = plants_dir.join(format!("{name}.bsn"));
+                if args.replace || !bsn_path.exists() {
+                    let mut entities = String::new();
+                    for sub in &submeshes {
+                        write_plant_entity(&mut entities, &args.asset_prefix, sub, &name, *animscale);
+                    }
+                    let bsn = format!(
+                        "// Ground-clutter plant, seeded by the wow importer. Edit freely (the\n\
+                         // material, the WindSway amplitude); never overwritten without --replace.\n\
+                         #{name}\nbevy_ecs::hierarchy::Children [\n{entities}]\n"
+                    );
+                    fs::write(&bsn_path, bsn).expect("write plant .bsn");
+                }
+                baked.insert(name.clone(), format!("{}/plants/{name}.bsn", args.asset_prefix));
+            }
+            *plants.entry(name).or_insert(0.0) += weight;
+        }
+        if plants.is_empty() {
+            continue;
+        }
+        let entry = layers.entry(texture.clone()).or_insert((0, Vec::new()));
+        if effect.density > entry.0 {
+            entry.0 = effect.density;
+            entry.1 = plants
+                .into_iter()
+                .map(|(name, weight)| (baked[&name].clone(), weight))
+                .collect();
+        }
+      }
+    }
+
+    let ron_path = args.out_dir.join("clutter.ron");
+    if args.replace || !ron_path.exists() {
+        let mut out = String::new();
+        out.push_str(
+            "// Ground clutter: splat palette texture -> the plants it grows and how many\n\
+             // (WoW's density: plants per 8x8 chunk cell, ~4.2 yd square). Seeded from the\n\
+             // GroundEffect tables by the wow importer; edit freely, it is never overwritten.\n\
+             (\n    layers: {\n",
+        );
+        for (texture, (density, plants)) in &layers {
+            let _ = writeln!(out, "        \"{texture}\": (");
+            let _ = writeln!(out, "            density: {density}.0,");
+            out.push_str("            plants: [\n");
+            for (path, weight) in plants {
+                let _ = writeln!(out, "                (\"{path}\", {weight:.1}),");
+            }
+            out.push_str("            ],\n        ),\n");
+        }
+        out.push_str("    },\n)\n");
+        fs::write(&ron_path, out).expect("write clutter.ron");
+    }
+    println!(
+        "clutter: {} plants baked, {} ground textures -> {}",
+        baked.len(),
+        layers.len(),
+        ron_path.display()
+    );
+}
+
+/// A plant prefab part: the submesh at its centroid, the material, and -- for anything WoW
+/// animates (Animscale > 0) -- the wind deformer the clutter chunks inherit. Rocks get none.
+/// Edit the amplitude per plant here.
+fn write_plant_entity(
+    out: &mut String,
+    asset_prefix: &str,
+    sub: &BakedSubmesh,
+    name: &str,
+    animscale: f32,
+) {
+    let c = sub.centroid;
+    let wind = if animscale > 0.0 {
+        format!(
+            "    bevy_aurora::skinning::WindSway {{ amplitude: {} }}\n",
+            fmt_f(0.25 * animscale)
+        )
+    } else {
+        String::new()
+    };
+    let _ = write!(
+        out,
+        "    bevy_ecs::name::Name(\"{name}\")\n    \
+         bevy_transform::components::transform::Transform {{ \
+         translation: glam::Vec3 {{ x: {}, y: {}, z: {} }}, \
+         rotation: glam::Quat {{ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }}, \
+         scale: glam::Vec3 {{ x: 1.0, y: 1.0, z: 1.0 }} }}\n    \
+         bevy_mesh::components::Mesh3d(\"{asset_prefix}/meshes/{}.cluster_mesh\")\n{wind}    \
+         bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {{{}}}),\n\n",
+        fmt_f(c.x),
+        fmt_f(c.y),
+        fmt_f(c.z),
+        sub.mesh_stem,
+        sub.material_fields,
+    );
+}
+
+/// `.bsn` float literal: fixed point with a decimal point (the lexer rejects exponents).
+fn fmt_f(v: f32) -> String {
+    let s = format!("{v:.6}");
+    let s = s.trim_end_matches('0');
+    if s.ends_with('.') {
+        format!("{s}0")
+    } else {
+        s.to_string()
+    }
 }
 
 // ---- terrain map data ---------------------------------------------------------------------
@@ -224,6 +503,11 @@ struct PaletteBuilder {
 }
 
 impl PaletteBuilder {
+    /// The map-relative file name of a palette entry (the key `clutter.ron` uses).
+    fn name(&self, index: u32) -> &str {
+        &self.entries[index as usize].0
+    }
+
     /// Palette index for a layer's texture (`../../tileset/elwynn/x.png`, relative to the map
     /// dir), registering it on first sight.
     fn index(&mut self, map_dir: &Path, file: &str) -> u32 {
@@ -276,6 +560,9 @@ struct LayerDef {
     channel_index: i32,
     /// Tileset texture, relative to the map dir (`../../tileset/…`).
     file: String,
+    /// GroundEffectTexture row: the ground clutter this layer grows (0 = none).
+    #[serde(rename = "effectID", default)]
+    effect_id: u32,
 }
 #[derive(serde::Deserialize)]
 struct ChunkLayers {
@@ -286,7 +573,14 @@ struct ChunkLayers {
 /// OBJ's vertices in OUR tile frame), the alphamap atlas (chunk pngs blitted into their
 /// cells), and the per-chunk layer table against the shared palette. Existing files are left
 /// alone unless `--replace` — they may carry in-game edits.
-fn emit_tile_map(args: &Args, map_dir: &Path, ax: i32, ay: i32, palette: &mut PaletteBuilder) {
+fn emit_tile_map(
+    args: &Args,
+    map_dir: &Path,
+    ax: i32,
+    ay: i32,
+    palette: &mut PaletteBuilder,
+    texture_effects: &mut BTreeMap<String, BTreeSet<u32>>,
+) {
     let dir = args.out_dir.join("map");
     let stem = format!("{}_{ax}_{ay}", args.map);
     let height_path = dir.join(format!("{stem}_height.png"));
@@ -305,7 +599,14 @@ fn emit_tile_map(args: &Args, map_dir: &Path, ax: i32, ay: i32, palette: &mut Pa
             for l in defs.layers.iter() {
                 // Slot by channel: base (channelIndex -1) -> 0, channels 0..2 -> 1..3.
                 let slot = (l.channel_index + 1).clamp(0, 3) as usize;
-                entry[slot] = palette.index(map_dir, &l.file);
+                let index = palette.index(map_dir, &l.file);
+                entry[slot] = index;
+                if l.effect_id != 0 {
+                    texture_effects
+                        .entry(palette.name(index).to_string())
+                        .or_default()
+                        .insert(l.effect_id);
+                }
             }
         }
         chunks.push(entry);
@@ -426,6 +727,7 @@ fn bake_model(
     rel: &str,
     textures_dir: &Path,
     cutmask_cache: &mut HashMap<String, bool>,
+    omm: &OmmOptions,
 ) -> Vec<BakedSubmesh> {
     let Some((models, materials)) = load_obj(obj_path) else {
         return Vec::new();
@@ -462,7 +764,7 @@ fn bake_model(
             };
             // Alpha-cutout foliage gets a baked opacity micromap (resolved by the RT cores).
             if is_cutmask && let Some(mat) = material {
-                let _ = attach_omm(&mut cm, obj_dir, mat);
+                let _ = attach_omm(&mut cm, obj_dir, mat, omm);
             }
             let w = BufWriter::new(File::create(&mesh_file).expect("create .cluster_mesh"));
             write_cluster_mesh_sync(&cm, w).expect("write .cluster_mesh");

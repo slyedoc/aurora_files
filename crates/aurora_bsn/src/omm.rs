@@ -36,6 +36,7 @@ struct OmmShimInput {
     format: u32,
     max_subdivision_level: u32,
     address_mode_wrap: u32,
+    subdivision_scale: f32,
 }
 
 #[repr(C)]
@@ -95,8 +96,11 @@ pub struct OmmBake {
 
 /// Bake an OMM. `alpha` is `width*height` row-major FP32 alpha; `uvs` is two
 /// f32s per vertex (parallel to the mesh's vertices); `indices` are the mesh's
-/// triangle indices in the final post-cluster order. Returns `Err(ommResult)`
-/// on baker failure.
+/// triangle indices in the final post-cluster order. `subdivision_scale` is the
+/// texels-per-micro-triangle target each triangle's level is chosen for (2 = SDK
+/// default; smaller = finer), capped by `max_subdivision_level`. Returns
+/// `Err(ommResult)` on baker failure.
+#[allow(clippy::too_many_arguments)]
 pub fn bake(
     alpha: &[f32],
     width: u32,
@@ -107,6 +111,7 @@ pub fn bake(
     format: u32,
     max_subdivision_level: u32,
     address_mode_wrap: bool,
+    subdivision_scale: f32,
 ) -> Result<OmmBake, i32> {
     assert_eq!(
         alpha.len(),
@@ -128,6 +133,7 @@ pub fn bake(
         format,
         max_subdivision_level,
         address_mode_wrap: address_mode_wrap as u32,
+        subdivision_scale,
     };
 
     let mut result = OmmShimResult {
