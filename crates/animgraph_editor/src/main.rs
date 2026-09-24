@@ -18,13 +18,16 @@ use bevy::{
     },
     feathers_inspector::BuildAssetInspector,
     prelude::*,
-    ui::{AlignItems, BackgroundColor, FlexDirection, JustifyContent, Overflow, UiRect, Val},
+    ui::{
+        AlignItems, BackgroundColor, FlexDirection, JustifyContent, Overflow, PositionType,
+        UiRect, Val,
+    },
     ui_widgets::{observe, slider_self_update, SliderValue, ValueChange},
 };
 use bevy_animation_graph::{
     core::{
         animation_clip::GraphClip,
-        animation_graph::AnimationGraph,
+        animation_graph::{AnimationGraph, NodeId},
         animation_graph_player::AnimationGraphPlayer,
         edge_data::DataValue,
         skeleton::Skeleton,
@@ -235,7 +238,10 @@ fn main() {
     // Start with every top-level directory open, so the tree is not a wall of `+`.
     app.insert_resource(BrowserDirty(true));
     app.add_systems(Startup, (scan_library, setup_ui, attach_panes).chain());
-    app.add_systems(Update, (rebuild_browser, bind_when_loaded, arm_preview));
+    app.add_systems(
+        Update,
+        (rebuild_browser, bind_when_loaded, arm_preview, draw_canvas),
+    );
     app.run();
 }
 
@@ -387,7 +393,20 @@ fn setup_ui(mut commands: Commands, assets: Res<AssetServer>, args: Res<Args>) {
                     justify_content: JustifyContent::FlexEnd,
                     ..default()
                 },
-                Children::spawn(Spawn((
+                Children::spawn((
+                    Spawn((
+                        Name::new("canvas"),
+                        Canvas,
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(0.0),
+                            top: Val::Px(0.0),
+                            right: Val::Px(0.0),
+                            bottom: Val::Px(0.0),
+                            ..default()
+                        },
+                    )),
+                    Spawn((
                     Name::new("inputs"),
                     InputsHost,
                     BackgroundColor(Color::srgba(0.06, 0.06, 0.07, 0.86)),
@@ -398,7 +417,8 @@ fn setup_ui(mut commands: Commands, assets: Res<AssetServer>, args: Res<Args>) {
                         width: Val::Px(320.0),
                         ..default()
                     },
-                ))),
+                )),
+                )),
             )),
             // inspector
             Spawn((
@@ -593,6 +613,20 @@ fn pin_name(pin: &impl std::fmt::Debug) -> String {
         .unwrap_or(text)
 }
 
+/// The canvas pane, which the node boxes and links are spawned into.
+#[derive(Component)]
+struct Canvas;
+
+/// A node box on the canvas; clicking one points the inspector at that node.
+#[derive(Component)]
+struct CanvasNode(String);
+
+/// Node box geometry, in canvas pixels. Boxes are a fixed size so link endpoints can be
+/// computed without waiting for layout to measure anything.
+const NODE_W: f32 = 200.0;
+const NODE_H: f32 = 40.0;
+const LINK_THICKNESS: f32 = 2.0;
+
 /// A graph waiting to be put on the preview rig.
 #[derive(Resource)]
 struct ArmGraph(Handle<AnimationGraph>);
@@ -730,4 +764,170 @@ fn arm_preview(
     commands.entity(host_entity).add_children(&rows);
     commands.remove_resource::<ArmGraph>();
     info!("preview armed, {} f32 inputs", rows.len());
+    commands.insert_resource(DrawCanvas(arm.0.clone()));
+}
+
+/// A graph waiting to be drawn on the canvas.
+#[derive(Resource)]
+struct DrawCanvas(Handle<AnimationGraph>);
+
+/// R3: draw the graph read-only. Node boxes sit at `editor_metadata.node_positions`; links are
+/// MANHATTAN-routed, three plain rectangles per edge, so the whole canvas is ordinary bevy_ui
+/// with no line primitive and no new render pass.
+fn draw_canvas(
+    mut commands: Commands,
+    draw: Option<Res<DrawCanvas>>,
+    graphs: Res<Assets<AnimationGraph>>,
+    canvas: Single<(Entity, Option<&Children>), With<Canvas>>,
+) {
+    let Some(draw) = draw else { return };
+    let Some(graph) = graphs.get(&draw.0) else {
+        return;
+    };
+    let (canvas_entity, existing) = *canvas;
+    if let Some(existing) = existing {
+        for child in existing.iter() {
+            commands.entity(child).despawn();
+        }
+    }
+
+    // Where each node sits. A graph saved by upstream's editor carries positions; a
+    // hand-written one (zero's locomotion graph) has none, so fall back to a grid — the
+    // layout is wrong but every node and link is still visible and inspectable.
+    let mut placed: std::collections::HashMap<NodeId, Vec2> = std::collections::HashMap::new();
+    let mut ids: Vec<NodeId> = graph.nodes.keys().copied().collect();
+    // A stable order so the grid fallback does not reshuffle between runs.
+    ids.sort_by_key(|id| format!("{id:?}"));
+    for (i, id) in ids.iter().enumerate() {
+        let pos = graph
+            .editor_metadata
+            .node_positions
+            .get(id)
+            .copied()
+            // The loader gives every node a position whether the file had one or not, so an
+            // absent layout arrives as a pile at the origin rather than as `None`.
+            .filter(|p| *p != Vec2::ZERO)
+            .unwrap_or_else(|| {
+                Vec2::new(
+                    40.0 + (i / 6) as f32 * (NODE_W + 40.0),
+                    40.0 + (i % 6) as f32 * (NODE_H + 28.0),
+                )
+            });
+        placed.insert(*id, pos);
+    }
+
+    let mut children = Vec::new();
+
+    // Links first, so node boxes draw over them.
+    for (target, source) in graph.edges_inverted.iter() {
+        let (Some(from), Some(to)) = (source_pos(source, &placed), target_pos(target, &placed))
+        else {
+            continue;
+        };
+        children.extend(manhattan(&mut commands, from, to));
+    }
+
+    for id in &ids {
+        let Some(node) = graph.nodes.get(id) else {
+            continue;
+        };
+        let pos = placed[id];
+        let title = if node.name.is_empty() {
+            node.inner.display_name()
+        } else {
+            format!("{}  ({})", node.name, node.inner.display_name())
+        };
+        let node_id = format!("{id:?}");
+        let boxed = commands
+            .spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(pos.x),
+                    top: Val::Px(pos.y),
+                    width: Val::Px(NODE_W),
+                    height: Val::Px(NODE_H),
+                    align_items: AlignItems::Center,
+                    padding: UiRect::horizontal(Val::Px(8.0)),
+                    // A long node name must not spill across its neighbours.
+                    overflow: Overflow::clip(),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.16, 0.17, 0.20, 0.98)),
+                CanvasNode(node_id.clone()),
+                Children::spawn(Spawn((
+                    Text::new(title),
+                    ThemedText,
+                    TextLayout {
+                        linebreak: bevy::text::LineBreak::NoWrap,
+                        ..default()
+                    },
+                ))),
+            ))
+            .id();
+        children.push(boxed);
+    }
+
+    commands.entity(canvas_entity).add_children(&children);
+    commands.remove_resource::<DrawCanvas>();
+    info!(
+        "canvas: {} nodes, {} links",
+        graph.nodes.len(),
+        graph.edges_inverted.len()
+    );
+}
+
+/// Right edge of the source node (or the graph input column, for a graph-level source).
+fn source_pos(
+    source: &bevy_animation_graph::core::animation_graph::SourcePin,
+    placed: &std::collections::HashMap<NodeId, Vec2>,
+) -> Option<Vec2> {
+    use bevy_animation_graph::core::animation_graph::SourcePin as S;
+    match source {
+        S::NodeData(id, _) | S::NodeTime(id) => {
+            placed.get(id).map(|p| *p + Vec2::new(NODE_W, NODE_H * 0.5))
+        }
+        // Graph inputs have no box yet; park them on a left-hand rail.
+        S::InputData(_) | S::InputTime(_) => Some(Vec2::new(8.0, 8.0)),
+    }
+}
+
+/// Left edge of the target node (or the output rail).
+fn target_pos(
+    target: &bevy_animation_graph::core::animation_graph::TargetPin,
+    placed: &std::collections::HashMap<NodeId, Vec2>,
+) -> Option<Vec2> {
+    use bevy_animation_graph::core::animation_graph::TargetPin as T;
+    match target {
+        T::NodeData(id, _) | T::NodeTime(id, _) => {
+            placed.get(id).map(|p| *p + Vec2::new(0.0, NODE_H * 0.5))
+        }
+        T::OutputData(_) | T::OutputTime => None,
+    }
+}
+
+/// Three rectangles: out from the source, across, then in to the target. No rotation, so this
+/// is plain bevy_ui — which is why the canvas needed no rendering work.
+fn manhattan(commands: &mut Commands, from: Vec2, to: Vec2) -> Vec<Entity> {
+    let mid_x = (from.x + to.x) * 0.5;
+    let color = Color::srgba(0.35, 0.55, 0.85, 0.9);
+    let mut rect = |x: f32, y: f32, w: f32, h: f32| {
+        commands
+            .spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(x),
+                    top: Val::Px(y),
+                    width: Val::Px(w.max(LINK_THICKNESS)),
+                    height: Val::Px(h.max(LINK_THICKNESS)),
+                    ..default()
+                },
+                BackgroundColor(color),
+            ))
+            .id()
+    };
+    vec![
+        rect(from.x.min(mid_x), from.y, (mid_x - from.x).abs(), LINK_THICKNESS),
+        rect(mid_x, from.y.min(to.y), LINK_THICKNESS, (to.y - from.y).abs()),
+        rect(mid_x.min(to.x), to.y, (to.x - mid_x).abs(), LINK_THICKNESS),
+    ]
 }
