@@ -1,0 +1,37 @@
+# `animgraph_editor` — bevy_animation_graph's editor on feathers instead of egui, so it rides
+# the same render-free bevy + aurora stack everything else here does. Rung ladder and the port
+# accounting: ../../animgraph_editor.md
+#
+#   cargo run --release -p animgraph_editor -- -a /mnt/code/p/zero/assets
+[package]
+name = "animgraph_editor"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "animgraph_editor"
+path = "src/main.rs"
+
+[dependencies]
+# `bevy_feathers` for the shell, `bevy_feathers_inspector` for every value editor — the two
+# together are what make this port smaller than upstream's egui original.
+bevy = { workspace = true, features = [
+    "bevy_ui",
+    "bevy_ui_widgets",
+    "ui_picking",
+    "picking",
+    "bevy_input_focus",
+    "bevy_feathers_core",
+    # NOT `bevy_feathers` — that is `render_materials`, which wants bevy_render's own
+    # `Shader` asset. Core is the render-free half, which is all this stack has.
+    "experimental_bevy_feathers_inspector",
+    "bevy_animation",
+    "bevy_gizmos",
+    "default_font",
+    "debug",
+] }
+bevy_aurora = { workspace = true, features = ["dev"] }
+bevy_animation_graph = { path = "../../../../f/bevy_animation_graph/crates/bevy_animation_graph" }
+clap.workspace = true
+util = { path = "../util" }
