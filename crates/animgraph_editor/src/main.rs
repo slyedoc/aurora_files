@@ -104,7 +104,35 @@ impl Kind {
 #[derive(Resource, Default)]
 struct Library {
     entries: Vec<Entry>,
+    /// The same entries as a directory tree, which is what the browser draws.
+    root: Dir,
 }
+
+/// One directory in the browser tree. `BTreeMap` so children come out sorted without a pass.
+#[derive(Default)]
+struct Dir {
+    dirs: std::collections::BTreeMap<String, Dir>,
+    files: Vec<Entry>,
+}
+
+impl Dir {
+    fn insert(&mut self, entry: Entry) {
+        let mut cursor = self;
+        let segments: Vec<&str> = entry.path.split('/').collect();
+        for segment in &segments[..segments.len().saturating_sub(1)] {
+            cursor = cursor.dirs.entry((*segment).to_string()).or_default();
+        }
+        cursor.files.push(entry);
+    }
+}
+
+/// Which directories are expanded, keyed by their path from the root ("anim/human").
+#[derive(Resource, Default)]
+struct Expanded(std::collections::HashSet<String>);
+
+/// Set when the tree needs respawning (a directory was toggled).
+#[derive(Resource, Default)]
+struct BrowserDirty(bool);
 
 /// The pane the inspector builds into.
 #[derive(Resource)]
@@ -169,14 +197,17 @@ fn main() {
     app.add_timeout_exit(args.timeout, 60.0);
     app.insert_resource(args);
     app.init_resource::<Library>();
+    app.init_resource::<Expanded>();
+    // Start with every top-level directory open, so the tree is not a wall of `+`.
+    app.insert_resource(BrowserDirty(true));
     app.add_systems(Startup, (scan_library, setup_ui, attach_panes).chain());
-    app.add_systems(Update, bind_when_loaded);
+    app.add_systems(Update, (rebuild_browser, bind_when_loaded));
     app.run();
 }
 
 /// Walk the asset root for everything the editor can open. Asset paths are root-relative with
 /// `/` separators, which is what the asset server wants on every platform.
-fn scan_library(mut library: ResMut<Library>) {
+fn scan_library(mut library: ResMut<Library>, mut expanded: ResMut<Expanded>) {
     let root = PathBuf::from(std::env::var_os("BEVY_ASSET_ROOT").expect("set in main"))
         .join("assets");
     let mut stack = vec![root.clone()];
@@ -203,9 +234,14 @@ fn scan_library(mut library: ResMut<Library>) {
             });
         }
     }
-    library
-        .entries
-        .sort_by(|a, b| a.path.cmp(&b.path));
+    library.entries.sort_by(|a, b| a.path.cmp(&b.path));
+    let entries = library.entries.clone();
+    for entry in entries {
+        library.root.insert(entry);
+    }
+    for name in library.root.dirs.keys() {
+        expanded.0.insert(name.clone());
+    }
     info!(
         "library: {} assets under {}",
         library.entries.len(),
@@ -239,43 +275,6 @@ fn setup_ui(mut commands: Commands, library: Res<Library>) {
         .id();
     commands.insert_resource(InspectorPane(inspector));
 
-    // Rows are plain picked nodes rather than feathers buttons: the button is a BSN scene
-    // component now, and a list of hundreds of them is not what that API is shaped for.
-    let mut rows: Vec<Entity> = Vec::new();
-    for entry in &library.entries {
-        let entry = entry.clone();
-        let label = format!("[{}]  {}", entry.kind.label(), entry.path);
-        let row = commands
-            .spawn((
-                Node {
-                    padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)),
-                    ..default()
-                },
-                Children::spawn(Spawn((Text::new(label), ThemedText))),
-            ))
-            .observe(
-                move |_: On<PointerClick>, assets: Res<AssetServer>, mut commands: Commands| {
-                    // Typed load per kind so the right loader runs; the binding itself is
-                    // untyped, keyed on the asset id.
-                    let handle: UntypedHandle = match entry.kind {
-                        Kind::Graph => assets.load::<AnimationGraph>(&entry.path).untyped(),
-                        Kind::Clip => assets.load::<GraphClip>(&entry.path).untyped(),
-                        Kind::Skeleton => assets.load::<Skeleton>(&entry.path).untyped(),
-                        Kind::StateMachine => assets.load::<StateMachine>(&entry.path).untyped(),
-                    };
-                    commands.insert_resource(Opening {
-                        handle,
-                        kind: entry.kind,
-                        path: entry.path.clone(),
-                        bound: false,
-                    });
-                },
-            )
-            .id();
-        rows.push(row);
-    }
-
-    commands.insert_resource(BrowserRows(rows));
     commands.spawn((
         Name::new("root"),
         Node {
@@ -290,11 +289,13 @@ fn setup_ui(mut commands: Commands, library: Res<Library>) {
                 Name::new("browser"),
                 Browser,
                 Node {
-                    width: Val::Px(320.0),
+                    width: Val::Px(420.0),
                     height: Val::Percent(100.0),
                     flex_direction: FlexDirection::Column,
                     row_gap: Val::Px(2.0),
-                    padding: UiRect::all(Val::Px(8.0)),
+                    // Top padding clears aurora's dev panel, which is an overlay pinned to the
+                    // top-left corner and would otherwise sit on the first rows.
+                    padding: UiRect::new(Val::Px(8.0), Val::Px(8.0), Val::Px(160.0), Val::Px(8.0)),
                     overflow: Overflow::scroll_y(),
                     ..default()
                 },
@@ -341,22 +342,132 @@ fn setup_ui(mut commands: Commands, library: Res<Library>) {
     ));
 }
 
-/// Parent the pre-spawned browser rows and inspector body into their panes.
+/// Parent the pre-spawned inspector body into its pane.
 fn attach_panes(
     mut commands: Commands,
-    rows: Res<BrowserRows>,
     pane: Res<InspectorPane>,
-    browser: Single<Entity, With<Browser>>,
     host: Single<Entity, With<InspectorHost>>,
 ) {
-    commands.entity(*browser).add_children(&rows.0);
     commands.entity(*host).add_child(pane.0);
-    commands.remove_resource::<BrowserRows>();
 }
 
-/// The rows built in `setup_ui`, handed to `attach_panes` once the panes exist.
-#[derive(Resource)]
-struct BrowserRows(Vec<Entity>);
+/// Respawn the browser tree whenever a directory is toggled (and once at startup).
+fn rebuild_browser(
+    mut commands: Commands,
+    mut dirty: ResMut<BrowserDirty>,
+    library: Res<Library>,
+    expanded: Res<Expanded>,
+    browser: Single<(Entity, Option<&Children>), With<Browser>>,
+) {
+    if !dirty.0 {
+        return;
+    }
+    dirty.0 = false;
+    let (browser, children) = *browser;
+    if let Some(children) = children {
+        for child in children.iter() {
+            commands.entity(child).despawn();
+        }
+    }
+    let mut rows = Vec::new();
+    spawn_dir(&mut commands, &library.root, "", 0, &expanded.0, &mut rows);
+    commands.entity(browser).add_children(&rows);
+}
+
+/// One row per directory, then one per file, depth-first. Only an expanded directory
+/// recurses, so a collapsed subtree costs nothing.
+fn spawn_dir(
+    commands: &mut Commands,
+    dir: &Dir,
+    path: &str,
+    depth: usize,
+    expanded: &std::collections::HashSet<String>,
+    rows: &mut Vec<Entity>,
+) {
+    let indent = Val::Px(6.0 + depth as f32 * 14.0);
+    for (name, child) in &dir.dirs {
+        let child_path = if path.is_empty() {
+            name.clone()
+        } else {
+            format!("{path}/{name}")
+        };
+        let open = expanded.contains(&child_path);
+        // ASCII markers: this shell inherits whatever font feathers ships, and a missing
+        // glyph reads as tofu rather than as a disclosure arrow.
+        let label = format!("{} {}/", if open { "-" } else { "+" }, name);
+        let toggle_path = child_path.clone();
+        let row = commands
+            .spawn((
+                Node {
+                    padding: UiRect::new(indent, Val::Px(6.0), Val::Px(3.0), Val::Px(3.0)),
+                    ..default()
+                },
+                Children::spawn(Spawn((
+                    Text::new(label),
+                    ThemedText,
+                    TextLayout {
+                        linebreak: bevy::text::LineBreak::NoWrap,
+                        ..default()
+                    },
+                ))),
+            ))
+            .observe(
+                move |_: On<PointerClick>,
+                      mut expanded: ResMut<Expanded>,
+                      mut dirty: ResMut<BrowserDirty>| {
+                    if !expanded.0.remove(&toggle_path) {
+                        expanded.0.insert(toggle_path.clone());
+                    }
+                    dirty.0 = true;
+                },
+            )
+            .id();
+        rows.push(row);
+        if open {
+            spawn_dir(commands, child, &child_path, depth + 1, expanded, rows);
+        }
+    }
+    for entry in &dir.files {
+        let entry = entry.clone();
+        let leaf = entry.path.rsplit('/').next().unwrap_or(&entry.path).to_string();
+        let label = format!("  {}   [{}]", leaf, entry.kind.label());
+        let row = commands
+            .spawn((
+                Node {
+                    padding: UiRect::new(indent, Val::Px(6.0), Val::Px(3.0), Val::Px(3.0)),
+                    ..default()
+                },
+                Children::spawn(Spawn((
+                    Text::new(label),
+                    ThemedText,
+                    TextLayout {
+                        linebreak: bevy::text::LineBreak::NoWrap,
+                        ..default()
+                    },
+                ))),
+            ))
+            .observe(
+                move |_: On<PointerClick>, assets: Res<AssetServer>, mut commands: Commands| {
+                    // Typed load per kind so the right loader runs; the binding itself is
+                    // untyped, keyed on the asset id.
+                    let handle: UntypedHandle = match entry.kind {
+                        Kind::Graph => assets.load::<AnimationGraph>(&entry.path).untyped(),
+                        Kind::Clip => assets.load::<GraphClip>(&entry.path).untyped(),
+                        Kind::Skeleton => assets.load::<Skeleton>(&entry.path).untyped(),
+                        Kind::StateMachine => assets.load::<StateMachine>(&entry.path).untyped(),
+                    };
+                    commands.insert_resource(Opening {
+                        handle,
+                        kind: entry.kind,
+                        path: entry.path.clone(),
+                        bound: false,
+                    });
+                },
+            )
+            .id();
+        rows.push(row);
+    }
+}
 
 /// An asset is only inspectable once it has finished loading, so binding waits for it.
 fn bind_when_loaded(
