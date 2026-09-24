@@ -22,7 +22,16 @@ Any assets directory, the way the `bsn` viewer does:
 
 ```sh
 cargo run --release -p animgraph_editor -- -a /mnt/code/p/zero/assets
+# open one straight away, and preselect a node
+cargo run --release -p animgraph_editor -- -a /mnt/code/p/zero/assets \
+  -o anim/mannequin/locomotion.animgraph.ron -s "blend walk jog"
+# lay a hand-written graph out and write it back, headless
+cargo run --release -p animgraph_editor -- -a /mnt/code/p/zero/assets \
+  -o anim/human/locomotion.animgraph.ron --save-layout
 ```
+
+Canvas controls: **left-drag a node** to move it, **left-click** it to select, **middle- or
+right-drag the background** to pan, **wheel** to zoom, **Ctrl+S** to save.
 
 ## Rungs
 
@@ -46,19 +55,53 @@ reader) and writing back through `set_input_data`, so the rig re-poses as you dr
 <asset>` opens one at startup: scriptable, and how this is smoke-tested, since a screenshot run
 cannot click. Still to do here: read `get_outputs` back as live readouts.
 
-**R3 — canvas, read only (DONE).** A box per node at its `editor_metadata` position, a link per
-edge, **manhattan-routed** as three absolutely-positioned rectangles — ordinary bevy_ui, no line
-primitive and no new render pass. The loader gives EVERY node a position whether the file had one
-or not, so a hand-written graph arrives as a pile at the origin; origin is treated as unset and
-falls back to a grid. Still to do here: pan by dragging the background, zoom by recomputing px
-positions (bevy_ui has no node scale), and pin rows rather than one box-wide endpoint.
+**R3 — canvas, read only (DONE).** A box per node with its real PIN ROWS — inputs down the left,
+outputs down the right, from `AnimationNode::new_spec` — plus the two graph-level rails (`inputs`
+is all outputs, `outputs` is all inputs), and a link per edge **manhattan-routed** as three
+absolutely-positioned rectangles: ordinary bevy_ui, no line primitive and no new render pass.
+Time edges are drawn amber and data edges blue, which makes a graph's timing spine readable.
+Middle- or right-drag pans, the wheel zooms about the canvas centre (every px is
+`canvas * zoom + pan`, and the font sizes scale with it, because bevy_ui has no node scale).
 
-**R4 — canvas, editing.** Clicking a node box (it already carries `CanvasNode`) points the
-inspector at that node's parameters — the reflection path has to address `nodes` by key, which is
-the interesting part. Then: drag nodes to move them (write back to `editor_metadata.node_positions`),
-drag pin-to-pin to make a link, delete key to remove, a node-type menu to add. The mutations are
-already written: `ui/actions/graph.rs`. Saving is `AnimationGraphSerializer` + `ui/actions/saving.rs`.
-Hit-testing is `ui_picking`, which zero already enables.
+Three things the data did not do as expected:
+
+* The loader gives EVERY node a position whether the file had one or not, so an unlaid-out graph
+  arrives as a pile at the origin rather than as `None`. All-zero is the test, and the fallback is
+  a longest-path LAYERING (a node's column is one past its deepest predecessor), which for a
+  locomotion graph reads left to right in evaluation order.
+* Upstream's node names are emoji-prefixed (`∑ Blend`, `⌚ Speed`, `🔄 Loop`). This shell inherits
+  whatever font feathers ships, which has none of them, so every title is stripped to ASCII.
+* Panning on ANY drag is wrong even before it fights node dragging: a stray press from the window
+  manager as the window takes focus arrives as a left-drag and pans the canvas out from under you.
+  Pan is middle/right, node drag is left.
+
+**R4 — canvas, editing (PART DONE).** Done: dragging a node box moves it (left button, and it
+stops propagating so the canvas does not pan with it); clicking one selects it, tints its box and
+lists that node's parameters; Ctrl+S writes the graph back through `AnimationGraphSerializer`,
+folding the canvas layout into `editor_metadata`. `--save-layout` does the same headless, which is
+both a batch re-layout for a hand-written graph and how the save path is smoke-tested — a
+screenshot run cannot press Ctrl+S. `--select <node name>` does the same for the click path.
+
+Two things worth knowing about that save. A round trip drops comments, so the LEADING comment
+block is carried across by hand (it is where an authored graph keeps its design record) and a
+`.bak` is left the first time; and `graph.nodes` is a `HashMap`, so the node list is sorted by id
+on the way out or the file churns on every save. `edges_inverted` is a `HashMap` keyed by
+`TargetPin`, which is not `Ord`, so that block still reorders — fixing it means a change in the
+fork's serializer.
+
+Still to do here: drag pin-to-pin to make a link, delete key to remove, a node-type menu to add.
+The mutations are already written upstream: `ui/actions/graph.rs`.
+
+**Why node parameters are their own panel and not `bevy_feathers_inspector`.** They cannot be the
+inspector's: `AnimationGraph::nodes` and `edges` are `#[reflect(ignore)]`, and `DynNodeLike` — the
+`Box<dyn NodeLike>` each node's body sits in — carries a HAND-WRITTEN `Reflect` impl that reports
+a tuple struct with ZERO fields. So no `ParsedPath` from the asset root reaches a node's body, and
+`InspectorRoot::Asset` (R0) cannot help. What does work: `NodeLike: Reflect`, so `inner_ref()` is a
+`&dyn PartialReflect` over the CONCRETE node struct, and walking that gives the read-only list
+that is there now. Making it EDITABLE wants one of two things — teach `DynNodeLike` to delegate
+its reflection to the inner value, or give the inspector a root that resolves through a closure
+rather than a `ParsedPath`. Upstream sidesteps both with `ReflectEditProxy`, which converts a node
+to and from a plain reflectable proxy struct; that is probably the right seam here too.
 
 **R5 — curves.** Swap manhattan links for beziers. aurora's `UiQuad` carries an arbitrary
 `Affine2`, so a curve is N thin ROTATED quads through the existing pipeline — it needs a small

@@ -199,6 +199,7 @@ dependencies = [
  "bevy_animation_graph",
  "bevy_aurora",
  "clap",
+ "ron 0.10.1",
  "util",
 ]
 
