@@ -468,9 +468,22 @@ fn rebuild_palette(
     let list = commands
         .spawn_scene(bsn! {
             @FeathersListView { @rows: {rows}, }
-            // Same story one level down: the list view must be allowed to shrink below its own
-            // rows, or its inner `ScrollArea` never has anything to scroll against.
-            Node { flex_grow: 1.0, min_height: Val::Px(0.0) }
+            // The list view needs a DEFINITE height or nothing inside it ever scrolls: its inner
+            // `ScrollArea` can only clip once its own parent has a size that does not come from
+            // the rows. `flex_grow` does not give one here, so the list is pinned to its
+            // container instead — absolute with every inset at zero takes it out of flow, so 297
+            // rows cannot push it taller, and its height is exactly the body's.
+            //
+            // From there the widget does the rest: the scroll area's automatic minimum height is
+            // zero because its overflow is not visible, so it shrinks to the bounded parent and
+            // clips, and the scrollbar the scene already carries has something to drive.
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                top: Val::Px(0.0),
+                right: Val::Px(0.0),
+                bottom: Val::Px(0.0),
+            }
             on(row_selected)
         })
         .id();
