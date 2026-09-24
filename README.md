@@ -45,6 +45,19 @@ cargo run --release -p polyhaven -- snow_02 ...     # custom layer list
 cp assets/terrain/terrain_*.ktx2 /mnt/code/p/zero/assets/terrain/
 ```
 
+`--fetch` stops after the download instead of baking terrain arrays, and writes
+`raw/polyhaven/materials.json` recording each slug's real-world size and the file every
+map landed in. That is what a PROP asset wants — individual maps to point a material at,
+plus the size to tile by:
+
+```sh
+cargo run --release -p polyhaven -- --fetch --res 2k concrete_floor_02 sand_01
+```
+
+One fetcher, deliberately. A per-asset script re-implements the API calls and hardcodes
+a table of material sizes, which drifts from the source; `assets/hex` reads this manifest
+instead.
+
 # Trees (SpeedTree, NVIDIA ORCA)
 
 Source: <https://developer.nvidia.com/orca/speedtree>. Drop the pack under `raw/SpeedTree_v2/`

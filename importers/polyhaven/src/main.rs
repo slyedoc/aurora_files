@@ -1,11 +1,18 @@
-//! Poly Haven terrain importer: downloads material maps and bakes them into
-//! mipped, uncompressed KTX2 `texture_2d_array`s (one layer per material).
+//! Poly Haven importer. Two jobs, one download cache.
 //!
-//! Layer order IS biome id order (`zero::planet::BiomeType`, 0..=10) when run
-//! with no slugs; pass explicit slugs to bake a custom set.
+//! TERRAIN (default): bakes the maps into mipped, uncompressed KTX2
+//! `texture_2d_array`s, one layer per material. Layer order IS biome id order
+//! (`zero::planet::BiomeType`, 0..=10) when run with no slugs.
 //!
-//!   cargo run -p polyhaven --release            # 11-biome set at 1k
-//!   cargo run -p polyhaven --release -- --res 2k aerial_rocks_02 snow_02
+//! FETCH (`--fetch`): stops after the download and writes `materials.json`
+//! beside the cache, recording each slug's real-world size and the file each map
+//! landed in. That is what a prop asset wants -- individual maps it can point a
+//! material at -- and it means there is ONE fetcher, not a per-asset script that
+//! re-implements the API calls and hardcodes the sizes.
+//!
+//!   cargo run -p polyhaven --release                      # 11-biome set at 1k
+//!   cargo run -p polyhaven --release -- --res 2k snow_02
+//!   cargo run -p polyhaven --release -- --fetch --res 2k concrete sand_01
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
@@ -68,6 +75,10 @@ struct Args {
     /// Output file prefix: <name>_albedo_array.ktx2 etc.
     #[arg(long, default_value = "terrain")]
     name: String,
+    /// Download and record only -- skip the terrain array bake. Writes
+    /// `materials.json` into the cache dir for consumers to read.
+    #[arg(long)]
+    fetch: bool,
 }
 
 fn main() -> Result<()> {
@@ -89,6 +100,10 @@ fn main() -> Result<()> {
     for (_, slug) in &layers {
         downloads.push(download_material(slug, &args.res, &raw_dir)?);
         sizes_m.push(material_size_m(slug)?);
+    }
+
+    if args.fetch {
+        return write_materials_manifest(&layers, &downloads, &sizes_m, &args.res, &raw_dir);
     }
 
     let mut manifest = Vec::new();
@@ -120,6 +135,57 @@ fn main() -> Result<()> {
     // Paste-ready per-layer tiling for the consumer shader (chit_planet.wgsl).
     let tiles: Vec<String> = sizes_m.iter().map(|s| format!("{s:.1}")).collect();
     println!("const LAYER_TILE_M = array<f32, {}>({});", tiles.len(), tiles.join(", "));
+    Ok(())
+}
+
+/// Record what was fetched so a consumer does not have to re-derive it.
+///
+/// `size_m` is the material's real-world coverage, which is the tiling a
+/// consumer must use -- tiling at anything else magnifies or shrinks the
+/// material and throws texel density off between surfaces. Reading it here means
+/// no asset hardcodes a table of them.
+///
+/// Merges into any existing manifest, so fetching a few more slugs later does
+/// not drop the ones already recorded.
+fn write_materials_manifest(
+    layers: &[(String, String)],
+    downloads: &[Vec<PathBuf>],
+    sizes_m: &[f32],
+    res: &str,
+    raw_dir: &Path,
+) -> Result<()> {
+    let path = raw_dir.join("materials.json");
+    let mut root = fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let obj = root.as_object_mut().context("materials.json is not an object")?;
+
+    for (i, (_, slug)) in layers.iter().enumerate() {
+        let maps: serde_json::Map<String, serde_json::Value> = MAPS
+            .iter()
+            .enumerate()
+            .map(|(mi, (key, _, _))| {
+                let file = downloads[i][mi]
+                    .strip_prefix(raw_dir)
+                    .unwrap_or(&downloads[i][mi])
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                (key.to_string(), serde_json::Value::String(file))
+            })
+            .collect();
+        obj.insert(
+            slug.clone(),
+            serde_json::json!({ "size_m": sizes_m[i], "res": res, "maps": maps }),
+        );
+    }
+
+    let count = obj.len();
+    fs::write(&path, serde_json::to_string_pretty(&root)?)?;
+    println!("wrote {} ({count} materials)", path.display());
+    for (i, (_, slug)) in layers.iter().enumerate() {
+        println!("  {slug}  {} m", sizes_m[i]);
+    }
     Ok(())
 }
 
