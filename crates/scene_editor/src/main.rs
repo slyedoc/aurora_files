@@ -33,7 +33,7 @@ use bevy::{
     },
     prelude::*,
     scene::{Scene, SceneList, ScenePatchInstance},
-    text::{EditableText, TextEditChange},
+    text::{EditableText, TextEdit, TextEditChange},
     ui_widgets::ValueChange,
 };
 use bevy_aurora::{
@@ -101,12 +101,15 @@ fn main() {
     app.init_asset::<Kit>().register_asset_loader(KitLoader);
     app.add_screenshot(KeyCode::F12);
     app.add_timeout_exit(args.timeout, 60.0);
-    app.insert_resource(Filter(args.filter.clone()));
+    app.init_resource::<Filter>();
     app.insert_resource(args);
     app.init_resource::<PaletteDirty>();
     app.init_resource::<Selection>();
     app.add_systems(Startup, setup);
-    app.add_systems(Update, (rebuild_palette, show_selection));
+    app.add_systems(
+        Update,
+        (seed_filter, rebuild_palette, show_selection).chain(),
+    );
     app.run();
 }
 
@@ -232,6 +235,12 @@ fn setup(
                 ),
                 (
                     @FeathersTextInputContainer
+                    // The container's own scene sets `flex_grow: 1`, which is right in the ROW
+                    // it was designed for (a label, a spacer, then the field taking the rest)
+                    // and wrong here: in a column, growing means growing TALL, so the search
+                    // box swallows whatever the list leaves behind and balloons when the
+                    // results are few. Its height already comes from the widget.
+                    Node { flex_grow: 0.0, flex_shrink: 0.0 }
                     Children [(
                         @FeathersTextInput { @max_characters: 40usize, }
                         PaletteSearch
@@ -244,11 +253,42 @@ fn setup(
                     Node {
                         flex_grow: 1.0,
                         flex_direction: FlexDirection::Column,
+                        // A flex item will not shrink below its own content unless told it may,
+                        // and 297 rows of content is taller than any window. Without this the
+                        // body grows to fit them and the list runs off the bottom of the page
+                        // instead of scrolling inside the pane.
+                        min_height: Val::Px(0.0),
                     }
                 ),
             ]
         )]
     });
+}
+
+/// Type `--filter` into the search box once, rather than setting the resource behind its back.
+///
+/// The widget owns the text: it fires a change on startup with its own (empty) buffer, which
+/// would clobber any value written straight into the resource — and the box would still look
+/// empty while the list was filtered, which is worse than not supporting the flag. Inserting the
+/// text makes the widget and the resource agree by construction.
+fn seed_filter(
+    mut done: Local<bool>,
+    args: Res<Args>,
+    search: Query<Entity, With<PaletteSearch>>,
+    mut editors: Query<&mut EditableText>,
+) {
+    if *done || args.filter.is_empty() {
+        *done = true;
+        return;
+    }
+    let Some(entity) = search.iter().next() else {
+        return;
+    };
+    let Ok(mut editor) = editors.get_mut(entity) else {
+        return;
+    };
+    editor.queue_edit(TextEdit::Insert(args.filter.as_str().into()));
+    *done = true;
 }
 
 /// The search box changed: take its text and mark the list stale.
@@ -428,7 +468,9 @@ fn rebuild_palette(
     let list = commands
         .spawn_scene(bsn! {
             @FeathersListView { @rows: {rows}, }
-            Node { flex_grow: 1.0 }
+            // Same story one level down: the list view must be allowed to shrink below its own
+            // rows, or its inner `ScrollArea` never has anything to scroll against.
+            Node { flex_grow: 1.0, min_height: Val::Px(0.0) }
             on(row_selected)
         })
         .id();
