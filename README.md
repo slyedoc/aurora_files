@@ -328,6 +328,30 @@ cd /mnt/code/p/zero && cargo run --release --example bodies   # beside a make_hu
 | node entities | 68 (1 mesh node + 65 joints + armature + a second primitive) |
 | materials / textures | 2 / 0 (flat orange body, purple joints — a MANNEQUIN, not a character) |
 | clips | 43, 30 fps; v3.0 added root motion to every locomotion clip |
+| measured ground speed | walk 0.975 m/s, jog 5.357, sprint 8.250 (source rig) |
+
+**Root motion is how a locomotion graph stops guessing.** The in-place library throws the
+travel away, but the `_RM` twin keeps it on the `root` joint, so `--measure` can report the
+ground speed each clip was authored at:
+
+```sh
+cargo run --release -p animlib_import -- raw/ual/Unreal-Godot/UAL1_Standard_RM.glb \
+  ../zero/assets/ual/Mannequin.bsn out --measure --clips Walk_Loop,Jog_Fwd_Loop
+```
+
+It prints three speeds per clip, and they disagree in ways worth seeing. `net` is the straight
+line from first frame to last over the duration; `path` is the summed per-frame distance — equal
+for a straight cycle, larger for a weave, and `net` near zero for a clip that returns home while
+`path` does not. `on rig` is `net` scaled by the HIP-HEIGHT RATIO between the source rig and the
+target, because a retarget does not preserve ground speed: the same joint angles on shorter legs
+take a shorter stride. Pointing it at `Mannequin.bsn` reports scale 1.000 (the identity check
+again); zero's make_human player bake reports 0.970, and 0.946 / 5.198 m/s.
+
+Those numbers are not decoration. A blend-based locomotion graph reproduces the capsule's speed
+only when its `walk_speed` / `jog_speed` parameters EQUAL what the clips cover, because the pose
+covers `(1-fac_jog)*walk + fac_jog*jog` while the time warp's `base` assumes the same two figures.
+zero's graph was guessing 1.40 / 3.50 against clips that cover 0.946 / 5.198, which slid the feet
+23% at its walk speed and 61% at half that.
 
 **This is why `from_mesh_flat` learned about skin.** Everything baked before this was rigid:
 the mech's stride is joint ROTATIONS on nested entities, no vertex is bound to anything. A

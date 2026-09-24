@@ -19,6 +19,9 @@ use bevy::{
     feathers_inspector::{BuildAssetInspector, BuildCustomInspector, ReflectInspectorWidget},
     input::mouse::MouseScrollUnit,
     prelude::*,
+    asset::RenderAssetUsages,
+    image::Image,
+    mesh::{Mesh, VertexAttributeValues},
     reflect::{std_traits::ReflectDefault, ReflectMut, ReflectRef},
     ui::{
         AlignItems, BackgroundColor, ComputedNode, Display, FlexDirection, JustifyContent,
@@ -43,6 +46,7 @@ use bevy_animation_graph::{
 };
 use bevy_aurora::{
     auto_exposure::AuroraExposure,
+    material::{AuroraMaterial, AuroraMaterial3d},
     dev_shaders::DevShaderPlugin,
     dev_ui::DevUIPlugin,
     ray_default_plugins::RayDefaultPlugins,
@@ -51,6 +55,7 @@ use bevy_aurora::{
 };
 use clap::Parser;
 use uuid::Uuid;
+use wgpu_types::{Extent3d, TextureDimension, TextureFormat};
 
 use std::any::TypeId;
 use std::path::{Path, PathBuf};
@@ -365,7 +370,81 @@ fn scan_library(mut library: ResMut<Library>, mut expanded: ResMut<Expanded>) {
     );
 }
 
-fn setup_ui(mut commands: Commands, assets: Res<AssetServer>, args: Res<Args>) {
+/// Floor extent in metres, and the world size of one grid cell.
+const FLOOR_SIZE: f32 = 40.0;
+const GRID_CELL: f32 = 1.0;
+/// Cells per texture tile: the tile carries its own heavier line, so a major line lands every
+/// this many metres without a second material or a second draw.
+const GRID_MAJOR: u32 = 8;
+
+/// A plane whose UVs run 0..`tiles` instead of 0..1, so the grid texture repeats across it.
+///
+/// Aurora's samplers are REPEAT, so tiling is purely a UV question — but `PlaneMeshBuilder` has
+/// no UV scale, so scale the attribute after the fact.
+fn grid_plane(size: f32, tiles: f32) -> Mesh {
+    let mut mesh = Plane3d::default().mesh().size(size, size).build();
+    let repeats = tiles / GRID_MAJOR as f32;
+    if let Some(VertexAttributeValues::Float32x2(uvs)) =
+        mesh.attribute_mut(Mesh::ATTRIBUTE_UV_0)
+    {
+        for uv in uvs.iter_mut() {
+            uv[0] *= repeats;
+            uv[1] *= repeats;
+        }
+    }
+    mesh
+}
+
+/// One tile of the grid: `GRID_MAJOR` cells square, with a heavier line on the tile boundary.
+///
+/// Values are albedo, so they stay well clear of 0 and 1 — a pure black floor gives the tracer
+/// nothing to bounce and a pure white one blows out under the sun exposure this app runs at.
+fn grid_texture() -> Image {
+    const CELL: u32 = 32;
+    const SIZE: u32 = CELL * GRID_MAJOR;
+    const BASE: [f32; 3] = [0.055, 0.058, 0.065];
+    const MINOR: [f32; 3] = [0.12, 0.13, 0.15];
+    const MAJOR: [f32; 3] = [0.26, 0.28, 0.32];
+
+    let mut data = Vec::with_capacity((SIZE * SIZE * 4) as usize);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            // A line is drawn on the low edge of a cell, two pixels wide for the major one so
+            // it still reads once the floor is a long way from the camera.
+            let major = x < 2 || y < 2;
+            let minor = x % CELL == 0 || y % CELL == 0;
+            let color = if major {
+                MAJOR
+            } else if minor {
+                MINOR
+            } else {
+                BASE
+            };
+            data.extend(color.iter().map(|c| (c * 255.0) as u8));
+            data.push(255);
+        }
+    }
+    Image::new(
+        Extent3d {
+            width: SIZE,
+            height: SIZE,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::all(),
+    )
+}
+
+fn setup_ui(
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    args: Res<Args>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<AuroraMaterial>>,
+) {
     // aurora's render_frame wants exactly one of ITS cameras, so even a UI-only shell needs a
     // 3d one. It also becomes the preview camera at R2.
     commands.spawn((
@@ -375,6 +454,20 @@ fn setup_ui(mut commands: Commands, assets: Res<AssetServer>, args: Res<Args>) {
         // Pulled back and offset: the browser and inspector eat the left and right thirds, so
         // the rig is framed into what is left rather than centred on the window.
         Transform::from_xyz(-0.35, 1.15, -4.6).looking_at(Vec3::new(-0.35, 0.95, 0.0), Vec3::Y),
+    ));
+
+    // A floor under the rig. The preview had none, so a walk cycle played against the sky with
+    // nothing for the feet to meet and no contact shadow to read the pose against.
+    commands.spawn((
+        Name::new("floor"),
+        Mesh3d(meshes.add(grid_plane(FLOOR_SIZE, FLOOR_SIZE / GRID_CELL))),
+        AuroraMaterial3d(materials.add(AuroraMaterial {
+            base_color_texture: Some(images.add(grid_texture())),
+            perceptual_roughness: 0.85,
+            ..default()
+        })),
+        // Just below the origin the rig stands on, so the mesh never z-fights the feet.
+        Transform::from_xyz(0.0, -0.002, 0.0),
     ));
 
     // The preview rig: the mannequin, because its clips are an identity retarget and so show

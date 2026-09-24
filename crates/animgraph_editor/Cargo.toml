@@ -35,6 +35,9 @@ bevy_aurora = { workspace = true, features = ["dev"] }
 bevy_animation_graph = { path = "../../../../f/bevy_animation_graph/crates/bevy_animation_graph" }
 # Saving a graph back to its `.ron`: `AnimationGraphSerializer` is a plain `Serialize`.
 ron = "0.10"
+# `Extent3d` / `TextureFormat` for the grid texture, the same way aurora's own examples take
+# them — bevy re-exports neither at the root in this tree.
+wgpu-types = { version = "30", default-features = false }
 # `NodeId` is a Uuid newtype whose field is `pub(crate)`; `From<Uuid>` is the way in, which is
 # what minting a node for the add menu needs.
 uuid = "1"

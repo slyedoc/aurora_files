@@ -47,6 +47,12 @@ struct Args {
     /// Print the source's clip and joint names and exit.
     #[arg(long)]
     list: bool,
+
+    /// Print each clip's ROOT-MOTION speed and exit. Needs a root-motion source
+    /// (`UAL1_Standard_RM.glb`); an in-place library reports zero for everything, which is
+    /// how you can tell the two apart.
+    #[arg(long)]
+    measure: bool,
 }
 
 /// Source joint name -> target bone name, tried FIRST; the caller falls back to the source name
@@ -543,12 +549,98 @@ fn write_skeleton(rig: &TargetRig, rig_path: &Path) -> Result<PathBuf, String> {
     Ok(out)
 }
 
+/// Report the ground speed each clip was authored at.
+///
+/// The root joint of a root-motion export carries the travel the in-place library throws away,
+/// so a locomotion graph's blend thresholds can be MEASURED instead of guessed. Two numbers per
+/// clip, because they disagree in a way worth seeing: `net` is the straight line from first
+/// frame to last over the duration, `path` is the summed per-frame distance. A straight walk
+/// cycle has them equal; a turn or a weave has `path` larger, and a clip that returns to where
+/// it started has `net` near zero while `path` does not.
+fn measure(nodes: &[SourceNode], clips: &[Clip], args: &Args) {
+    let Some(root) = nodes.iter().position(|n| n.name == "root") else {
+        eprintln!("no `root` joint in this source; nothing carries root motion");
+        return;
+    };
+    // A retarget does not preserve ground speed: the same joint angles on shorter legs take a
+    // shorter stride. Hip height is the usual stand-in for leg length, and the ratio of the two
+    // rigs' hip heights is what turns the source's authored speed into the speed the TARGET
+    // will actually travel at.
+    let scale = hip_scale(nodes, &args.rig);
+    match scale {
+        Some((ratio, src_hip, dst_hip)) => println!(
+            "rig scale {ratio:.3}  (source hip {src_hip:.3} m, target hip {dst_hip:.3} m)"
+        ),
+        None => println!("rig scale 1.000  (no pelvis in one of the rigs; speeds are the source's)"),
+    }
+    let ratio = scale.map_or(1.0, |(r, _, _)| r);
+    println!(
+        "{:<24} {:>7} {:>9} {:>9} {:>9}  {}",
+        "clip", "secs", "net m/s", "path m/s", "on rig", "heading"
+    );
+    for clip in clips {
+        if !args.clips.is_empty() && !args.clips.iter().any(|c| c == &clip.name) {
+            continue;
+        }
+        if clip.duration <= 0.0 {
+            continue;
+        }
+        let steps = ((clip.duration * args.fps).round() as usize).max(1);
+        let at = |i: usize| {
+            let t = clip.duration * i as f32 / steps as f32;
+            // Horizontal only: vertical travel is a jump or a crouch, not ground speed.
+            source_world(nodes, Some(&clip.tracks), t).1[root].with_y(0.0)
+        };
+        let (first, last) = (at(0), at(steps));
+        let mut path = 0.0;
+        let mut previous = first;
+        for i in 1..=steps {
+            let current = at(i);
+            path += previous.distance(current);
+            previous = current;
+        }
+        let net = last - first;
+        // A clip that barely moves has no meaningful heading; do not print noise for it.
+        let heading = if net.length() > 1e-3 {
+            format!("{:+.2} {:+.2}", net.normalize().x, net.normalize().z)
+        } else {
+            "-".to_string()
+        };
+        let source_speed = net.length() / clip.duration;
+        println!(
+            "{:<24} {:>7.2} {:>9.3} {:>9.3} {:>9.3}  {heading}",
+            clip.name,
+            clip.duration,
+            source_speed,
+            path / clip.duration,
+            source_speed * ratio,
+        );
+    }
+}
+
+/// `(target / source, source hip, target hip)` from each rig's rest-pose pelvis height.
+fn hip_scale(nodes: &[SourceNode], rig_path: &Path) -> Option<(f32, f32, f32)> {
+    let pelvis = nodes.iter().position(|n| n.name == "pelvis")?;
+    let src = source_world(nodes, None, 0.0).1[pelvis].y;
+    let rig = TargetRig::parse(rig_path).ok()?;
+    let dst = rig
+        .index
+        .get("pelvis")
+        .map(|&b| rig.bones[b].world_t.y)
+        .filter(|y| *y > 0.0)?;
+    (src > 0.0).then(|| (dst / src, src, dst))
+}
+
 fn main() {
     let args = Args::parse();
     let (nodes, clips) = load_source(&args.source).unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(1)
     });
+    if args.measure {
+        measure(&nodes, &clips, &args);
+        return;
+    }
     if args.list {
         println!("clips:");
         for c in &clips {
