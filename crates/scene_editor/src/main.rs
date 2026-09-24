@@ -32,7 +32,7 @@ use bevy::{
         theme::ThemedText,
     },
     prelude::*,
-    scene::{Scene, SceneList},
+    scene::{Scene, SceneList, ScenePatchInstance},
     text::{EditableText, TextEditChange},
     ui_widgets::ValueChange,
 };
@@ -40,6 +40,7 @@ use bevy_aurora::{
     auto_exposure::AuroraExposure,
     dev_shaders::DevShaderPlugin,
     dev_ui::DevUIPlugin,
+    material::{AuroraMaterial, AuroraMaterial3d},
     ray_default_plugins::RayDefaultPlugins,
     sky::Sky,
     util::{ScreenshotExt, TimeoutAppExt},
@@ -58,6 +59,11 @@ struct Args {
     /// Start with this text in the search box.
     #[arg(long, default_value = "")]
     filter: String,
+
+    /// Select this prop at startup (short or full name), so a preview can be checked without
+    /// clicking. The same hook the animgraph editor's `--select` gives.
+    #[arg(long)]
+    select: Option<String>,
 
     /// Seconds before auto-exit.
     #[arg(long, short)]
@@ -100,7 +106,7 @@ fn main() {
     app.init_resource::<PaletteDirty>();
     app.init_resource::<Selection>();
     app.add_systems(Startup, setup);
-    app.add_systems(Update, rebuild_palette);
+    app.add_systems(Update, (rebuild_palette, show_selection));
     app.run();
 }
 
@@ -116,27 +122,37 @@ struct PaletteHeader;
 #[derive(Component, Clone, Default)]
 struct PaletteSearch;
 
-/// A row's prop, so a selection says which one.
+/// A row's prop, so a selection says which one — and how big it is, which is what lets the
+/// preview frame it without loading it first.
 #[derive(Component, Clone, Default)]
 struct PropRow {
     name: String,
     bsn: String,
+    size: Vec3,
 }
 
 /// Substring match against prop names, lower-cased by the time it gets here.
 #[derive(Resource, Default)]
 struct Filter(String);
 
-/// The prop currently selected in the palette. R1 spawns this; for now it is the proof that
-/// selection round-trips.
+/// The prop currently selected in the palette.
 #[derive(Resource, Default)]
 struct Selection(Option<PropRow>);
+
+/// The prop instance standing in the world, so the next selection can replace it.
+#[derive(Component)]
+struct Preview;
 
 /// Set when the rows need respawning — the search changed, or a manifest finished loading.
 #[derive(Resource, Default)]
 struct PaletteDirty(bool);
 
-fn setup(mut commands: Commands, assets: Res<AssetServer>) {
+fn setup(
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<AuroraMaterial>>,
+) {
     let root = std::path::PathBuf::from(std::env::var_os("BEVY_ASSET_ROOT").expect("set in main"))
         .join("assets");
     let kits = kit::discover(&assets, &root);
@@ -157,6 +173,18 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
         AuroraExposure::SUNLIGHT,
         Sky::default(),
         Transform::from_xyz(0.0, 1.6, 6.0).looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y),
+    ));
+    // A floor. Without one a prop hangs in a black void with no sense of scale or contact, which
+    // is most of what a preview is for.
+    commands.spawn((
+        Name::new("ground"),
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(60.0, 60.0))),
+        AuroraMaterial3d(materials.add(AuroraMaterial {
+            base_color: Color::linear_rgb(0.20, 0.20, 0.22),
+            perceptual_roughness: 0.95,
+            ..default()
+        })),
+        Transform::from_xyz(0.0, 0.0, 0.0),
     ));
     commands.spawn((
         Name::new("sun"),
@@ -252,6 +280,46 @@ fn row_selected(
     selection.0 = Some(row.clone());
 }
 
+/// Show the selected prop: one instance at the origin, with the camera pulled back to frame it.
+///
+/// Framing comes from the manifest rather than from the loaded scene, which is the whole reason
+/// the extent is baked in. A `.bsn` streams in over several frames, so measuring the spawned
+/// entity would mean waiting, guessing when it had settled, and moving the camera after the prop
+/// was already on screen. Knowing the size up front means the shot is right on the first frame —
+/// and it is the same fact R1 needs to lay 297 of these out in uniform cells.
+fn show_selection(
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    selection: Res<Selection>,
+    previous: Query<Entity, With<Preview>>,
+    mut camera: Single<&mut Transform, With<Camera3d>>,
+) {
+    if !selection.is_changed() {
+        return;
+    }
+    for entity in &previous {
+        commands.entity(entity).despawn();
+    }
+    let Some(prop) = &selection.0 else {
+        return;
+    };
+    commands.spawn((
+        Name::new(prop.name.clone()),
+        Preview,
+        ScenePatchInstance(assets.load(&prop.bsn)),
+        // Props bake with their origin on the floor, so nothing needs lifting.
+        Transform::IDENTITY,
+        Visibility::Visible,
+    ));
+
+    // Far enough back that the longest side fits, and never closer than arm's length — a teaspoon
+    // would otherwise put the camera inside its own near plane.
+    let longest = prop.size.max_element().max(0.1);
+    let eye = Vec3::new(0.6, 0.55, 1.0).normalize() * (longest * 1.9).max(0.8);
+    let focus = Vec3::Y * prop.size.y * 0.45;
+    **camera = Transform::from_translation(eye + focus).looking_at(focus, Vec3::Y);
+}
+
 /// Respawn the list whenever the search changes or a manifest finishes loading.
 fn rebuild_palette(
     mut commands: Commands,
@@ -261,6 +329,7 @@ fn rebuild_palette(
     kits: Res<Kits>,
     manifests: Res<Assets<Kit>>,
     filter: Res<Filter>,
+    mut selection: ResMut<Selection>,
     body: Single<(Entity, Option<&Children>), With<PaletteBody>>,
     mut header: Single<&mut Text, With<PaletteHeader>>,
 ) {
@@ -290,6 +359,7 @@ fn rebuild_palette(
     let needle = filter.0.to_lowercase();
     let multiple = kits.0.len() > 1;
     let mut rows = Vec::new();
+    let mut pending: Vec<kit::KitProp> = Vec::new();
     let mut total = 0usize;
     for entry in &kits.0 {
         if args.kit.as_deref().is_some_and(|want| want != entry.name) {
@@ -311,6 +381,7 @@ fn rebuild_palette(
             } else {
                 short.to_string()
             };
+            pending.push(prop.clone());
             rows.push(row(
                 label,
                 // One figure, not three: at a glance you want "furniture or architecture", and
@@ -319,9 +390,25 @@ fn rebuild_palette(
                 PropRow {
                     name: prop.name.clone(),
                     bsn: prop.bsn.clone(),
+                    size: prop.size(),
                 },
             ));
         }
+    }
+
+    // `--select` applies once, as soon as the manifest it names has actually loaded.
+    if let Some(want) = &args.select
+        && selection.0.is_none()
+        && let Some(prop) = pending
+            .iter()
+            .find(|p| p.name == *want || p.short_name() == want)
+    {
+        info!("palette: --select {} ({})", prop.name, prop.bsn);
+        selection.0 = Some(PropRow {
+            name: prop.name.clone(),
+            bsn: prop.bsn.clone(),
+            size: prop.size(),
+        });
     }
 
     let shown = rows.len();
@@ -354,7 +441,7 @@ fn rebuild_palette(
 fn row(label: String, trailing: String, prop: PropRow) -> impl Scene {
     bsn! {
         @FeathersListRow
-        PropRow { name: {prop.name}, bsn: {prop.bsn}, }
+        PropRow { name: {prop.name}, bsn: {prop.bsn}, size: {prop.size}, }
         Children [
             (
                 Node {
