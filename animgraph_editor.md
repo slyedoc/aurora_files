@@ -30,8 +30,10 @@ cargo run --release -p animgraph_editor -- -a /mnt/code/p/zero/assets \
   -o anim/human/locomotion.animgraph.ron --save-layout
 ```
 
-Canvas controls: **left-drag a node** to move it, **left-click** it to select, **middle- or
-right-drag the background** to pan, **wheel** to zoom, **Ctrl+S** to save.
+Canvas controls: **left-drag a node** to move it, **left-click** it to select, **drag pin to pin**
+to wire, **right-click an input pin** to cut the link into it, **Delete** to remove the selected
+node, **N** for the add-node palette, **middle- or right-drag the background** to pan, **wheel** to
+zoom, **Ctrl+S** to save.
 
 ## Rungs
 
@@ -75,22 +77,41 @@ Three things the data did not do as expected:
   manager as the window takes focus arrives as a left-drag and pans the canvas out from under you.
   Pan is middle/right, node drag is left.
 
-**R4 — canvas, editing (PART DONE).** Done: dragging a node box moves it (left button, and it
-stops propagating so the canvas does not pan with it); clicking one selects it, tints its box and
-lists that node's parameters; Ctrl+S writes the graph back through `AnimationGraphSerializer`,
-folding the canvas layout into `editor_metadata`. `--save-layout` does the same headless, which is
-both a batch re-layout for a hand-written graph and how the save path is smoke-tested — a
-screenshot run cannot press Ctrl+S. `--select <node name>` does the same for the click path.
+**R4 — canvas, editing (DONE).** Drag a node to move it, click to select (the box tints and its
+parameters list), **drag pin to pin to wire**, **right-click an input pin to cut** the link into
+it, **Delete** to remove the selected node, **N** for the add-node palette, **Ctrl+S** to save.
 
-Two things worth knowing about that save. A round trip drops comments, so the LEADING comment
-block is carried across by hand (it is where an authored graph keeps its design record) and a
-`.bak` is left the first time; and `graph.nodes` is a `HashMap`, so the node list is sorted by id
-on the way out or the file churns on every save. `edges_inverted` is a `HashMap` keyed by
-`TargetPin`, which is not `Ord`, so that block still reorders — fixing it means a change in the
-fork's serializer.
+The wiring needs no pending-link bookkeeping: `PointerDragDrop` fires on the pin under the cursor
+and names the pin the drag began on, so both ends arrive in one event. Each pin row carries a
+`PinSocket` holding its `SourcePin`/`TargetPin` AND its `DataSpec`, so `connects()` can reject a
+mismatch without going back to the graph — a `None` spec is a TIME pin, which only ever meets
+another time pin. While a wire is in flight every pin it could legally land on lights up; that is
+the feedback instead of a rubber band, since bevy_ui cannot draw a line to the cursor without a
+per-frame respawn, and showing where a drop WOULD take is more use than showing where the cursor
+already is.
 
-Still to do here: drag pin-to-pin to make a link, delete key to remove, a node-type menu to add.
-The mutations are already written upstream: `ui/actions/graph.rs`.
+The palette's catalogue is the type registry itself — a node type is one carrying
+`ReflectNodeLike`, and `ReflectDefault` turns a `TypeId` back into an instance. Same pair
+upstream's editor uses, so there is no second node registry to keep in step. 41 types today.
+
+Two graph invariants that are easy to get wrong, and are what the unit tests cover:
+`graph.add_edge` alone leaves a displaced edge stranded in the forward `edges` map, so re-wiring
+an occupied input has to `remove_edge_by_target` first; and `graph.remove_node` leaves every edge
+that touched the node dangling, which is a graph that will not evaluate. Both live in `connect`
+and `delete_node` rather than inside the observers, so they are testable.
+
+Two things worth knowing about the save. A round trip drops comments, so the LEADING comment block
+is carried across by hand (it is where an authored graph keeps its design record) and a `.bak` is
+left the first time; and `graph.nodes` is a `HashMap`, so the node list is sorted by id on the way
+out or the file churns on every save. `edges_inverted` is a `HashMap` keyed by `TargetPin`, which
+is not `Ord`, so that block still reorders — fixing it means a change in the fork's serializer.
+
+**How this is tested without a pair of hands.** `cargo test -p animgraph_editor` covers the wiring
+rule and the two graph invariants. The flags cover the rest: `--open`, `--select <node name>`,
+`--palette`, `--save-layout`. And `--self-test` (hidden) adds then deletes a node against the LIVE
+graph a second after load, because every interactive path writes `Assets<AnimationGraph>` and so
+fires `AssetEvent::Modified` at an `AnimationGraphPlayer` mid-playback — the one thing a unit test
+cannot reach and a screenshot cannot click. It survives.
 
 **Why node parameters are their own panel and not `bevy_feathers_inspector`.** They cannot be the
 inspector's: `AnimationGraph::nodes` and `edges` are `#[reflect(ignore)]`, and `DynNodeLike` — the

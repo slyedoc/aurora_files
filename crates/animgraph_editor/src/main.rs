@@ -19,10 +19,10 @@ use bevy::{
     feathers_inspector::BuildAssetInspector,
     input::mouse::MouseScrollUnit,
     prelude::*,
-    reflect::{PartialReflect, ReflectRef},
+    reflect::{std_traits::ReflectDefault, PartialReflect, ReflectRef},
     ui::{
-        AlignItems, BackgroundColor, ComputedNode, FlexDirection, JustifyContent, Overflow,
-        PositionType, UiRect, Val,
+        AlignItems, BackgroundColor, ComputedNode, Display, FlexDirection, JustifyContent,
+        Overflow, PositionType, UiRect, Val,
     },
     ui_widgets::{observe, slider_self_update, SliderValue, ValueChange},
 };
@@ -33,9 +33,9 @@ use bevy_animation_graph::{
             serial::AnimationGraphSerializer, AnimationGraph, NodeId, SourcePin, TargetPin,
         },
         animation_graph_player::AnimationGraphPlayer,
-        animation_node::AnimationNode,
+        animation_node::{dyn_node_like::DynNodeLike, AnimationNode, NodeLike, ReflectNodeLike},
         context::spec_context::{NodeInput, NodeOutput, NodeSpec, SpecResources},
-        edge_data::DataValue,
+        edge_data::{DataSpec, DataValue},
         skeleton::Skeleton,
         state_machine::high_level::StateMachine,
     },
@@ -49,6 +49,7 @@ use bevy_aurora::{
     util::{ScreenshotExt, TimeoutAppExt},
 };
 use clap::Parser;
+use uuid::Uuid;
 
 use std::any::TypeId;
 use std::path::{Path, PathBuf};
@@ -69,6 +70,17 @@ struct Args {
     /// the node-parameter panel is smoke-tested.
     #[arg(long, short = 's')]
     select: Option<String>,
+
+    /// Open the add-node palette at startup, as pressing N would. Scriptable, and how the
+    /// palette is smoke-tested.
+    #[arg(long)]
+    palette: bool,
+
+    /// Add then delete a node against the LIVE graph a second after it loads, to prove that
+    /// mutating a playing `Assets<AnimationGraph>` neither panics nor stops the preview.
+    /// Hidden: it exists to be run from a smoke test, not from a prompt.
+    #[arg(long, hide = true)]
+    self_test: bool,
 
     /// Write the computed layout back into `--open`'s `editor_metadata` and exit. Batch
     /// re-layout for a hand-written graph, and how the save path is smoke-tested — a
@@ -272,9 +284,14 @@ fn main() {
     app.init_resource::<Expanded>();
     app.init_resource::<CanvasView>();
     app.init_resource::<Selected>();
+    app.init_resource::<Wiring>();
+    app.init_resource::<PaletteState>();
     // Start with every top-level directory open, so the tree is not a wall of `+`.
     app.insert_resource(BrowserDirty(true));
-    app.add_systems(Startup, (scan_library, setup_ui, attach_panes).chain());
+    app.add_systems(
+        Startup,
+        (scan_library, setup_ui, attach_panes, open_palette).chain(),
+    );
     app.add_systems(
         Update,
         (
@@ -283,9 +300,14 @@ fn main() {
             arm_preview,
             draw_canvas,
             highlight_selected,
+            highlight_pins,
             show_node_params,
+            delete_selected,
+            toggle_palette,
+            build_palette,
             save_graph,
             save_layout_and_exit,
+            self_test,
         ),
     );
     app.run();
@@ -467,6 +489,26 @@ fn setup_ui(mut commands: Commands, assets: Res<AssetServer>, args: Res<Args>) {
                         ..default()
                     },
                 )),
+                    // The add-node palette floats over the canvas, top-left of the CENTRE pane
+                    // — the window's own top-left belongs to aurora's dev panel. Declared LAST
+                    // so it paints over the slider column rather than under it.
+                    Spawn((
+                        Name::new("palette"),
+                        Palette,
+                        BackgroundColor(Color::srgba(0.08, 0.09, 0.11, 0.99)),
+                        Node {
+                            display: Display::None,
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(8.0),
+                            top: Val::Px(8.0),
+                            width: Val::Px(230.0),
+                            max_height: Val::Percent(88.0),
+                            flex_direction: FlexDirection::Column,
+                            padding: UiRect::all(Val::Px(6.0)),
+                            overflow: Overflow::scroll_y(),
+                            ..default()
+                        },
+                    )),
                 )),
             )),
             // inspector
@@ -1060,15 +1102,46 @@ enum BoxKind {
     Outputs,
 }
 
+/// One pin row, and what a link dropped on it would connect. The `DataSpec` rides along so a
+/// wiring drag can reject a mismatch without going back to the graph for the spec — `None` is a
+/// TIME pin, which only ever connects to another time pin.
+#[derive(Component, Clone)]
+enum PinSocket {
+    Source(SourcePin, Option<DataSpec>),
+    Target(TargetPin, Option<DataSpec>),
+}
+
+impl PinSocket {
+    fn spec(&self) -> Option<DataSpec> {
+        match self {
+            Self::Source(_, spec) | Self::Target(_, spec) => *spec,
+        }
+    }
+
+    /// A link runs source to target, and a time pin only ever meets a time pin.
+    fn connects(&self, other: &Self) -> Option<(SourcePin, TargetPin)> {
+        if self.spec() != other.spec() {
+            return None;
+        }
+        match (self, other) {
+            (Self::Source(source, _), Self::Target(target, _))
+            | (Self::Target(target, _), Self::Source(source, _)) => {
+                Some((source.clone(), target.clone()))
+            }
+            _ => None,
+        }
+    }
+}
+
 /// One box on the canvas: a node, or one of the two graph-level rails.
 struct Boxed {
     pos: Vec2,
     title: String,
     kind: BoxKind,
     /// Left-hand pins, top to bottom, each with the edge target it terminates.
-    inputs: Vec<(String, TargetPin)>,
+    inputs: Vec<(String, TargetPin, Option<DataSpec>)>,
     /// Right-hand pins, top to bottom, each with the edge source it originates.
-    outputs: Vec<(String, SourcePin)>,
+    outputs: Vec<(String, SourcePin, Option<DataSpec>)>,
 }
 
 impl Boxed {
@@ -1140,10 +1213,14 @@ fn draw_canvas(
             .sorted_inputs()
             .into_iter()
             .map(|input| match input {
-                NodeInput::Time(pin) => {
-                    (format!("t {}", pin_name(&pin)), SourcePin::InputTime(pin))
+                NodeInput::Time(pin) => (
+                    format!("t {}", pin_name(&pin)),
+                    SourcePin::InputTime(pin),
+                    None,
+                ),
+                NodeInput::Data(pin, spec) => {
+                    (pin_name(&pin), SourcePin::InputData(pin), Some(spec))
                 }
-                NodeInput::Data(pin, _) => (pin_name(&pin), SourcePin::InputData(pin)),
             })
             .collect(),
     });
@@ -1156,8 +1233,10 @@ fn draw_canvas(
             .sorted_outputs()
             .into_iter()
             .map(|output| match output {
-                NodeOutput::Time => ("t".to_string(), TargetPin::OutputTime),
-                NodeOutput::Data(pin, _) => (pin.clone(), TargetPin::OutputData(pin)),
+                NodeOutput::Time => ("t".to_string(), TargetPin::OutputTime, None),
+                NodeOutput::Data(pin, spec) => {
+                    (pin.clone(), TargetPin::OutputData(pin), Some(spec))
+                }
             })
             .collect(),
         outputs: Vec::new(),
@@ -1182,18 +1261,24 @@ fn draw_canvas(
                 .sorted_inputs()
                 .into_iter()
                 .map(|input| match input {
-                    NodeInput::Time(pin) => {
-                        (format!("t {pin}"), TargetPin::NodeTime(*id, pin))
+                    NodeInput::Time(pin) => (
+                        format!("t {pin}"),
+                        TargetPin::NodeTime(*id, pin),
+                        None,
+                    ),
+                    NodeInput::Data(pin, spec) => {
+                        (pin.clone(), TargetPin::NodeData(*id, pin), Some(spec))
                     }
-                    NodeInput::Data(pin, _) => (pin.clone(), TargetPin::NodeData(*id, pin)),
                 })
                 .collect(),
             outputs: spec
                 .sorted_outputs()
                 .into_iter()
                 .map(|output| match output {
-                    NodeOutput::Time => ("t".to_string(), SourcePin::NodeTime(*id)),
-                    NodeOutput::Data(pin, _) => (pin.clone(), SourcePin::NodeData(*id, pin)),
+                    NodeOutput::Time => ("t".to_string(), SourcePin::NodeTime(*id), None),
+                    NodeOutput::Data(pin, spec) => {
+                        (pin.clone(), SourcePin::NodeData(*id, pin), Some(spec))
+                    }
                 })
                 .collect(),
         });
@@ -1208,10 +1293,10 @@ fn draw_canvas(
     let mut target_at: std::collections::HashMap<&TargetPin, Vec2> =
         std::collections::HashMap::new();
     for boxed in &boxes {
-        for (i, (_, pin)) in boxed.inputs.iter().enumerate() {
+        for (i, (_, pin, _)) in boxed.inputs.iter().enumerate() {
             target_at.insert(pin, boxed.pos + Vec2::new(0.0, boxed.pin_y(i)));
         }
-        for (i, (_, pin)) in boxed.outputs.iter().enumerate() {
+        for (i, (_, pin, _)) in boxed.outputs.iter().enumerate() {
             source_at.insert(pin, boxed.pos + Vec2::new(NODE_W, boxed.pin_y(i)));
         }
     }
@@ -1257,7 +1342,10 @@ fn spawn_box(commands: &mut Commands, boxed: &Boxed, px: Vec2, zoom: f32) -> Ent
         font_size: FontSize::Px(size * zoom),
         ..default()
     };
-    let pin_row = |commands: &mut Commands, label: &str, right: bool| {
+    // A pin row is the wiring handle: drag one onto another to make a link, right-click an
+    // input to cut the link into it. Every pointer event it handles stops propagating, or the
+    // box underneath would move with the drag and the canvas would pan behind that.
+    let pin_row = |commands: &mut Commands, label: &str, socket: PinSocket, right: bool| {
         commands
             .spawn((
                 Node {
@@ -1272,6 +1360,8 @@ fn spawn_box(commands: &mut Commands, boxed: &Boxed, px: Vec2, zoom: f32) -> Ent
                     overflow: Overflow::clip(),
                     ..default()
                 },
+                BackgroundColor(Color::NONE),
+                socket,
                 Children::spawn(Spawn((
                     Text::new(label.to_string()),
                     ThemedText,
@@ -1282,13 +1372,83 @@ fn spawn_box(commands: &mut Commands, boxed: &Boxed, px: Vec2, zoom: f32) -> Ent
                     },
                 ))),
             ))
+            .observe(
+                |mut start: On<PointerDragStart>,
+                 mut wiring: ResMut<Wiring>,
+                 sockets: Query<&PinSocket>| {
+                    if start.button != PointerButton::Primary {
+                        return;
+                    }
+                    start.propagate(false);
+                    wiring.0 = sockets.get(start.entity).ok().cloned();
+                },
+            )
+            .observe(|mut drag: On<PointerDrag>| drag.propagate(false))
+            .observe(|mut end: On<PointerDragEnd>, mut wiring: ResMut<Wiring>| {
+                end.propagate(false);
+                wiring.0 = None;
+            })
+            // The drop lands on the pin under the cursor and names the pin the drag began on,
+            // so both ends arrive in one event and no pending-link bookkeeping is needed.
+            .observe(
+                |mut drop: On<PointerDragDrop>,
+                 sockets: Query<&PinSocket>,
+                 mut view: ResMut<CanvasView>,
+                 mut wiring: ResMut<Wiring>,
+                 mut graphs: ResMut<Assets<AnimationGraph>>| {
+                    drop.propagate(false);
+                    wiring.0 = None;
+                    let (Ok(onto), Ok(from)) =
+                        (sockets.get(drop.entity), sockets.get(drop.dropped))
+                    else {
+                        return;
+                    };
+                    let Some((source, target)) = from.connects(onto) else {
+                        info!("wiring: those two pins do not connect");
+                        return;
+                    };
+                    let Some(handle) = view.graph.clone() else {
+                        return;
+                    };
+                    let Some(mut graph) = graphs.get_mut(&handle) else {
+                        return;
+                    };
+                    connect(&mut graph, source, target);
+                    view.dirty = true;
+                },
+            )
+            // Right-click an input to cut the link into it. Outputs have no single edge to cut.
+            .observe(
+                |mut click: On<PointerClick>,
+                 sockets: Query<&PinSocket>,
+                 mut view: ResMut<CanvasView>,
+                 mut graphs: ResMut<Assets<AnimationGraph>>| {
+                    if click.button != PointerButton::Secondary {
+                        return;
+                    }
+                    click.propagate(false);
+                    let Ok(PinSocket::Target(target, _)) = sockets.get(click.entity) else {
+                        return;
+                    };
+                    let target = target.clone();
+                    let Some(handle) = view.graph.clone() else {
+                        return;
+                    };
+                    let Some(mut graph) = graphs.get_mut(&handle) else {
+                        return;
+                    };
+                    if graph.remove_edge_by_target(&target).is_some() {
+                        view.dirty = true;
+                    }
+                },
+            )
             .id()
     };
 
-    let column = |commands: &mut Commands, pins: &[String], right: bool| {
+    let column = |commands: &mut Commands, pins: Vec<(String, PinSocket)>, right: bool| {
         let rows: Vec<Entity> = pins
-            .iter()
-            .map(|label| pin_row(commands, label, right))
+            .into_iter()
+            .map(|(label, socket)| pin_row(commands, &label, socket, right))
             .collect();
         commands
             .spawn(Node {
@@ -1301,10 +1461,18 @@ fn spawn_box(commands: &mut Commands, boxed: &Boxed, px: Vec2, zoom: f32) -> Ent
             .id()
     };
 
-    let in_labels: Vec<String> = boxed.inputs.iter().map(|(l, _)| l.clone()).collect();
-    let out_labels: Vec<String> = boxed.outputs.iter().map(|(l, _)| l.clone()).collect();
-    let left = column(commands, &in_labels, false);
-    let right = column(commands, &out_labels, true);
+    let in_pins: Vec<(String, PinSocket)> = boxed
+        .inputs
+        .iter()
+        .map(|(label, pin, spec)| (label.clone(), PinSocket::Target(pin.clone(), *spec)))
+        .collect();
+    let out_pins: Vec<(String, PinSocket)> = boxed
+        .outputs
+        .iter()
+        .map(|(label, pin, spec)| (label.clone(), PinSocket::Source(pin.clone(), *spec)))
+        .collect();
+    let left = column(commands, in_pins, false);
+    let right = column(commands, out_pins, true);
 
     let header = commands
         .spawn((
@@ -1383,6 +1551,9 @@ fn spawn_box(commands: &mut Commands, boxed: &Boxed, px: Vec2, zoom: f32) -> Ent
     if let BoxKind::Node(id) = kind {
         commands.entity(entity).insert(CanvasNode(id)).observe(
             move |mut click: On<PointerClick>, mut selected: ResMut<Selected>| {
+                if click.button != PointerButton::Primary {
+                    return;
+                }
                 click.propagate(false);
                 selected.node = Some(id);
                 selected.dirty = true;
@@ -1392,9 +1563,244 @@ fn spawn_box(commands: &mut Commands, boxed: &Boxed, px: Vec2, zoom: f32) -> Ent
     entity
 }
 
+/// The pin a wiring drag started from, while it is in flight.
+#[derive(Resource, Default)]
+struct Wiring(Option<PinSocket>);
+
+/// The add-node palette panel, which floats over the canvas.
+#[derive(Component)]
+struct Palette;
+
+/// Whether the palette is showing, and whether its rows still need building.
+#[derive(Resource)]
+struct PaletteState {
+    open: bool,
+    built: bool,
+}
+
+impl Default for PaletteState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            built: false,
+        }
+    }
+}
+
+/// `--palette` opens it before the first frame.
+fn open_palette(args: Res<Args>, mut palette: ResMut<PaletteState>) {
+    palette.open = args.palette;
+}
+
+/// N toggles the palette.
+fn toggle_palette(keys: Res<ButtonInput<KeyCode>>, mut palette: ResMut<PaletteState>) {
+    if keys.just_pressed(KeyCode::KeyN) {
+        palette.open = !palette.open;
+    }
+}
+
+/// Fill the palette with every registered node type, once.
+///
+/// The catalogue is the type registry itself: a node type is one carrying `ReflectNodeLike`,
+/// and `ReflectDefault` is what turns a `TypeId` back into an instance. Same pair upstream's
+/// editor uses — there is no separate node registry to keep in step.
+fn build_palette(
+    mut commands: Commands,
+    mut state: ResMut<PaletteState>,
+    registry: Res<AppTypeRegistry>,
+    panel: Single<(Entity, &mut Node), With<Palette>>,
+) {
+    let (entity, mut node) = panel.into_inner();
+    let want = if state.open {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    if node.display != want {
+        node.display = want;
+    }
+    if state.built || !state.open {
+        return;
+    }
+    state.built = true;
+
+    let registry = registry.read();
+    let mut kinds: Vec<(String, TypeId)> = registry
+        .iter_with_data::<ReflectNodeLike>()
+        .map(|(registration, _)| {
+            let path = registration.type_info().type_path();
+            let short = path.rsplit("::").next().unwrap_or(path).to_string();
+            (short, registration.type_id())
+        })
+        .collect();
+    kinds.sort_by(|a, b| a.0.cmp(&b.0));
+    drop(registry);
+
+    let mut rows = vec![commands
+        .spawn((
+            Text::new(format!("add node  [N]   {} types", kinds.len())),
+            ThemedText,
+            Node {
+                padding: UiRect::all(Val::Px(4.0)),
+                ..default()
+            },
+        ))
+        .id()];
+    for (short, type_id) in kinds {
+        let label = short.clone();
+        rows.push(
+            commands
+                .spawn((
+                    Node {
+                        padding: UiRect::new(Val::Px(8.0), Val::Px(4.0), Val::Px(2.0), Val::Px(2.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::NONE),
+                    Children::spawn(Spawn((
+                        Text::new(short),
+                        ThemedText,
+                        TextFont {
+                            font_size: FontSize::Px(11.0),
+                            ..default()
+                        },
+                    ))),
+                ))
+                .observe(
+                    move |_: On<PointerClick>,
+                          mut commands: Commands,
+                          mut view: ResMut<CanvasView>,
+                          mut selected: ResMut<Selected>,
+                          registry: Res<AppTypeRegistry>,
+                          mut graphs: ResMut<Assets<AnimationGraph>>,
+                          canvas: Single<&ComputedNode, With<Canvas>>| {
+                        let Some(handle) = view.graph.clone() else {
+                            return;
+                        };
+                        let Some(inner) = default_node(&registry, type_id) else {
+                            warn!("{label}: no ReflectDefault, cannot instance it");
+                            return;
+                        };
+                        let Some(mut graph) = graphs.get_mut(&handle) else {
+                            return;
+                        };
+                        let node = AnimationNode {
+                            id: Uuid::new_v4().into(),
+                            name: unique_name(&graph, &label),
+                            inner: DynNodeLike::new_boxed(inner),
+                            should_debug: false,
+                        };
+                        let id = node.id;
+                        graph.add_node(node);
+                        // Drop it in the middle of what is on screen, in canvas coordinates.
+                        let centre = canvas.size * canvas.inverse_scale_factor() * 0.5;
+                        let at = (centre - view.pan) / view.zoom - Vec2::new(NODE_W * 0.5, 0.0);
+                        view.positions.insert(id, at);
+                        view.dirty = true;
+                        selected.node = Some(id);
+                        selected.dirty = true;
+                        commands.queue(|world: &mut World| {
+                            world.resource_mut::<PaletteState>().open = false;
+                        });
+                    },
+                )
+                .id(),
+        );
+    }
+    commands.entity(entity).add_children(&rows);
+}
+
+/// A default-constructed node body for a registered type, or `None` if the type cannot be
+/// built that way.
+fn default_node(registry: &AppTypeRegistry, type_id: TypeId) -> Option<Box<dyn NodeLike>> {
+    let registry = registry.read();
+    let reflect_default = registry.get_type_data::<ReflectDefault>(type_id)?;
+    let node_like = registry.get_type_data::<ReflectNodeLike>(type_id)?;
+    node_like.get_boxed(reflect_default.default()).ok()
+}
+
+/// `Blend`, then `Blend 2`, `Blend 3` — node names are free-form, but a canvas of six boxes all
+/// reading `Blend` is not worth drawing.
+fn unique_name(graph: &AnimationGraph, base: &str) -> String {
+    if !graph.nodes.values().any(|node| node.name == base) {
+        return base.to_string();
+    }
+    (2..)
+        .map(|n| format!("{base} {n}"))
+        .find(|name| !graph.nodes.values().any(|node| &node.name == name))
+        .unwrap_or_else(|| base.to_string())
+}
+
 /// The canvas box colours, picked apart enough that a selected node reads at a glance.
 const BOX_IDLE: Color = Color::srgba(0.13, 0.14, 0.17, 0.97);
 const BOX_SELECTED: Color = Color::srgba(0.20, 0.26, 0.34, 0.99);
+
+/// While a wire is in flight, light up every pin it could legally land on.
+///
+/// This is the feedback instead of a rubber band: bevy_ui cannot draw a line to the cursor
+/// without a per-frame respawn, and showing where a drop WOULD take is more use than showing
+/// where the cursor already is.
+fn highlight_pins(wiring: Res<Wiring>, mut pins: Query<(&PinSocket, &mut BackgroundColor)>) {
+    for (socket, mut background) in &mut pins {
+        let want = match &wiring.0 {
+            Some(from) if from.connects(socket).is_some() => Color::srgba(0.30, 0.55, 0.35, 0.8),
+            _ => Color::NONE,
+        };
+        if background.0 != want {
+            background.0 = want;
+        }
+    }
+}
+
+/// Delete removes the selected node, and every edge that touched it — `remove_node` leaves
+/// those dangling, and a dangling edge is a graph that will not evaluate.
+fn delete_selected(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut selected: ResMut<Selected>,
+    mut view: ResMut<CanvasView>,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
+) {
+    if !keys.just_pressed(KeyCode::Delete) {
+        return;
+    }
+    let (Some(id), Some(handle)) = (selected.node, view.graph.clone()) else {
+        return;
+    };
+    let Some(mut graph) = graphs.get_mut(&handle) else {
+        return;
+    };
+    let cut = delete_node(&mut graph, id);
+    view.positions.remove(&id);
+    view.dirty = true;
+    selected.node = None;
+    selected.dirty = true;
+    info!("deleted node, {cut} edges with it");
+}
+
+/// Wire `source` to `target`. A target takes ONE source, so re-wiring an occupied input
+/// REPLACES the edge rather than leaving two — `add_edge` alone would leave the old one in
+/// `edges` keyed by its source, with nothing pointing at it.
+fn connect(graph: &mut AnimationGraph, source: SourcePin, target: TargetPin) {
+    graph.remove_edge_by_target(&target);
+    graph.add_edge(source, target);
+}
+
+/// Remove a node and every edge that touched it, returning how many edges went with it.
+/// `remove_node` leaves those dangling, and a dangling edge is a graph that will not evaluate.
+fn delete_node(graph: &mut AnimationGraph, id: NodeId) -> usize {
+    let orphaned: Vec<TargetPin> = graph
+        .edges_inverted
+        .iter()
+        .filter(|(target, source)| {
+            target_node(target) == Some(id) || source_node(source) == Some(id)
+        })
+        .map(|(target, _)| target.clone())
+        .collect();
+    for target in &orphaned {
+        graph.remove_edge_by_target(target);
+    }
+    graph.remove_node(id);
+    orphaned.len()
+}
 
 /// Tint the selected node's box. Guarded on the current value rather than run on a change
 /// filter, because `draw_canvas` respawns every box and the new ones start idle.
@@ -1664,4 +2070,170 @@ fn handle_path<A: Asset>(value: &dyn Reflect) -> Option<String> {
             .map(|path| path.to_string())
             .unwrap_or_else(|| "<unsaved>".to_string()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy_animation_graph::core::edge_data::DataSpec;
+
+    fn node(id: u128) -> NodeId {
+        Uuid::from_u128(id).into()
+    }
+
+    #[test]
+    fn a_wire_runs_source_to_target_and_matches_type() {
+        let pose = Some(DataSpec::Pose);
+        let float = Some(DataSpec::F32);
+        let out = PinSocket::Source(SourcePin::NodeData(node(1), "pose".into()), pose);
+        let into = PinSocket::Target(TargetPin::NodeData(node(2), "in".into()), pose);
+        let wrong_type = PinSocket::Target(TargetPin::NodeData(node(2), "f".into()), float);
+        let time_in = PinSocket::Target(TargetPin::NodeTime(node(2), "t".into()), None);
+
+        assert!(out.connects(&into).is_some());
+        // Dropping the other way round is the same link, so it is allowed.
+        assert!(into.connects(&out).is_some());
+        // Two outputs, or two inputs, are not a link.
+        assert!(out.connects(&out.clone()).is_none());
+        assert!(into.connects(&wrong_type).is_none());
+        // Type mismatch, and a data pin never meets a time pin.
+        assert!(out.connects(&wrong_type).is_none());
+        assert!(out.connects(&time_in).is_none());
+    }
+
+    #[test]
+    fn rewiring_an_occupied_input_replaces_the_edge() {
+        let mut graph = AnimationGraph::new();
+        let target = TargetPin::NodeData(node(3), "in".into());
+        let first = SourcePin::NodeData(node(1), "out".into());
+        let second = SourcePin::NodeData(node(2), "out".into());
+
+        connect(&mut graph, first.clone(), target.clone());
+        connect(&mut graph, second.clone(), target.clone());
+
+        assert_eq!(graph.edges_inverted.get(&target), Some(&second));
+        // The forward table must not keep the edge the replacement displaced.
+        assert_eq!(graph.edges.len(), 1);
+        assert!(!graph.edges.contains_key(&first));
+    }
+
+    #[test]
+    fn deleting_a_node_takes_its_edges_with_it() {
+        let mut graph = AnimationGraph::new();
+        let (a, b, c) = (node(1), node(2), node(3));
+        // a -> b -> c, plus an edge that does not touch b.
+        connect(
+            &mut graph,
+            SourcePin::NodeData(a, "out".into()),
+            TargetPin::NodeData(b, "in".into()),
+        );
+        connect(
+            &mut graph,
+            SourcePin::NodeData(b, "out".into()),
+            TargetPin::NodeData(c, "in".into()),
+        );
+        connect(
+            &mut graph,
+            SourcePin::NodeData(a, "out2".into()),
+            TargetPin::NodeData(c, "in2".into()),
+        );
+
+        assert_eq!(delete_node(&mut graph, b), 2);
+        assert_eq!(graph.edges_inverted.len(), 1);
+        assert_eq!(graph.edges.len(), 1);
+    }
+
+    #[test]
+    fn node_names_do_not_collide() {
+        let mut graph = AnimationGraph::new();
+        assert_eq!(unique_name(&graph, "Blend"), "Blend");
+        graph.add_node(AnimationNode::new(
+            "Blend",
+            bevy_animation_graph::builtin_nodes::dummy_node::DummyNode::default(),
+        ));
+        assert_eq!(unique_name(&graph, "Blend"), "Blend 2");
+    }
+}
+
+/// `--self-test`: mutate the live graph while the preview plays it.
+///
+/// The interactive paths (wire, delete, add) all write `Assets<AnimationGraph>`, which fires
+/// `AssetEvent::Modified` at an `AnimationGraphPlayer` mid-playback. That is the one thing about
+/// R4 a unit test cannot cover and a screenshot run cannot click, so it gets its own switch.
+fn self_test(
+    args: Res<Args>,
+    time: Res<Time>,
+    mut view: ResMut<CanvasView>,
+    registry: Res<AppTypeRegistry>,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
+    players: Query<&AnimationGraphPlayer>,
+    mut step: Local<u32>,
+    mut added: Local<Option<NodeId>>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if !args.self_test || time.elapsed_secs() < 2.0 {
+        return;
+    }
+    let Some(handle) = view.graph.clone() else {
+        return;
+    };
+    let clip = TypeId::of::<bevy_animation_graph::builtin_nodes::clip_node::ClipNode>();
+    match *step {
+        0 => {
+            let Some(inner) = default_node(&registry, clip) else {
+                error!("self-test: ClipNode is not default-constructible");
+                exit.write(AppExit::error());
+                return;
+            };
+            let Some(mut graph) = graphs.get_mut(&handle) else {
+                return;
+            };
+            let before = graph.nodes.len();
+            let node = AnimationNode {
+                id: Uuid::new_v4().into(),
+                name: unique_name(&graph, "self test"),
+                inner: DynNodeLike::new_boxed(inner),
+                should_debug: false,
+            };
+            let id = node.id;
+            *added = Some(id);
+            graph.add_node(node);
+            let after = graph.nodes.len();
+            drop(graph);
+            // Redraw too, so the test covers the canvas rebuilding around a node that was not
+            // there when the layout was seeded.
+            view.positions.insert(id, Vec2::new(-260.0, 400.0));
+            view.dirty = true;
+            info!("self-test: added a node, {before} -> {after}");
+        }
+        1 => {
+            // A frame has passed with the player holding a graph that changed underneath it.
+            if players.iter().count() == 0 {
+                error!("self-test: the preview player is gone after a graph edit");
+                exit.write(AppExit::error());
+                return;
+            }
+            let Some(id) = *added else { return };
+            let Some(mut graph) = graphs.get_mut(&handle) else {
+                return;
+            };
+            delete_node(&mut graph, id);
+            let after = graph.nodes.len();
+            drop(graph);
+            view.positions.remove(&id);
+            view.dirty = true;
+            info!("self-test: deleted it, back to {after} nodes");
+        }
+        _ => {
+            if players.iter().count() == 0 {
+                error!("self-test: the preview player did not survive");
+                exit.write(AppExit::error());
+            } else {
+                info!("self-test: preview still playing after add + delete");
+                exit.write(AppExit::Success);
+            }
+            return;
+        }
+    }
+    *step += 1;
 }
