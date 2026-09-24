@@ -46,13 +46,16 @@ reader) and writing back through `set_input_data`, so the rig re-poses as you dr
 <asset>` opens one at startup: scriptable, and how this is smoke-tested, since a screenshot run
 cannot click. Still to do here: read `get_outputs` back as live readouts.
 
-**R3 — canvas, read only.** Port `graph_show.rs`'s LAYOUT half (node boxes, pin rows, link
-endpoints) and draw it: nodes are feathers panes at absolute positions, pins are small nodes,
-links are **manhattan-routed** — three absolutely-positioned rectangles per link, so this rung
-needs no new rendering at all. Pan by dragging the background, zoom by recomputing px positions
-(bevy_ui has no node scale). Selecting a node points the inspector at that node's parameters.
+**R3 — canvas, read only (DONE).** A box per node at its `editor_metadata` position, a link per
+edge, **manhattan-routed** as three absolutely-positioned rectangles — ordinary bevy_ui, no line
+primitive and no new render pass. The loader gives EVERY node a position whether the file had one
+or not, so a hand-written graph arrives as a pile at the origin; origin is treated as unset and
+falls back to a grid. Still to do here: pan by dragging the background, zoom by recomputing px
+positions (bevy_ui has no node scale), and pin rows rather than one box-wide endpoint.
 
-**R4 — canvas, editing.** Drag nodes to move them (write back to `editor_metadata.node_positions`),
+**R4 — canvas, editing.** Clicking a node box (it already carries `CanvasNode`) points the
+inspector at that node's parameters — the reflection path has to address `nodes` by key, which is
+the interesting part. Then: drag nodes to move them (write back to `editor_metadata.node_positions`),
 drag pin-to-pin to make a link, delete key to remove, a node-type menu to add. The mutations are
 already written: `ui/actions/graph.rs`. Saving is `AnimationGraphSerializer` + `ui/actions/saving.rs`.
 Hit-testing is `ui_picking`, which zero already enables.
