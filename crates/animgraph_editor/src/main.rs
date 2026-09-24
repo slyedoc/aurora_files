@@ -16,10 +16,10 @@ use bevy::{
         dark_theme::create_dark_theme,
         theme::{ThemedText, UiTheme},
     },
-    feathers_inspector::BuildAssetInspector,
+    feathers_inspector::{BuildAssetInspector, BuildCustomInspector, ReflectInspectorWidget},
     input::mouse::MouseScrollUnit,
     prelude::*,
-    reflect::{std_traits::ReflectDefault, PartialReflect, ReflectRef},
+    reflect::{std_traits::ReflectDefault, ReflectMut, ReflectRef},
     ui::{
         AlignItems, BackgroundColor, ComputedNode, Display, FlexDirection, JustifyContent,
         Overflow, PositionType, UiRect, Val,
@@ -286,6 +286,13 @@ fn main() {
     app.init_resource::<CanvasView>();
     app.init_resource::<Selected>();
     app.init_resource::<Wiring>();
+    // A `Handle<A>` field otherwise recurses as the enum it is — a Strong/Uuid picker over an
+    // Arc. The inspector ships the widget but registers it for no asset type, because it has
+    // no list of an app's; these four are the ones a node body can hold.
+    app.register_type_data::<Handle<GraphClip>, ReflectInspectorWidget>();
+    app.register_type_data::<Handle<AnimationGraph>, ReflectInspectorWidget>();
+    app.register_type_data::<Handle<Skeleton>, ReflectInspectorWidget>();
+    app.register_type_data::<Handle<StateMachine>, ReflectInspectorWidget>();
     app.init_resource::<PaletteState>();
     // Start with every top-level directory open, so the tree is not a wall of `+`.
     app.insert_resource(BrowserDirty(true));
@@ -441,7 +448,12 @@ fn setup_ui(mut commands: Commands, assets: Res<AssetServer>, args: Res<Args>) {
                 // backdrop, not a surface the theme has an opinion about.
                 BackgroundColor(Color::srgba(0.06, 0.06, 0.07, 0.94)),
                 Node {
-                    width: Val::Px(420.0),
+                    // Proportional with a floor and a ceiling: a tiling window manager hands
+                    // this app whatever column it likes, and two fixed-width panes push the
+                    // centre — and then each other — off the edge.
+                    width: Val::Percent(24.0),
+                    min_width: Val::Px(240.0),
+                    max_width: Val::Px(420.0),
                     height: Val::Percent(100.0),
                     flex_direction: FlexDirection::Column,
                     row_gap: Val::Px(2.0),
@@ -487,6 +499,7 @@ fn setup_ui(mut commands: Commands, assets: Res<AssetServer>, args: Res<Args>) {
                         row_gap: Val::Px(4.0),
                         padding: UiRect::all(Val::Px(8.0)),
                         width: Val::Px(320.0),
+                        max_width: Val::Percent(100.0),
                         ..default()
                     },
                 )),
@@ -503,6 +516,7 @@ fn setup_ui(mut commands: Commands, assets: Res<AssetServer>, args: Res<Args>) {
                             left: Val::Px(8.0),
                             top: Val::Px(8.0),
                             width: Val::Px(230.0),
+                            max_width: Val::Percent(100.0),
                             max_height: Val::Percent(88.0),
                             flex_direction: FlexDirection::Column,
                             padding: UiRect::all(Val::Px(6.0)),
@@ -518,9 +532,12 @@ fn setup_ui(mut commands: Commands, assets: Res<AssetServer>, args: Res<Args>) {
                 InspectorHost,
                 BackgroundColor(Color::srgba(0.06, 0.06, 0.07, 0.94)),
                 Node {
-                    width: Val::Px(380.0),
+                    width: Val::Percent(24.0),
+                    min_width: Val::Px(240.0),
+                    max_width: Val::Px(400.0),
                     height: Val::Percent(100.0),
                     flex_direction: FlexDirection::Column,
+                    overflow: Overflow::scroll_y(),
                     ..default()
                 },
                 Children::spawn((
@@ -1818,107 +1835,66 @@ fn highlight_selected(selected: Res<Selected>, mut boxes: Query<(&CanvasNode, &m
     }
 }
 
-/// List the selected node's parameters.
+/// Point the inspector at the selected node's parameters.
 ///
-/// This does NOT go through `bevy_feathers_inspector`, and cannot: `AnimationGraph::nodes` is
-/// `#[reflect(ignore)]`, and `DynNodeLike` — the `Box<dyn NodeLike>` wrapper each node's body
-/// sits in — carries a hand-written `Reflect` impl that reports ZERO fields, so there is no
-/// reflection path from the asset root down to a node's body. What there IS: `NodeLike: Reflect`,
-/// so `inner_ref()` is a `&dyn PartialReflect` over the CONCRETE node struct. Walking that
-/// directly gives a read-only list now; making it editable means teaching the inspector a root
-/// that resolves through a closure rather than a `ParsedPath`.
+/// `AnimationGraph::nodes` is `#[reflect(ignore)]`, and `DynNodeLike` — the `Box<dyn NodeLike>`
+/// each node body sits in — carries a hand-written `Reflect` impl reporting ZERO fields, so no
+/// reflection path from the asset root reaches a node. That is what `InspectorRoot::Custom`
+/// exists for: a pair of plain `fn`s that walk the world to the value themselves, after which
+/// the inspector's ordinary recursion (nested structs, enum variant pickers, sliders, writeback)
+/// applies below it unchanged. `NodeLike: Reflect`, so what they hand back is the CONCRETE node
+/// struct.
 fn show_node_params(
     mut commands: Commands,
     mut selected: ResMut<Selected>,
-    view: Res<CanvasView>,
-    graphs: Res<Assets<AnimationGraph>>,
-    host: Single<(Entity, Option<&Children>), With<NodeParamsHost>>,
+    host: Single<Entity, With<NodeParamsHost>>,
 ) {
     if !selected.dirty {
         return;
     }
     selected.dirty = false;
-    let (host_entity, existing) = *host;
-    if let Some(existing) = existing {
-        for child in existing.iter() {
-            commands.entity(child).despawn();
-        }
-    }
-    let (Some(id), Some(handle)) = (selected.node, view.graph.clone()) else {
-        return;
-    };
-    let Some(node) = graphs.get(&handle).and_then(|g| g.nodes.get(&id)) else {
-        return;
-    };
-
-    let mut rows = vec![commands
-        .spawn((
-            Text::new(format!(
-                "{}  [{}]",
-                node.name,
-                ascii(&node.inner.display_name())
-            )),
-            ThemedText,
-        ))
-        .id()];
-    for (name, value) in reflect_fields(node.inner_ref()) {
-        rows.push(
-            commands
-                .spawn((
-                    Text::new(format!("  {name}: {value}")),
-                    ThemedText,
-                    TextFont {
-                        font_size: FontSize::Px(11.0),
-                        ..default()
-                    },
-                ))
-                .id(),
-        );
-    }
-    commands.entity(host_entity).add_children(&rows);
+    commands.queue(BuildCustomInspector {
+        read: read_selected_node,
+        write: write_selected_node,
+        panel: *host,
+    });
 }
 
-/// A node body's fields as name/value pairs, one line each.
-fn reflect_fields(value: &dyn PartialReflect) -> Vec<(String, String)> {
-    match value.reflect_ref() {
-        ReflectRef::Struct(s) => (0..s.field_len())
-            .map(|i| {
-                (
-                    s.name_at(i).unwrap_or("?").to_string(),
-                    s.field_at(i).map(one_line).unwrap_or_default(),
-                )
-            })
-            .collect(),
-        ReflectRef::TupleStruct(t) => (0..t.field_len())
-            .map(|i| (i.to_string(), t.field(i).map(one_line).unwrap_or_default()))
-            .collect(),
-        _ => vec![("value".to_string(), one_line(value))],
-    }
+/// Which node the two resolvers below are pointed at, taken from the editor's own state.
+fn selected_node(world: &World) -> Option<(NodeId, Handle<AnimationGraph>)> {
+    let id = world.get_resource::<Selected>()?.node?;
+    let handle = world.get_resource::<CanvasView>()?.graph.clone()?;
+    Some((id, handle))
 }
 
-/// A reflected value as one short line: `Debug` where a type has it, its type otherwise.
-fn one_line(value: &dyn PartialReflect) -> String {
-    // A handle's `Debug` is its `AssetIndex`, which says nothing. The path is the whole point
-    // of the field on a clip / graph / fsm node, so pull that out instead.
-    if let Some(reflect) = value.try_as_reflect() {
-        if let Some(path) = handle_path::<GraphClip>(reflect)
-            .or_else(|| handle_path::<AnimationGraph>(reflect))
-            .or_else(|| handle_path::<Skeleton>(reflect))
-            .or_else(|| handle_path::<StateMachine>(reflect))
-        {
-            return path;
-        }
-    }
-    let text = value
-        .try_as_reflect()
-        .map(|r| format!("{r:?}"))
-        .unwrap_or_else(|| value.reflect_type_path().to_string());
-    let text = text.replace('\n', " ");
-    if text.chars().count() > 72 {
-        format!("{}...", text.chars().take(69).collect::<String>())
-    } else {
-        text
-    }
+fn read_selected_node(world: &World, visit: &mut dyn FnMut(&dyn Reflect)) {
+    let Some((id, handle)) = selected_node(world) else {
+        return;
+    };
+    let Some(graphs) = world.get_resource::<Assets<AnimationGraph>>() else {
+        return;
+    };
+    let Some(node) = graphs.get(&handle).and_then(|graph| graph.nodes.get(&id)) else {
+        return;
+    };
+    visit(node.inner_ref().as_reflect());
+}
+
+fn write_selected_node(world: &mut World, visit: &mut dyn FnMut(&mut dyn Reflect)) {
+    let Some((id, handle)) = selected_node(world) else {
+        return;
+    };
+    // `get_mut` is what marks the asset changed, so the running player sees the edit.
+    let Some(mut graphs) = world.get_resource_mut::<Assets<AnimationGraph>>() else {
+        return;
+    };
+    let Some(mut graph) = graphs.get_mut(&handle) else {
+        return;
+    };
+    let Some(node) = graph.nodes.get_mut(&id) else {
+        return;
+    };
+    visit((*node.inner).as_reflect_mut());
 }
 
 /// One cubic bezier per link, as an aurora [`UiPolyline`] — a single entity, where the
@@ -2063,17 +2039,6 @@ fn leading_comment(existing: &str) -> String {
     format!("{}\n", header.join("\n"))
 }
 
-/// `Some(path)` if `value` is a `Handle<A>` — a weak or pathless one reads as `<unsaved>`.
-fn handle_path<A: Asset>(value: &dyn Reflect) -> Option<String> {
-    let handle = value.downcast_ref::<Handle<A>>()?;
-    Some(
-        handle
-            .path()
-            .map(|path| path.to_string())
-            .unwrap_or_else(|| "<unsaved>".to_string()),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2163,6 +2128,7 @@ mod tests {
 /// `AssetEvent::Modified` at an `AnimationGraphPlayer` mid-playback. That is the one thing about
 /// R4 a unit test cannot cover and a screenshot run cannot click, so it gets its own switch.
 fn self_test(
+    mut commands: Commands,
     args: Res<Args>,
     time: Res<Time>,
     mut view: ResMut<CanvasView>,
@@ -2226,6 +2192,18 @@ fn self_test(
             view.dirty = true;
             info!("self-test: deleted it, back to {after} nodes");
         }
+        2 => {
+            // The resolvers behind `InspectorRoot::Custom` are the new risky code: they have to
+            // hand out a `&mut` that points INTO the stored asset, through a `get_mut` that
+            // marks it changed. Drive them the way the inspector's writeback does.
+            commands.queue(|world: &mut World| match check_node_edit(world) {
+                Ok(field) => info!("self-test: edited node field `{field}` through the inspector resolvers"),
+                Err(why) => {
+                    error!("self-test: node edit did not stick: {why}");
+                    world.write_message(AppExit::error());
+                }
+            });
+        }
         _ => {
             if players.iter().count() == 0 {
                 error!("self-test: the preview player did not survive");
@@ -2238,4 +2216,61 @@ fn self_test(
         }
     }
     *step += 1;
+}
+
+/// Flip a bool on the selected node through [`read_selected_node`] / [`write_selected_node`]
+/// and read it back, returning the field that moved.
+///
+/// This is what proves the `InspectorRoot::Custom` resolvers reach the node as STORED rather
+/// than a copy of it — a mistake that would leave the UI responsive and every edit inert.
+fn check_node_edit(world: &mut World) -> Result<String, String> {
+    let handle = world
+        .get_resource::<CanvasView>()
+        .and_then(|view| view.graph.clone())
+        .ok_or("no graph open")?;
+    // Any node whose body carries a bool will do; the locomotion graph's blends have one.
+    let graphs = world.resource::<Assets<AnimationGraph>>();
+    let graph = graphs.get(&handle).ok_or("graph not loaded")?;
+    let (id, field) = graph
+        .nodes
+        .iter()
+        .find_map(|(id, node)| first_bool(node.inner_ref()).map(|(name, _)| (*id, name)))
+        .ok_or("no node in this graph has a bool to flip")?;
+    world.resource_mut::<Selected>().node = Some(id);
+
+    let mut before = None;
+    read_selected_node(world, &mut |value| {
+        before = first_bool(value).map(|(_, v)| v);
+    });
+    let before = before.ok_or("the read resolver reached nothing")?;
+
+    write_selected_node(world, &mut |value| {
+        if let ReflectMut::Struct(body) = value.reflect_mut()
+            && let Some(target) = body.field_mut(&field)
+        {
+            let _ = target.try_apply((!before).as_partial_reflect());
+        }
+    });
+
+    let mut after = None;
+    read_selected_node(world, &mut |value| {
+        after = first_bool(value).map(|(_, v)| v);
+    });
+    match after {
+        Some(v) if v == !before => Ok(field),
+        Some(_) => Err(format!("`{field}` still reads {before} after the write")),
+        None => Err("the read resolver reached nothing after the write".to_string()),
+    }
+}
+
+/// The first `bool` field of a struct-shaped reflected value, by name.
+fn first_bool(value: &dyn Reflect) -> Option<(String, bool)> {
+    let ReflectRef::Struct(body) = value.reflect_ref() else {
+        return None;
+    };
+    (0..body.field_len()).find_map(|i| {
+        let field = body.field_at(i)?;
+        let value = *field.try_as_reflect()?.downcast_ref::<bool>()?;
+        Some((body.name_at(i)?.to_string(), value))
+    })
 }

@@ -113,16 +113,34 @@ graph a second after load, because every interactive path writes `Assets<Animati
 fires `AssetEvent::Modified` at an `AnimationGraphPlayer` mid-playback — the one thing a unit test
 cannot reach and a screenshot cannot click. It survives.
 
-**Why node parameters are their own panel and not `bevy_feathers_inspector`.** They cannot be the
-inspector's: `AnimationGraph::nodes` and `edges` are `#[reflect(ignore)]`, and `DynNodeLike` — the
-`Box<dyn NodeLike>` each node's body sits in — carries a HAND-WRITTEN `Reflect` impl that reports
-a tuple struct with ZERO fields. So no `ParsedPath` from the asset root reaches a node's body, and
-`InspectorRoot::Asset` (R0) cannot help. What does work: `NodeLike: Reflect`, so `inner_ref()` is a
-`&dyn PartialReflect` over the CONCRETE node struct, and walking that gives the read-only list
-that is there now. Making it EDITABLE wants one of two things — teach `DynNodeLike` to delegate
-its reflection to the inner value, or give the inspector a root that resolves through a closure
-rather than a `ParsedPath`. Upstream sidesteps both with `ReflectEditProxy`, which converts a node
-to and from a plain reflectable proxy struct; that is probably the right seam here too.
+**Node parameters, and the root that made them reachable (DONE).** Selecting a node gives a live
+editor over its body: enum variant pickers, checkboxes, sliders, writeback — the inspector's
+ordinary machinery.
+
+Getting there needed a new root, because `AnimationGraph::nodes` and `edges` are
+`#[reflect(ignore)]` and `DynNodeLike` — the `Box<dyn NodeLike>` each node's body sits in —
+carries a HAND-WRITTEN `Reflect` impl reporting a tuple struct with ZERO fields. No `ParsedPath`
+from the asset root reaches a node, so `InspectorRoot::Asset` (R0) could not help, and neither
+could any amount of work on this side.
+
+The fix is `InspectorRoot::Custom { read, write }` (slyedoc/bevy): a pair of plain `fn`s that walk
+the world to the value themselves, after which the path is applied to whatever they yield and
+every nested struct, enum and list below it behaves as usual. Plain `fn` rather than a boxed
+closure so the root stays `Clone + Eq + Hash` like the other three — anything a resolver needs to
+know, it reads from the world, which here is the editor's own `Selected` and `CanvasView`.
+`NodeLike: Reflect`, so what comes back is the CONCRETE node struct. The write side must reach the
+value through something that marks its owner changed (`Assets::get_mut`), or the UI stays
+responsive and every edit is inert — which is what `--self-test` checks by flipping a bool through
+the resolvers and reading it back.
+
+This also replaces the reason upstream reaches for `ReflectEditProxy`: no proxy type, no
+conversion either way, and it generalises to any value behind an ignored field or a collection key
+a path cannot spell.
+
+One widget came with it. A `Handle<A>` field otherwise recurses as the enum it is — a
+`Strong` / `Uuid` picker over an `Arc`, noise at best and destructive if clicked — so the
+inspector now ships a display widget for it, registered per asset type by the app
+(`register_type_data::<Handle<GraphClip>, ReflectInspectorWidget>()`), showing the asset path.
 
 **R5 — curves (DONE).** Links are cubic beziers now, one `UiPolyline` entity each where the
 manhattan routing took three rectangles. The primitive lives in aurora (`ui_render.rs`,
