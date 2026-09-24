@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use aurora_cluster_mesh::{ClusterMeshData, write_cluster_mesh_sync};
 use bevy::asset::RenderAssetUsages;
-use bevy::math::Mat4;
+use bevy::math::{Mat4, Vec3};
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
 
 use crate::bsn;
@@ -40,6 +40,28 @@ pub struct GltfConfig {
     /// Per-scene fallback for emissive magnitude (nits), keyed on material name, used only when a
     /// material ships no `KHR_materials_emissive_strength`. `None` keeps the glTF value (×1).
     pub emissive_nits: Option<fn(&str) -> f32>,
+    /// [`bake_gltf_per_group`] only: how deep to descend before calling a node a "group".
+    ///
+    /// `1` (the default) splits on top-level scene nodes, which is right for a kit whose roots ARE
+    /// the props. A kit filed by CATEGORY — `crafting`, `furniture`, each holding dozens of props —
+    /// wants `2`, or every category bakes as one immovable blob. Only the author knows which level
+    /// is a thing you would pick up and place, so it is a knob rather than a guess.
+    pub group_depth: usize,
+}
+
+impl Default for GltfConfig {
+    fn default() -> Self {
+        Self {
+            gltf_path: PathBuf::new(),
+            out_dir: PathBuf::new(),
+            asset_prefix: String::new(),
+            scene_name: String::new(),
+            replace: false,
+            root_components: String::new(),
+            emissive_nits: None,
+            group_depth: 1,
+        }
+    }
 }
 
 /// Bake the scene described by `cfg`: extract textures, bake each unique primitive's
@@ -87,6 +109,7 @@ pub fn bake_gltf_scene(cfg: &GltfConfig) {
         baked_count: 0,
         proxies: 0,
         failed_count: 0,
+        bounds: None,
     };
 
     let scene = doc
@@ -159,6 +182,7 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
         baked_count: 0,
         proxies: 0,
         failed_count: 0,
+        bounds: None,
     };
 
     let scene = doc
@@ -168,16 +192,43 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
 
     let mut used_names: HashSet<String> = HashSet::new();
     let mut groups_written = 0usize;
-    for node in scene.nodes() {
-        // Center each group at its own origin: walk with `parent = inverse(local)` so the root
-        // group's own (layout) transform cancels and the building's geometry is emitted relative to
-        // the group origin — a reusable prop rather than one pinned to its place in the assembled set.
+    let mut manifest: Vec<(String, [f32; 3], [f32; 3])> = Vec::new();
+    // Descend `group_depth` levels before treating a node as a placeable prop. Depth 1 is the
+    // scene's own roots; a category-filed kit needs 2.
+    let mut groups: Vec<gltf::Node> = scene.nodes().collect();
+    for _ in 1..cfg.group_depth.max(1) {
+        groups = groups
+            .iter()
+            .flat_map(|node| {
+                let kids: Vec<_> = node.children().collect();
+                // A node with no children IS the leaf; keep it rather than dropping it, so a kit
+                // with uneven nesting does not silently lose its shallow props.
+                if kids.is_empty() {
+                    vec![node.clone()]
+                } else {
+                    kids
+                }
+            })
+            .collect();
+    }
+
+    for node in &groups {
+        // Center each group at its own origin: walk with `parent = inverse(local)` so the group's
+        // own layout transform cancels and its geometry is emitted relative to the group origin — a
+        // reusable prop rather than one pinned to its place in the assembled set.
+        //
+        // At depth > 1 that inverse only cancels the node's OWN transform, not its ancestors'.
+        // That is deliberate: the ancestors are the category rows the kit was laid out in, and
+        // their translation is exactly what a placeable prop must not inherit. Walking from the
+        // node with `inverse(local)` drops the whole chain above it, because nothing above is ever
+        // multiplied in.
         let local = Mat4::from_cols_array_2d(&node.transform().matrix());
         let parent = local.inverse();
 
         ctx.entities.clear();
+        ctx.bounds = None;
         let before = ctx.emitted;
-        walk(&node, parent, &mut ctx);
+        walk(node, parent, &mut ctx);
         if ctx.emitted == before {
             continue; // group has no triangle primitives — nothing to write
         }
@@ -186,6 +237,9 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
         let bsn = bsn::scene(&stem, &ctx.entities);
         let bsn_path = cfg.out_dir.join(format!("{stem}.bsn"));
         fs::write(&bsn_path, bsn).expect("write .bsn");
+        if let Some((lo, hi)) = ctx.bounds {
+            manifest.push((stem, lo.to_array(), hi.to_array()));
+        }
         groups_written += 1;
     }
 
@@ -212,11 +266,37 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
         ctx.failed_count,
         meshes_dir.display()
     );
+    // The KIT MANIFEST. A bevy `AssetServer` cannot enumerate — there is no "list the .bsn files"
+    // call, and a shipped build has no directory to scan anyway. So anything that wants to SHOW
+    // what a kit contains (a palette, a placement tool, an XR shelf) needs an index, and bake time
+    // is the only place that knows the answer for free.
+    //
+    // The extent is the part worth having. Laying out a shelf of live prop instances means scaling
+    // each to a uniform cell, and without a size up front a palette has to instantiate every prop,
+    // wait for it to stream, measure it, and only then lay out — which is the difference between a
+    // shelf that appears and one that settles.
+    let mut index = String::from(
+        "// GENERATED by the prop importer. One entry per placeable .bsn in this kit.\n\
+         // `min`/`max` are the prop's own AABB in metres, at its baked origin.\n(\n    props: [\n",
+    );
+    manifest.sort_by(|a, b| a.0.cmp(&b.0));
+    for (stem, lo, hi) in &manifest {
+        let _ = writeln!(
+            index,
+            "        (name: \"{stem}\", bsn: \"{}/{stem}.bsn\", min: ({:.3}, {:.3}, {:.3}), max: ({:.3}, {:.3}, {:.3})),",
+            cfg.asset_prefix, lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]
+        );
+    }
+    index.push_str("    ],\n)\n");
+    let index_path = cfg.out_dir.join(format!("{}.kit.ron", cfg.scene_name));
+    fs::write(&index_path, index).expect("write kit manifest");
+
     println!(
-        "wrote {} group .bsn files + a {}-entity master {} -> {}",
+        "wrote {} group .bsn files + a {}-entity master {} + {} -> {}",
         groups_written,
         master_entities,
         master_path.display(),
+        index_path.display(),
         cfg.out_dir.display()
     );
 }
@@ -257,6 +337,48 @@ struct Ctx<'a> {
     /// Nodes swapped for a `.bsn` reference (see [`bsn_proxy`]).
     proxies: usize,
     failed_count: usize,
+    /// World-space AABB of everything emitted since the last reset, for the kit manifest.
+    bounds: Option<(Vec3, Vec3)>,
+}
+
+impl Ctx<'_> {
+    /// Grow the running AABB by a primitive's own bounds, placed by `world`.
+    ///
+    /// Taken from the POSITION accessor's `min`/`max`, which glTF REQUIRES for positions — so this
+    /// costs no buffer reads at all, just eight corners through a matrix. Worth doing at bake time
+    /// because the alternative is a palette that has to load every prop before it can lay them out.
+    fn grow(&mut self, prim: &gltf::Primitive, world: Mat4) {
+        let Some(accessor) = prim.get(&gltf::Semantic::Positions) else {
+            return;
+        };
+        let read = |value: Option<gltf::json::Value>| -> Option<Vec3> {
+            let array = value?;
+            let array = array.as_array()?;
+            if array.len() < 3 {
+                return None;
+            }
+            Some(Vec3::new(
+                array[0].as_f64()? as f32,
+                array[1].as_f64()? as f32,
+                array[2].as_f64()? as f32,
+            ))
+        };
+        let (Some(lo), Some(hi)) = (read(accessor.min()), read(accessor.max())) else {
+            return;
+        };
+        for i in 0..8 {
+            let corner = Vec3::new(
+                if i & 1 == 0 { lo.x } else { hi.x },
+                if i & 2 == 0 { lo.y } else { hi.y },
+                if i & 4 == 0 { lo.z } else { hi.z },
+            );
+            let point = world.transform_point3(corner);
+            self.bounds = Some(match self.bounds {
+                None => (point, point),
+                Some((lo, hi)) => (lo.min(point), hi.max(point)),
+            });
+        }
+    }
 }
 
 /// Recurse the node hierarchy, accumulating the world transform; emit one `.bsn` entity per
@@ -281,6 +403,7 @@ fn walk(node: &gltf::Node, parent: Mat4, ctx: &mut Ctx) {
                 result
             };
             let Some(stem) = stem else { continue };
+            ctx.grow(&prim, world);
 
             let fields = material_fields(&prim.material(), ctx);
             // Entity name = `<node>.<material>` (bevy's glTF convention) so entities are identifiable
@@ -361,6 +484,7 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
         baked_count: 0,
         proxies: 0,
         failed_count: 0,
+        bounds: None,
     };
 
     let scene = doc

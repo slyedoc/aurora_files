@@ -31,6 +31,10 @@ struct Args {
     /// Emit one `.bsn` per top-level scene node plus a combined layout scene (kit-style sources).
     #[arg(long)]
     per_group: bool,
+    /// With `--per-group`: how deep to descend before a node counts as a placeable prop. 1 splits
+    /// on the scene's own roots; a kit filed by category (`crafting`, `furniture`, ...) wants 2.
+    #[arg(long, default_value_t = 1)]
+    group_depth: usize,
     /// Preserve the glTF node hierarchy: nested `Children[]` carrying LOCAL transforms, and
     /// meshless nodes kept as `Name` + `Transform` entities.
     ///
@@ -91,6 +95,7 @@ fn main() {
         replace: args.replace,
         root_components,
         emissive_nits,
+        group_depth: args.group_depth,
     };
 
     if args.per_group {
