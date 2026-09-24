@@ -31,7 +31,8 @@ use bevy::{
 };
 use bevy_animation_graph::{
     core::{
-        animation_clip::GraphClip,
+        animation_clip::{loader::GraphClipSerial, GraphClip},
+        event_track::TrackItem,
         animation_graph::{
             serial::AnimationGraphSerializer, AnimationGraph, NodeId, SourcePin, TargetPin,
         },
@@ -41,7 +42,7 @@ use bevy_animation_graph::{
             node_states::StateKey,
             spec_context::{NodeInput, NodeOutput, NodeSpec, SpecResources},
         },
-        edge_data::{DataSpec, DataValue},
+        edge_data::{events::AnimationEvent, DataSpec, DataValue},
         skeleton::Skeleton,
         state_machine::high_level::{
             serial::StateMachineSerial, DirectTransition, StateId, StateMachine,
@@ -205,6 +206,8 @@ struct NodeParamsHost;
 #[derive(Resource, Default)]
 struct Selected {
     node: Option<Uuid>,
+    /// Which event track the selected id belongs to; timelines only.
+    track: Option<String>,
     dirty: bool,
 }
 
@@ -296,6 +299,7 @@ fn main() {
     app.init_resource::<CanvasView>();
     app.init_resource::<Selected>();
     app.init_resource::<Wiring>();
+    app.init_resource::<TimelineCursor>();
     // A `Handle<A>` field otherwise recurses as the enum it is — a Strong/Uuid picker over an
     // Arc. The inspector ships the widget but registers it for no asset type, because it has
     // no list of an app's; these four are the ones a node body can hold.
@@ -319,6 +323,7 @@ fn main() {
             draw_canvas,
             highlight_selected,
             highlight_pins,
+            highlight_bars,
             show_pin_values,
             show_node_params,
             delete_selected,
@@ -846,6 +851,7 @@ fn bind_when_loaded(
     pane: Res<InspectorPane>,
     graphs: Res<Assets<AnimationGraph>>,
     fsms: Res<Assets<StateMachine>>,
+    clips: Res<Assets<GraphClip>>,
     args: Res<Args>,
     mut view: ResMut<CanvasView>,
     mut selected: ResMut<Selected>,
@@ -870,6 +876,7 @@ fn bind_when_loaded(
         if let Some(graph) = graphs.get(&handle) {
             seed_layout(&mut view, graph);
             view.fsm = None;
+            view.clip = None;
             view.graph = Some(handle.clone());
             view.path = Some(opening.path.clone());
             view.dirty = true;
@@ -892,10 +899,40 @@ fn bind_when_loaded(
         if let Some(fsm) = fsms.get(&handle) {
             seed_fsm_layout(&mut view, fsm);
             view.graph = None;
+            view.clip = None;
             view.fsm = Some(handle);
             view.path = Some(opening.path.clone());
             view.dirty = true;
         }
+    }
+    if opening.kind == Kind::Clip {
+        let handle = opening.handle.clone().typed::<GraphClip>();
+        if let (Some(want), Some(clip)) = (&args.select, clips.get(&handle)) {
+            let found = clip.event_tracks.iter().find_map(|(name, track)| {
+                let item = track
+                    .events
+                    .iter()
+                    .find(|e| &event_label(&e.value.event) == want)?;
+                Some((name.clone(), item.id))
+            });
+            match found {
+                Some((track, id)) => {
+                    selected.track = Some(track);
+                    selected.node = Some(id);
+                    selected.dirty = true;
+                }
+                None => warn!("--select {want}: no event by that name"),
+            }
+        }
+        view.graph = None;
+        view.fsm = None;
+        view.clip = Some(handle);
+        view.path = Some(opening.path.clone());
+        // A timeline scrolls in TIME, so pan starts at the left edge rather than inset, and
+        // zoom is pixels-per-second rather than a canvas scale.
+        view.pan = Vec2::new(0.0, 12.0);
+        view.zoom = 1.0;
+        view.dirty = true;
     }
     info!("opened {}", opening.path);
 }
@@ -935,6 +972,8 @@ struct CanvasView {
     graph: Option<Handle<AnimationGraph>>,
     /// The state machine open instead, if this is an FSM rather than a graph.
     fsm: Option<Handle<StateMachine>>,
+    /// The clip open instead, if this is an event-track timeline.
+    clip: Option<Handle<GraphClip>>,
     /// Asset-relative path of the open asset, which is where a save writes.
     path: Option<String>,
     /// Keyed by the raw `Uuid` that both `NodeId` and `StateId` wrap, so one canvas serves a
@@ -952,6 +991,7 @@ impl Default for CanvasView {
         Self {
             graph: None,
             fsm: None,
+            clip: None,
             path: None,
             positions: std::collections::HashMap::new(),
             input_pos: Vec2::ZERO,
@@ -1358,12 +1398,18 @@ fn draw_canvas(
     mut view: ResMut<CanvasView>,
     graphs: Res<Assets<AnimationGraph>>,
     fsms: Res<Assets<StateMachine>>,
+    clips: Res<Assets<GraphClip>>,
+    cursor: Res<TimelineCursor>,
     canvas: Single<(Entity, Option<&Children>), With<Canvas>>,
 ) {
     if !view.dirty {
         return;
     }
     // Endpoints come back in canvas coordinates; the draw pass below maps them to pixels.
+    if view.clip.is_some() {
+        draw_timeline(&mut commands, &mut view, &clips, &cursor, *canvas);
+        return;
+    }
     let built = match (&view.graph, &view.fsm) {
         (Some(handle), _) => graphs.get(handle).map(|graph| {
             let boxes = graph_boxes(&view, graph, &graphs, &fsms);
@@ -2180,17 +2226,82 @@ fn highlight_selected(selected: Res<Selected>, mut boxes: Query<(&CanvasNode, &m
 fn show_node_params(
     mut commands: Commands,
     mut selected: ResMut<Selected>,
+    view: Res<CanvasView>,
     host: Single<Entity, With<NodeParamsHost>>,
 ) {
     if !selected.dirty {
         return;
     }
     selected.dirty = false;
+    if view.clip.is_some() {
+        commands.queue(BuildCustomInspector {
+            read: read_selected_item,
+            write: write_selected_item,
+            panel: *host,
+        });
+        return;
+    }
     commands.queue(BuildCustomInspector {
         read: read_selected_node,
         write: write_selected_node,
         panel: *host,
     });
+}
+
+/// Which track item the two resolvers below are pointed at.
+///
+/// `event_tracks` is a `HashMap<String, EventTrack>` and the item inside is found by id, and a
+/// `ParsedPath` can spell neither — which is exactly the case `InspectorRoot::Custom` exists
+/// for. The same escape hatch the node bodies needed, for a completely different reason.
+fn selected_item(world: &World) -> Option<(String, Uuid, Handle<GraphClip>)> {
+    let selected = world.get_resource::<Selected>()?;
+    let track = selected.track.clone()?;
+    let id = selected.node?;
+    let handle = world.get_resource::<CanvasView>()?.clip.clone()?;
+    Some((track, id, handle))
+}
+
+fn read_selected_item(world: &World, visit: &mut dyn FnMut(&dyn Reflect)) {
+    let Some((track, id, handle)) = selected_item(world) else {
+        return;
+    };
+    let Some(clips) = world.get_resource::<Assets<GraphClip>>() else {
+        return;
+    };
+    let Some(item) = clips
+        .get(&handle)
+        .and_then(|clip| clip.event_tracks.get(&track))
+        .and_then(|track| track.events.iter().find(|e| e.id == id))
+    else {
+        return;
+    };
+    visit(item.value.as_reflect());
+}
+
+fn write_selected_item(world: &mut World, visit: &mut dyn FnMut(&mut dyn Reflect)) {
+    let Some((track, id, handle)) = selected_item(world) else {
+        return;
+    };
+    let Some(mut clips) = world.get_resource_mut::<Assets<GraphClip>>() else {
+        return;
+    };
+    let Some(mut clip) = clips.get_mut(&handle) else {
+        return;
+    };
+    let Some(item) = clip
+        .event_tracks
+        .get_mut(&track)
+        .and_then(|track| track.events.iter_mut().find(|e| e.id == id))
+    else {
+        return;
+    };
+    visit(item.value.as_reflect_mut());
+    // An edited start time can reorder the track, which is kept sorted.
+    if let Some(track) = clip.event_tracks.get_mut(&track) {
+        track
+            .events
+            .sort_by(|a, b| a.value.start_time.total_cmp(&b.value.start_time));
+    }
 }
 
 /// Which node the two resolvers below are pointed at, taken from the editor's own state.
@@ -2286,6 +2397,7 @@ fn save_graph(
     view: Res<CanvasView>,
     graphs: Res<Assets<AnimationGraph>>,
     fsms: Res<Assets<StateMachine>>,
+    clips: Res<Assets<GraphClip>>,
     registry: Res<AppTypeRegistry>,
 ) {
     if !keys.just_pressed(KeyCode::KeyS)
@@ -2293,7 +2405,7 @@ fn save_graph(
     {
         return;
     }
-    write_graph(&view, &graphs, &fsms, &registry);
+    write_graph(&view, &graphs, &fsms, &clips, &registry);
 }
 
 /// `--save-layout`: lay the open graph out, write it, and exit. The wait is for the asset to
@@ -2303,15 +2415,18 @@ fn save_layout_and_exit(
     view: Res<CanvasView>,
     graphs: Res<Assets<AnimationGraph>>,
     fsms: Res<Assets<StateMachine>>,
+    clips: Res<Assets<GraphClip>>,
     registry: Res<AppTypeRegistry>,
     mut exit: MessageWriter<AppExit>,
 ) {
     // Either asset will do — an FSM open means `graph` is None and vice versa. Gating on the
     // graph alone left `--save-layout` on an `.fsm.ron` sitting in a window for ever.
-    if !args.save_layout || (view.graph.is_none() && view.fsm.is_none()) {
+    if !args.save_layout
+        || (view.graph.is_none() && view.fsm.is_none() && view.clip.is_none())
+    {
         return;
     }
-    write_graph(&view, &graphs, &fsms, &registry);
+    write_graph(&view, &graphs, &fsms, &clips, &registry);
     exit.write(AppExit::Success);
 }
 
@@ -2320,10 +2435,15 @@ fn write_graph(
     view: &CanvasView,
     graphs: &Assets<AnimationGraph>,
     fsms: &Assets<StateMachine>,
+    clips: &Assets<GraphClip>,
     registry: &AppTypeRegistry,
 ) {
     if view.fsm.is_some() {
         write_fsm(view, fsms);
+        return;
+    }
+    if view.clip.is_some() {
+        write_clip(view, clips);
         return;
     }
     let (Some(handle), Some(path)) = (&view.graph, &view.path) else {
@@ -2638,6 +2758,368 @@ fn write_fsm(view: &CanvasView, fsms: &Assets<StateMachine>) {
             error!("save {path}: {err:?}");
             return;
         }
+    };
+    let text = match ron::ser::to_string_pretty(&serial, ron::ser::PrettyConfig::default()) {
+        Ok(text) => text,
+        Err(err) => {
+            error!("save {path}: {err}");
+            return;
+        }
+    };
+    let file = PathBuf::from(std::env::var_os("BEVY_ASSET_ROOT").expect("set in main"))
+        .join("assets")
+        .join(path);
+    let existing = std::fs::read_to_string(&file).unwrap_or_default();
+    let text = format!("{}{text}", leading_comment(&existing));
+    let backup = file.with_extension("ron.bak");
+    if file.exists() && !backup.exists() {
+        let _ = std::fs::copy(&file, &backup);
+    }
+    match std::fs::write(&file, text) {
+        Ok(()) => info!("saved {}", file.display()),
+        Err(err) => error!("save {}: {err}", file.display()),
+    }
+}
+
+// ------------------------------------------------------------------ timeline
+
+/// Where the scrub cursor sits, in seconds.
+///
+/// A clip has no player here — `AnimationSource` is Graph, Pose or None, with no clip variant —
+/// so this is a cursor you place rather than a playhead that follows something. For authoring
+/// event times that is the right way round anyway.
+#[derive(Resource, Default)]
+struct TimelineCursor(f32);
+
+/// One event bar, so a click knows which item in which track it landed on.
+#[derive(Component, Clone)]
+struct TrackBar {
+    track: String,
+    item: Uuid,
+}
+
+/// Lane geometry, in pixels.
+const RULER_H: f32 = 22.0;
+const LANE_H: f32 = 28.0;
+const LANE_GAP: f32 = 4.0;
+/// Track names sit in a fixed gutter, so they stay readable however far the time axis scrolls.
+const LABEL_W: f32 = 130.0;
+/// Seconds-to-pixels at zoom 1. A 1.3 s walk cycle is then about 290 px wide.
+const PX_PER_SEC: f32 = 220.0;
+
+/// The event tracks of the open clip, as lanes of bars along a time axis.
+fn draw_timeline(
+    commands: &mut Commands,
+    view: &mut CanvasView,
+    clips: &Assets<GraphClip>,
+    cursor: &TimelineCursor,
+    canvas: (Entity, Option<&Children>),
+) {
+    let Some(clip) = view.clip.clone().and_then(|h| clips.get(&h)) else {
+        // Still streaming; stay dirty.
+        return;
+    };
+    view.dirty = false;
+    let (canvas_entity, existing) = canvas;
+    if let Some(existing) = existing {
+        for child in existing.iter() {
+            commands.entity(child).despawn();
+        }
+    }
+
+    let scale = PX_PER_SEC * view.zoom;
+    let x_of = |t: f32| LABEL_W + t * scale + view.pan.x;
+    let mut children = Vec::new();
+
+    // Ruler: ticks at a round interval that stays about 80 px apart whatever the zoom, so the
+    // labels never collide and never thin out to uselessness.
+    let step = [0.05f32, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0]
+        .into_iter()
+        .find(|s| s * scale >= 80.0)
+        .unwrap_or(10.0);
+    let mut t = 0.0;
+    while t <= clip.duration + step * 0.5 {
+        let x = x_of(t);
+        children.push(
+            commands
+                .spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(x),
+                        top: Val::Px(view.pan.y),
+                        width: Val::Px(1.0),
+                        height: Val::Px(RULER_H),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.45, 0.47, 0.52, 0.9)),
+                    Pickable::IGNORE,
+                ))
+                .id(),
+        );
+        children.push(
+            commands
+                .spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(x + 3.0),
+                        top: Val::Px(view.pan.y),
+                        ..default()
+                    },
+                    Text::new(format!("{t:.2}")),
+                    ThemedText,
+                    TextFont {
+                        font_size: FontSize::Px(10.0),
+                        ..default()
+                    },
+                    Pickable::IGNORE,
+                ))
+                .id(),
+        );
+        t += step;
+    }
+
+    // The name gutter is drawn first and full height: the preview renders behind the canvas,
+    // and pale text straight onto a rig is unreadable.
+    children.push(
+        commands
+            .spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(0.0),
+                    top: Val::Px(0.0),
+                    width: Val::Px(LABEL_W),
+                    bottom: Val::Px(0.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.08, 0.09, 0.11, 0.92)),
+                Pickable::IGNORE,
+            ))
+            .id(),
+    );
+
+    // One lane per track, name-sorted so the order is stable between runs.
+    let mut names: Vec<&String> = clip.event_tracks.keys().collect();
+    names.sort();
+    let mut bars = 0;
+    for (lane, name) in names.iter().enumerate() {
+        let Some(track) = clip.event_tracks.get(*name) else {
+            continue;
+        };
+        let top = view.pan.y + RULER_H + LANE_GAP + lane as f32 * (LANE_H + LANE_GAP);
+        // Lane background, full width, so an empty track still reads as a track.
+        children.push(
+            commands
+                .spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(0.0),
+                        right: Val::Px(0.0),
+                        top: Val::Px(top),
+                        height: Val::Px(LANE_H),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.11, 0.12, 0.14, 0.75)),
+                    Pickable::IGNORE,
+                ))
+                .id(),
+        );
+        children.push(
+            commands
+                .spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(8.0),
+                        top: Val::Px(top + 6.0),
+                        width: Val::Px(LABEL_W - 12.0),
+                        overflow: Overflow::clip(),
+                        ..default()
+                    },
+                    Text::new((*name).clone()),
+                    ThemedText,
+                    TextFont {
+                        font_size: FontSize::Px(11.0),
+                        ..default()
+                    },
+                    TextLayout {
+                        linebreak: bevy::text::LineBreak::NoWrap,
+                        ..default()
+                    },
+                    Pickable::IGNORE,
+                ))
+                .id(),
+        );
+
+        for item in &track.events {
+            let start = x_of(item.value.start_time);
+            // An instantaneous event has start == end and would otherwise be invisible.
+            let width = ((item.value.end_time - item.value.start_time) * scale).max(6.0);
+            children.push(spawn_track_bar(commands, name, item, start, top, width));
+            bars += 1;
+        }
+    }
+
+    // The cursor last, so it draws over the bars it is being placed against.
+    children.push(
+        commands
+            .spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(x_of(cursor.0)),
+                    top: Val::Px(view.pan.y),
+                    width: Val::Px(1.0),
+                    bottom: Val::Px(0.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.95, 0.85, 0.35, 0.95)),
+                Pickable::IGNORE,
+            ))
+            .id(),
+    );
+
+    commands.entity(canvas_entity).add_children(&children);
+    info!(
+        "timeline: {} tracks, {bars} events, {:.2}s",
+        names.len(),
+        clip.duration
+    );
+}
+
+/// One event bar: click to select it, drag to move it in time.
+fn spawn_track_bar(
+    commands: &mut Commands,
+    track: &str,
+    item: &TrackItem,
+    left: f32,
+    top: f32,
+    width: f32,
+) -> Entity {
+    let bar = TrackBar {
+        track: track.to_string(),
+        item: item.id,
+    };
+    let label = event_label(&item.value.event);
+    let moved = bar.clone();
+    let picked = bar.clone();
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(left),
+                top: Val::Px(top + 4.0),
+                width: Val::Px(width),
+                height: Val::Px(LANE_H - 8.0),
+                align_items: AlignItems::Center,
+                padding: UiRect::horizontal(Val::Px(4.0)),
+                overflow: Overflow::clip(),
+                ..default()
+            },
+            BackgroundColor(BAR_IDLE),
+            bar,
+            Children::spawn(Spawn((
+                Text::new(label),
+                ThemedText,
+                TextFont {
+                    font_size: FontSize::Px(10.0),
+                    ..default()
+                },
+                TextLayout {
+                    linebreak: bevy::text::LineBreak::NoWrap,
+                    ..default()
+                },
+            ))),
+        ))
+        .observe(
+            move |mut click: On<PointerClick>, mut selected: ResMut<Selected>| {
+                if click.button != PointerButton::Primary {
+                    return;
+                }
+                click.propagate(false);
+                selected.node = Some(picked.item);
+                selected.track = Some(picked.track.clone());
+                selected.dirty = true;
+            },
+        )
+        .observe(
+            move |mut drag: On<PointerDrag>,
+                  mut view: ResMut<CanvasView>,
+                  mut clips: ResMut<Assets<GraphClip>>| {
+                if drag.button != PointerButton::Primary {
+                    return;
+                }
+                drag.propagate(false);
+                let delta = drag.delta.x / (PX_PER_SEC * view.zoom);
+                let Some(handle) = view.clip.clone() else {
+                    return;
+                };
+                let Some(mut clip) = clips.get_mut(&handle) else {
+                    return;
+                };
+                let duration = clip.duration;
+                let Some(track) = clip.event_tracks.get_mut(&moved.track) else {
+                    return;
+                };
+                let Some(event) = track.events.iter_mut().find(|e| e.id == moved.item) else {
+                    return;
+                };
+                // Move the whole span and keep it on the clip: an event outside the duration
+                // never fires, which looks like a broken event rather than a misplaced one.
+                let span = event.value.end_time - event.value.start_time;
+                let start = (event.value.start_time + delta).clamp(0.0, duration - span);
+                event.value.start_time = start;
+                event.value.end_time = start + span;
+                // The track is kept sorted by start time; a drag past a neighbour breaks that.
+                track
+                    .events
+                    .sort_by(|a, b| a.value.start_time.total_cmp(&b.value.start_time));
+                view.dirty = true;
+            },
+        )
+        .id()
+}
+
+/// An event as a bar caption. `StringId("footstep_l")` is the common case and its wrapper is
+/// pure noise on a 13-pixel bar, so it is unwrapped to its payload.
+fn event_label(event: &AnimationEvent) -> String {
+    let text = format!("{event:?}");
+    let inner = text
+        .strip_prefix("StringId(\"")
+        .and_then(|rest| rest.strip_suffix("\")"));
+    ascii(inner.unwrap_or(&text))
+}
+
+const BAR_IDLE: Color = Color::srgba(0.30, 0.42, 0.58, 0.95);
+const BAR_SELECTED: Color = Color::srgba(0.42, 0.62, 0.85, 1.0);
+
+/// Tint the selected bar, the same way a selected node box is tinted.
+fn highlight_bars(selected: Res<Selected>, mut bars: Query<(&TrackBar, &mut BackgroundColor)>) {
+    for (bar, mut background) in &mut bars {
+        let want = if selected.node == Some(bar.item) {
+            BAR_SELECTED
+        } else {
+            BAR_IDLE
+        };
+        if background.0 != want {
+            background.0 = want;
+        }
+    }
+}
+
+/// Write the open clip's event tracks back to its `.anim.ron`.
+///
+/// Only the tracks are editable here — `source` and `skeleton` name the baked `.animclip` and
+/// its rig, and neither is the timeline's business.
+fn write_clip(view: &CanvasView, clips: &Assets<GraphClip>) {
+    let (Some(handle), Some(path)) = (&view.clip, &view.path) else {
+        return;
+    };
+    let Some(clip) = clips.get(handle) else {
+        return;
+    };
+    // Fails only when the clip has no source or no skeleton path — a clip built in memory
+    // rather than loaded, which the browser cannot produce.
+    let Ok(serial) = GraphClipSerial::try_from(clip) else {
+        error!("save {path}: this clip has no source path to write back to");
+        return;
     };
     let text = match ron::ser::to_string_pretty(&serial, ron::ser::PrettyConfig::default()) {
         Ok(text) => text,

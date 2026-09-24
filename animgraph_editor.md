@@ -10,7 +10,8 @@ that number is misleading:
 | egui reflect widgets (`egui_inspector_impls`, `old_reflect_widgets`) | 1761 | REPLACED by `bevy_feathers_inspector` |
 | graph layout data, graph mutations, saving, asset tree | 1786 | PORTED nearly as-is |
 | FSM editor (1078) | 1078 | PORTED onto the same canvas (R6) |
-| event track editor, ragdoll editor | 3555 | DEFERRED |
+| event track editor (747) | 747 | PORTED as a timeline (R7) |
+| ragdoll editor | 2808 | DEFERRED |
 | windows, panes, generic widgets | ~10.6k | mostly egui glue; a fraction survives |
 
 The editor is a separate binary and does NOT have to be render-free — but it is anyway, because
@@ -30,6 +31,9 @@ cargo run --release -p animgraph_editor -- -a /mnt/code/p/zero/assets \
 cargo run --release -p animgraph_editor -- -a /mnt/code/p/zero/assets \
   -o anim/human/locomotion.animgraph.ron --save-layout
 ```
+
+A `.anim.ron` opens as a timeline instead: **left-drag a bar** to move an event in time,
+**left-click** it to select, wheel to zoom the time axis, middle/right-drag to scroll it.
 
 Canvas controls: **left-drag a node** to move it, **left-click** it to select, **drag pin to pin**
 to wire, **right-click an input pin** to cut the link into it, **Delete** to remove the selected
@@ -199,7 +203,38 @@ real fix: the blend graph under-covers BELOW `walk_speed` by ~15%, because blend
 against a stationary idle always does, and a machine with a standing state and a moving state is
 the shape that solves it.
 
-**Deferred past R6:** the event-track editor and the ragdoll editor. Each is its own
+**R7 — the event-track timeline (DONE).** A `.anim.ron` opens as a TIMELINE rather than a node
+canvas: a ruler across the top, one lane per event track, one bar per event, a scrub cursor.
+Click a bar to select it, drag it to move it in time, Ctrl+S (or `--save-layout`) to write the
+tracks back through `GraphClipSerial`.
+
+It shares the canvas entity and the pan/zoom, but reinterprets them: `zoom` is pixels-per-second
+and `pan.x` is a time offset, which is what makes wheel-zoom and middle-drag do the right thing
+on a time axis for free. The ruler picks its tick interval from the first of
+`0.05 / 0.1 / 0.25 / 0.5 / 1 / 2 / 5` seconds that is at least 80 px apart, so labels never
+collide and never thin out however far you zoom.
+
+A clip has NO player here — `AnimationSource` is `Graph`, `Pose` or `None`, with no clip variant
+— so the vertical line is a cursor you place, not a playhead that follows something. For
+authoring event times that is the right way round anyway; playing a clip in the preview would
+mean wrapping it in a one-node graph, which is a separate feature.
+
+Selecting a bar points the inspector at that ONE event, through `InspectorRoot::Custom` again —
+`event_tracks` is a `HashMap<String, EventTrack>` and the item inside is found by id, and a
+`ParsedPath` can spell neither. The same escape hatch node bodies needed, for a completely
+different reason, which is the argument that the root was worth adding rather than special-casing
+nodes. What you get is the event's own enum variant picker (`StringId`, `TransitionToState`, …)
+plus `start_time` / `end_time` sliders.
+
+Two details that matter in use: a track is kept SORTED by start time, so both the drag and the
+inspector re-sort after an edit; and an instantaneous event has `start_time == end_time`, which
+would be a zero-width bar, so bars have a minimum width.
+
+`assets/anim/mannequin/Walk_Loop.anim.ron` in zero carries the first real event tracks — two
+footfalls and a both-feet-down contact window, which is the classic reason event tracks exist.
+
+**Deferred past R7:** the ragdoll editor. aurora has 3D gizmos, so the blocker I assumed is not
+one; it is simply its own piece of work, and nothing in zero has a ragdoll yet. Each is its own
 sub-editor upstream and none blocks authoring a locomotion graph.
 
 ## Notes
