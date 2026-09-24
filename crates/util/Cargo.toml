@@ -11,4 +11,8 @@ bevy = { workspace = true, features = [
   "free_camera",
   "bevy_ui",
   "ui_picking",
+  "bevy_mesh",
+  "bevy_image",
 ] }
+# `Extent3d` / `TextureFormat` for the grid texture: bevy re-exports neither at the root here.
+wgpu-types = { version = "30", default-features = false }

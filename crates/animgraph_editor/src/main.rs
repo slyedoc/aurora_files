@@ -12,63 +12,64 @@
 use bevy::{
     animation::{AnimatedBy, AnimationTargetId},
     feathers::{
-        controls::{slider_bundle, FeathersSliderProps},
+        controls::{FeathersSliderProps, slider_bundle},
         dark_theme::create_dark_theme,
         theme::{ThemedText, UiTheme},
     },
     feathers_inspector::{BuildAssetInspector, BuildCustomInspector, ReflectInspectorWidget},
-    input::mouse::MouseScrollUnit,
-    prelude::*,
-    asset::RenderAssetUsages,
     image::Image,
-    mesh::{Mesh, VertexAttributeValues},
-    reflect::{std_traits::ReflectDefault, ReflectMut, ReflectRef},
+    input::mouse::MouseScrollUnit,
+    mesh::Mesh,
+    prelude::*,
+    reflect::{ReflectMut, ReflectRef, std_traits::ReflectDefault},
     ui::{
         AlignItems, BackgroundColor, ComputedNode, Display, FlexDirection, JustifyContent,
         Overflow, PositionType, UiRect, Val,
     },
-    ui_widgets::{observe, slider_self_update, SliderValue, ValueChange},
+    ui_widgets::{SliderValue, ValueChange, observe, slider_self_update},
 };
 use bevy_animation_graph::{
+    AnimationGraphPlugin,
     core::{
-        animation_clip::{loader::GraphClipSerial, GraphClip},
-        event_track::TrackItem,
+        animation_clip::{GraphClip, loader::GraphClipSerial},
         animation_graph::{
-            serial::AnimationGraphSerializer, AnimationGraph, NodeId, SourcePin, TargetPin,
+            AnimationGraph, NodeId, SourcePin, TargetPin, serial::AnimationGraphSerializer,
         },
         animation_graph_player::AnimationGraphPlayer,
-        animation_node::{dyn_node_like::DynNodeLike, AnimationNode, NodeLike, ReflectNodeLike},
+        animation_node::{AnimationNode, NodeLike, ReflectNodeLike, dyn_node_like::DynNodeLike},
         context::{
             node_states::StateKey,
             spec_context::{NodeInput, NodeOutput, NodeSpec, SpecResources},
         },
-        edge_data::{events::AnimationEvent, DataSpec, DataValue},
-        skeleton::Skeleton,
+        edge_data::{DataSpec, DataValue, events::AnimationEvent},
+        event_track::TrackItem,
         ragdoll::definition::{Body, BodyId, ColliderShape, JointVariant, Ragdoll},
+        skeleton::Skeleton,
         state_machine::high_level::{
-            serial::StateMachineSerial, DirectTransition, StateId, StateMachine,
+            DirectTransition, StateId, StateMachine, serial::StateMachineSerial,
         },
     },
-    AnimationGraphPlugin,
 };
 use bevy_aurora::{
     auto_exposure::AuroraExposure,
-    material::{AuroraMaterial, AuroraMaterial3d},
     dev_shaders::DevShaderPlugin,
     dev_ui::DevUIPlugin,
+    material::{AuroraMaterial, AuroraMaterial3d},
     ray_default_plugins::RayDefaultPlugins,
     ui_render::UiPolyline,
     util::{ScreenshotExt, TimeoutAppExt},
 };
 use clap::Parser;
 use uuid::Uuid;
-use wgpu_types::{Extent3d, TextureDimension, TextureFormat};
 
 use std::any::TypeId;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser, Resource, Clone)]
-#[command(name = "animgraph_editor", about = "Animation graph editor (feathers/aurora)")]
+#[command(
+    name = "animgraph_editor",
+    about = "Animation graph editor (feathers/aurora)"
+)]
 struct Args {
     /// Asset root to browse. Defaults to `$BEVY_ASSET_ROOT`, else a cwd that has `assets/`.
     #[arg(long, short = 'a')]
@@ -348,8 +349,8 @@ fn main() {
 /// Walk the asset root for everything the editor can open. Asset paths are root-relative with
 /// `/` separators, which is what the asset server wants on every platform.
 fn scan_library(mut library: ResMut<Library>, mut expanded: ResMut<Expanded>) {
-    let root = PathBuf::from(std::env::var_os("BEVY_ASSET_ROOT").expect("set in main"))
-        .join("assets");
+    let root =
+        PathBuf::from(std::env::var_os("BEVY_ASSET_ROOT").expect("set in main")).join("assets");
     let mut stack = vec![root.clone()];
     while let Some(dir) = stack.pop() {
         let Ok(read) = std::fs::read_dir(&dir) else {
@@ -389,73 +390,6 @@ fn scan_library(mut library: ResMut<Library>, mut expanded: ResMut<Expanded>) {
     );
 }
 
-/// Floor extent in metres, and the world size of one grid cell.
-const FLOOR_SIZE: f32 = 40.0;
-const GRID_CELL: f32 = 1.0;
-/// Cells per texture tile: the tile carries its own heavier line, so a major line lands every
-/// this many metres without a second material or a second draw.
-const GRID_MAJOR: u32 = 8;
-
-/// A plane whose UVs run 0..`tiles` instead of 0..1, so the grid texture repeats across it.
-///
-/// Aurora's samplers are REPEAT, so tiling is purely a UV question — but `PlaneMeshBuilder` has
-/// no UV scale, so scale the attribute after the fact.
-fn grid_plane(size: f32, tiles: f32) -> Mesh {
-    let mut mesh = Plane3d::default().mesh().size(size, size).build();
-    let repeats = tiles / GRID_MAJOR as f32;
-    if let Some(VertexAttributeValues::Float32x2(uvs)) =
-        mesh.attribute_mut(Mesh::ATTRIBUTE_UV_0)
-    {
-        for uv in uvs.iter_mut() {
-            uv[0] *= repeats;
-            uv[1] *= repeats;
-        }
-    }
-    mesh
-}
-
-/// One tile of the grid: `GRID_MAJOR` cells square, with a heavier line on the tile boundary.
-///
-/// Values are albedo, so they stay well clear of 0 and 1 — a pure black floor gives the tracer
-/// nothing to bounce and a pure white one blows out under the sun exposure this app runs at.
-fn grid_texture() -> Image {
-    const CELL: u32 = 32;
-    const SIZE: u32 = CELL * GRID_MAJOR;
-    const BASE: [f32; 3] = [0.055, 0.058, 0.065];
-    const MINOR: [f32; 3] = [0.12, 0.13, 0.15];
-    const MAJOR: [f32; 3] = [0.26, 0.28, 0.32];
-
-    let mut data = Vec::with_capacity((SIZE * SIZE * 4) as usize);
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            // A line is drawn on the low edge of a cell, two pixels wide for the major one so
-            // it still reads once the floor is a long way from the camera.
-            let major = x < 2 || y < 2;
-            let minor = x % CELL == 0 || y % CELL == 0;
-            let color = if major {
-                MAJOR
-            } else if minor {
-                MINOR
-            } else {
-                BASE
-            };
-            data.extend(color.iter().map(|c| (c * 255.0) as u8));
-            data.push(255);
-        }
-    }
-    Image::new(
-        Extent3d {
-            width: SIZE,
-            height: SIZE,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        data,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::all(),
-    )
-}
-
 fn setup_ui(
     mut commands: Commands,
     assets: Res<AssetServer>,
@@ -479,9 +413,9 @@ fn setup_ui(
     // nothing for the feet to meet and no contact shadow to read the pose against.
     commands.spawn((
         Name::new("floor"),
-        Mesh3d(meshes.add(grid_plane(FLOOR_SIZE, FLOOR_SIZE / GRID_CELL))),
+        Mesh3d(meshes.add(util::grid::floor_mesh(util::grid::FLOOR_SIZE))),
         AuroraMaterial3d(materials.add(AuroraMaterial {
-            base_color_texture: Some(images.add(grid_texture())),
+            base_color_texture: Some(images.add(util::grid::grid_texture())),
             perceptual_roughness: 0.85,
             ..default()
         })),
@@ -604,18 +538,18 @@ fn setup_ui(
                         },
                     )),
                     Spawn((
-                    Name::new("inputs"),
-                    InputsHost,
-                    BackgroundColor(Color::srgba(0.06, 0.06, 0.07, 0.86)),
-                    Node {
-                        flex_direction: FlexDirection::Column,
-                        row_gap: Val::Px(4.0),
-                        padding: UiRect::all(Val::Px(8.0)),
-                        width: Val::Px(320.0),
-                        max_width: Val::Percent(100.0),
-                        ..default()
-                    },
-                )),
+                        Name::new("inputs"),
+                        InputsHost,
+                        BackgroundColor(Color::srgba(0.06, 0.06, 0.07, 0.86)),
+                        Node {
+                            flex_direction: FlexDirection::Column,
+                            row_gap: Val::Px(4.0),
+                            padding: UiRect::all(Val::Px(8.0)),
+                            width: Val::Px(320.0),
+                            max_width: Val::Percent(100.0),
+                            ..default()
+                        },
+                    )),
                     // The add-node palette floats over the canvas, top-left of the CENTRE pane
                     // — the window's own top-left belongs to aurora's dev panel. Declared LAST
                     // so it paints over the slider column rather than under it.
@@ -699,7 +633,10 @@ fn attach_panes(
         // drag, and a left-drag on the background would then fight it — and a stray press from
         // the window manager on focus arrives as a left drag the moment the window opens.
         .observe(|drag: On<PointerDrag>, mut view: ResMut<CanvasView>| {
-            if !matches!(drag.button, PointerButton::Middle | PointerButton::Secondary) {
+            if !matches!(
+                drag.button,
+                PointerButton::Middle | PointerButton::Secondary
+            ) {
                 return;
             }
             view.pan += drag.delta;
@@ -812,7 +749,12 @@ fn spawn_dir(
     }
     for entry in &dir.files {
         let entry = entry.clone();
-        let leaf = entry.path.rsplit('/').next().unwrap_or(&entry.path).to_string();
+        let leaf = entry
+            .path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&entry.path)
+            .to_string();
         let label = format!("  {}   [{}]", leaf, entry.kind.label());
         let row = commands
             .spawn((
@@ -1121,7 +1063,11 @@ fn seed_fsm_layout(view: &mut CanvasView, fsm: &StateMachine) {
     view.positions.clear();
     view.pan = Vec2::splat(24.0);
     view.zoom = 1.0;
-    let authored = fsm.editor_metadata.states.values().any(|p| *p != Vec2::ZERO);
+    let authored = fsm
+        .editor_metadata
+        .states
+        .values()
+        .any(|p| *p != Vec2::ZERO);
     let mut ids: Vec<StateId> = fsm.states.keys().copied().collect();
     ids.sort_by_key(|id| format!("{id:?}"));
     for (i, id) in ids.iter().enumerate() {
@@ -1200,14 +1146,10 @@ fn arm_preview(
     };
     // Hydrate the name-path components a text `.bsn` cannot carry, exactly as zero's
     // locomotion module does, then bind the player.
-    let Some(armature) = children
-        .get(preview.root)
-        .ok()
-        .and_then(|kids| {
-            kids.iter()
-                .find(|&k| names.get(k).is_ok_and(|n| n.as_str() == "Armature"))
-        })
-    else {
+    let Some(armature) = children.get(preview.root).ok().and_then(|kids| {
+        kids.iter()
+            .find(|&k| names.get(k).is_ok_and(|n| n.as_str() == "Armature"))
+    }) else {
         return;
     };
     let Ok(bones) = children.get(armature) else {
@@ -1281,7 +1223,10 @@ fn arm_preview(
             .spawn((
                 // `SliderValue` rides the bundle already, so it goes in as an INSERT below —
                 // passing it as an override duplicates the component and panics the spawn.
-                slider_bundle(FeathersSliderProps { min: 0.0, max }, GraphInput(pin.clone())),
+                slider_bundle(
+                    FeathersSliderProps { min: 0.0, max },
+                    GraphInput(pin.clone()),
+                ),
                 // Feathers sliders are INERT without this: the thumb only moves because
                 // `slider_self_update` writes the new SliderValue back onto the entity.
                 observe(slider_self_update),
@@ -1368,7 +1313,9 @@ impl PinSocket {
                 Some(Wire::Transition(*from, *to))
             }
             (Self::Source(source, a), Self::Target(target, b))
-            | (Self::Target(target, b), Self::Source(source, a)) if a == b => {
+            | (Self::Target(target, b), Self::Source(source, a))
+                if a == b =>
+            {
                 Some(Wire::Edge(source.clone(), target.clone()))
             }
             _ => None,
@@ -1548,7 +1495,11 @@ fn graph_boxes(
         };
         let spec = node_spec(node, graphs, fsms);
         boxes.push(Boxed {
-            pos: view.positions.get(&id.uuid()).copied().unwrap_or(Vec2::ZERO),
+            pos: view
+                .positions
+                .get(&id.uuid())
+                .copied()
+                .unwrap_or(Vec2::ZERO),
             title: if node.name.is_empty() {
                 ascii(&node.inner.display_name())
             } else {
@@ -1634,7 +1585,11 @@ fn fsm_boxes(view: &CanvasView, fsm: &StateMachine) -> Vec<Boxed> {
             let state = fsm.states.get(id)?;
             let start = fsm.start_state == *id;
             Some(Boxed {
-                pos: view.positions.get(&id.uuid()).copied().unwrap_or(Vec2::ZERO),
+                pos: view
+                    .positions
+                    .get(&id.uuid())
+                    .copied()
+                    .unwrap_or(Vec2::ZERO),
                 // The start state is where the machine begins and there is exactly one, so it
                 // is worth seeing without opening the inspector.
                 title: if start {
@@ -2010,23 +1965,30 @@ fn build_palette(
     kinds.sort_by(|a, b| a.0.cmp(&b.0));
     drop(registry);
 
-    let mut rows = vec![commands
-        .spawn((
-            Text::new(format!("add node  [N]   {} types", kinds.len())),
-            ThemedText,
-            Node {
-                padding: UiRect::all(Val::Px(4.0)),
-                ..default()
-            },
-        ))
-        .id()];
+    let mut rows = vec![
+        commands
+            .spawn((
+                Text::new(format!("add node  [N]   {} types", kinds.len())),
+                ThemedText,
+                Node {
+                    padding: UiRect::all(Val::Px(4.0)),
+                    ..default()
+                },
+            ))
+            .id(),
+    ];
     for (short, type_id) in kinds {
         let label = short.clone();
         rows.push(
             commands
                 .spawn((
                     Node {
-                        padding: UiRect::new(Val::Px(8.0), Val::Px(4.0), Val::Px(2.0), Val::Px(2.0)),
+                        padding: UiRect::new(
+                            Val::Px(8.0),
+                            Val::Px(4.0),
+                            Val::Px(2.0),
+                            Val::Px(2.0),
+                        ),
                         ..default()
                     },
                     BackgroundColor(Color::NONE),
@@ -2231,7 +2193,10 @@ fn delete_node(graph: &mut AnimationGraph, id: NodeId) -> usize {
 
 /// Tint the selected node's box. Guarded on the current value rather than run on a change
 /// filter, because `draw_canvas` respawns every box and the new ones start idle.
-fn highlight_selected(selected: Res<Selected>, mut boxes: Query<(&CanvasNode, &mut BackgroundColor)>) {
+fn highlight_selected(
+    selected: Res<Selected>,
+    mut boxes: Query<(&CanvasNode, &mut BackgroundColor)>,
+) {
     for (node, mut background) in &mut boxes {
         let want = if selected.node == Some(node.0) {
             BOX_SELECTED
@@ -2503,7 +2468,10 @@ fn write_graph(
 
     let mut graph = graph.clone();
     for (id, pos) in &view.positions {
-        graph.editor_metadata.node_positions.insert((*id).into(), *pos);
+        graph
+            .editor_metadata
+            .node_positions
+            .insert((*id).into(), *pos);
     }
     graph.editor_metadata.input_position = view.input_pos;
     graph.editor_metadata.output_position = view.output_pos;
@@ -2707,7 +2675,9 @@ fn self_test(
             // hand out a `&mut` that points INTO the stored asset, through a `get_mut` that
             // marks it changed. Drive them the way the inspector's writeback does.
             commands.queue(|world: &mut World| match check_node_edit(world) {
-                Ok(field) => info!("self-test: edited node field `{field}` through the inspector resolvers"),
+                Ok(field) => {
+                    info!("self-test: edited node field `{field}` through the inspector resolvers")
+                }
                 Err(why) => {
                     error!("self-test: node edit did not stick: {why}");
                     world.write_message(AppExit::error());
@@ -3352,7 +3322,11 @@ fn draw_ragdoll(
     for body in ragdoll.bodies.values() {
         let picked = selected.node == Some(body.id.uuid());
         let color = if picked { BODY_PICKED } else { BODY_IDLE };
-        for collider in body.colliders.iter().filter_map(|c| ragdoll.colliders.get(c)) {
+        for collider in body
+            .colliders
+            .iter()
+            .filter_map(|c| ragdoll.colliders.get(c))
+        {
             let local = Transform::from_translation(body.offset)
                 * Transform::from_isometry(collider.local_offset);
             let place = Transform::from_matrix((rig * local.compute_affine()).into());

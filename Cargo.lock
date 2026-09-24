@@ -202,7 +202,6 @@ dependencies = [
  "ron 0.10.1",
  "util",
  "uuid",
- "wgpu-types",
 ]
 
 [[package]]
@@ -6332,6 +6331,7 @@ name = "util"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "wgpu-types",
 ]
 
 [[package]]

@@ -151,6 +151,7 @@ fn setup(
     mut commands: Commands,
     assets: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<AuroraMaterial>>,
 ) {
     let root = std::path::PathBuf::from(std::env::var_os("BEVY_ASSET_ROOT").expect("set in main"))
@@ -174,17 +175,19 @@ fn setup(
         Sky::default(),
         Transform::from_xyz(0.0, 1.6, 6.0).looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y),
     ));
-    // A floor. Without one a prop hangs in a black void with no sense of scale or contact, which
-    // is most of what a preview is for.
+    // A grid floor, the same one the animgraph editor stands its rig on. A plain plane gives a
+    // prop somewhere to stand but says nothing about how big it is; one-metre cells turn the
+    // floor into a ruler, which is most of what a prop preview is for.
     commands.spawn((
-        Name::new("ground"),
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(60.0, 60.0))),
+        Name::new("floor"),
+        Mesh3d(meshes.add(util::grid::floor_mesh(util::grid::FLOOR_SIZE))),
         AuroraMaterial3d(materials.add(AuroraMaterial {
-            base_color: Color::linear_rgb(0.20, 0.20, 0.22),
-            perceptual_roughness: 0.95,
+            base_color_texture: Some(images.add(util::grid::grid_texture())),
+            perceptual_roughness: 0.85,
             ..default()
         })),
-        Transform::from_xyz(0.0, 0.0, 0.0),
+        // Just below the origin props stand on, so the floor never z-fights their base.
+        Transform::from_xyz(0.0, -0.002, 0.0),
     ));
     commands.spawn((
         Name::new("sun"),
@@ -325,6 +328,7 @@ fn rebuild_palette(
     mut commands: Commands,
     mut dirty: ResMut<PaletteDirty>,
     mut loaded: Local<usize>,
+    mut selected_once: Local<bool>,
     args: Res<Args>,
     kits: Res<Kits>,
     manifests: Res<Assets<Kit>>,
@@ -397,12 +401,18 @@ fn rebuild_palette(
     }
 
     // `--select` applies once, as soon as the manifest it names has actually loaded.
+    //
+    // Gated on its own flag, NOT on the selection being empty: the list box picks a row of its
+    // own accord as the rows spawn, in the same frame, so "nothing is selected yet" is false by
+    // the time this runs and the flag would never fire. A later click still overrides it, which
+    // is the behaviour wanted — this only has to beat the list's own opening guess.
     if let Some(want) = &args.select
-        && selection.0.is_none()
+        && !*selected_once
         && let Some(prop) = pending
             .iter()
             .find(|p| p.name == *want || p.short_name() == want)
     {
+        *selected_once = true;
         info!("palette: --select {} ({})", prop.name, prop.bsn);
         selection.0 = Some(PropRow {
             name: prop.name.clone(),
