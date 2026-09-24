@@ -509,7 +509,6 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 [[package]]
 name = "bevy"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_internal",
 ]
@@ -517,7 +516,6 @@ dependencies = [
 [[package]]
 name = "bevy_a11y"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "accesskit",
  "bevy_app",
@@ -530,7 +528,6 @@ dependencies = [
 [[package]]
 name = "bevy_android"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "android-activity",
 ]
@@ -538,7 +535,6 @@ dependencies = [
 [[package]]
 name = "bevy_animation"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_animation_macros",
  "bevy_app",
@@ -571,7 +567,6 @@ dependencies = [
 [[package]]
 name = "bevy_animation_macros"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_macro_utils",
  "quote",
@@ -581,7 +576,6 @@ dependencies = [
 [[package]]
 name = "bevy_anti_alias"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_asset",
@@ -603,7 +597,6 @@ dependencies = [
 [[package]]
 name = "bevy_app"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_derive",
  "bevy_ecs",
@@ -624,7 +617,6 @@ dependencies = [
 [[package]]
 name = "bevy_asset"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "async-broadcast",
  "async-channel",
@@ -667,7 +659,6 @@ dependencies = [
 [[package]]
 name = "bevy_asset_macros"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_macro_utils",
  "proc-macro2",
@@ -678,7 +669,6 @@ dependencies = [
 [[package]]
 name = "bevy_audio"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_asset",
@@ -719,7 +709,6 @@ dependencies = [
 [[package]]
 name = "bevy_camera"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_asset",
@@ -744,7 +733,6 @@ dependencies = [
 [[package]]
 name = "bevy_camera_controller"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_camera",
@@ -778,7 +766,6 @@ dependencies = [
 [[package]]
 name = "bevy_clipboard"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "arboard",
  "bevy_app",
@@ -793,7 +780,6 @@ dependencies = [
 [[package]]
 name = "bevy_color"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_math",
  "bevy_reflect",
@@ -808,7 +794,6 @@ dependencies = [
 [[package]]
 name = "bevy_core_pipeline"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_asset",
@@ -837,7 +822,6 @@ dependencies = [
 [[package]]
 name = "bevy_derive"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_macro_utils",
  "quote",
@@ -847,7 +831,6 @@ dependencies = [
 [[package]]
 name = "bevy_dev_tools"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_animation",
  "bevy_app",
@@ -888,7 +871,6 @@ dependencies = [
 [[package]]
 name = "bevy_diagnostic"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "atomic-waker",
  "bevy_app",
@@ -905,7 +887,6 @@ dependencies = [
 [[package]]
 name = "bevy_ecs"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "arrayvec",
  "bevy_ecs_macros",
@@ -932,7 +913,6 @@ dependencies = [
 [[package]]
 name = "bevy_ecs_macro_logic"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_macro_utils",
  "proc-macro2",
@@ -943,7 +923,6 @@ dependencies = [
 [[package]]
 name = "bevy_ecs_macros"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_ecs_macro_logic",
  "bevy_macro_utils",
@@ -955,7 +934,6 @@ dependencies = [
 [[package]]
 name = "bevy_encase_derive"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_macro_utils",
  "encase_derive_impl",
@@ -964,7 +942,6 @@ dependencies = [
 [[package]]
 name = "bevy_extract"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_camera",
@@ -981,7 +958,6 @@ dependencies = [
 [[package]]
 name = "bevy_extract_macros"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_macro_utils",
  "proc-macro2",
@@ -992,7 +968,6 @@ dependencies = [
 [[package]]
 name = "bevy_feathers"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "accesskit",
  "bevy_a11y",
@@ -1020,9 +995,9 @@ dependencies = [
 [[package]]
 name = "bevy_feathers_inspector"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
+ "bevy_asset",
  "bevy_color",
  "bevy_ecs",
  "bevy_feathers",
@@ -1039,7 +1014,6 @@ dependencies = [
 [[package]]
 name = "bevy_gilrs"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_ecs",
@@ -1054,7 +1028,6 @@ dependencies = [
 [[package]]
 name = "bevy_gizmos"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_asset",
@@ -1076,7 +1049,6 @@ dependencies = [
 [[package]]
 name = "bevy_gizmos_macros"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_macro_utils",
  "quote",
@@ -1086,7 +1058,6 @@ dependencies = [
 [[package]]
 name = "bevy_gizmos_render"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_asset",
@@ -1113,7 +1084,6 @@ dependencies = [
 [[package]]
 name = "bevy_gltf"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "async-lock",
  "base64 0.23.1",
@@ -1148,7 +1118,6 @@ dependencies = [
 [[package]]
 name = "bevy_image"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_asset",
@@ -1176,7 +1145,6 @@ dependencies = [
 [[package]]
 name = "bevy_input"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_ecs",
@@ -1193,7 +1161,6 @@ dependencies = [
 [[package]]
 name = "bevy_input_focus"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_camera",
@@ -1210,7 +1177,6 @@ dependencies = [
 [[package]]
 name = "bevy_internal"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_a11y",
  "bevy_android",
@@ -1269,7 +1235,6 @@ dependencies = [
 [[package]]
 name = "bevy_light"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_asset",
@@ -1294,7 +1259,6 @@ dependencies = [
 [[package]]
 name = "bevy_log"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "android_log-sys",
  "bevy_app",
@@ -1311,7 +1275,6 @@ dependencies = [
 [[package]]
 name = "bevy_macro_utils"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1322,7 +1285,6 @@ dependencies = [
 [[package]]
 name = "bevy_material"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_asset",
  "bevy_derive",
@@ -1344,7 +1306,6 @@ dependencies = [
 [[package]]
 name = "bevy_material_macros"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_macro_utils",
  "quote",
@@ -1354,7 +1315,6 @@ dependencies = [
 [[package]]
 name = "bevy_math"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "approx",
  "arrayvec",
@@ -1373,7 +1333,6 @@ dependencies = [
 [[package]]
 name = "bevy_mesh"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_asset",
@@ -1407,7 +1366,6 @@ checksum = "bff34eb29ff4b8a8688bc7299f14fb6b597461ca80fec03ed7d22939ab33e48f"
 [[package]]
 name = "bevy_pbr"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "arrayvec",
  "bevy_app",
@@ -1450,7 +1408,6 @@ dependencies = [
 [[package]]
 name = "bevy_picking"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_asset",
@@ -1471,7 +1428,6 @@ dependencies = [
 [[package]]
 name = "bevy_platform"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bytemuck",
  "critical-section",
@@ -1487,13 +1443,12 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-time",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
 name = "bevy_post_process"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_asset",
@@ -1518,12 +1473,10 @@ dependencies = [
 [[package]]
 name = "bevy_ptr"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 
 [[package]]
 name = "bevy_reflect"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "assert_type_match",
  "bevy_platform",
@@ -1551,7 +1504,6 @@ dependencies = [
 [[package]]
 name = "bevy_reflect_derive"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_macro_utils",
  "indexmap",
@@ -1564,7 +1516,6 @@ dependencies = [
 [[package]]
 name = "bevy_render"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "async-channel",
  "bevy_app",
@@ -1620,7 +1571,6 @@ dependencies = [
 [[package]]
 name = "bevy_render_macros"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_extract_macros",
  "bevy_macro_utils",
@@ -1632,7 +1582,6 @@ dependencies = [
 [[package]]
 name = "bevy_scene"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_asset",
@@ -1655,7 +1604,6 @@ dependencies = [
 [[package]]
 name = "bevy_scene_macros"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_ecs_macro_logic",
  "bevy_macro_utils",
@@ -1667,7 +1615,6 @@ dependencies = [
 [[package]]
 name = "bevy_shader"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_asset",
  "bevy_platform",
@@ -1683,7 +1630,6 @@ dependencies = [
 [[package]]
 name = "bevy_sprite"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_asset",
@@ -1707,7 +1653,6 @@ dependencies = [
 [[package]]
 name = "bevy_sprite_render"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_asset",
@@ -1742,7 +1687,6 @@ dependencies = [
 [[package]]
 name = "bevy_state"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_ecs",
@@ -1757,7 +1701,6 @@ dependencies = [
 [[package]]
 name = "bevy_state_macros"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_macro_utils",
  "quote",
@@ -1767,7 +1710,6 @@ dependencies = [
 [[package]]
 name = "bevy_tasks"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "async-channel",
  "async-executor",
@@ -1785,7 +1727,6 @@ dependencies = [
 [[package]]
 name = "bevy_text"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_asset",
@@ -1813,7 +1754,6 @@ dependencies = [
 [[package]]
 name = "bevy_time"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_ecs",
@@ -1827,7 +1767,6 @@ dependencies = [
 [[package]]
 name = "bevy_transform"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_ecs",
@@ -1843,7 +1782,6 @@ dependencies = [
 [[package]]
 name = "bevy_ui"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "accesskit",
  "bevy_a11y",
@@ -1881,7 +1819,6 @@ dependencies = [
 [[package]]
 name = "bevy_ui_render"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_a11y",
  "bevy_app",
@@ -1916,7 +1853,6 @@ dependencies = [
 [[package]]
 name = "bevy_ui_widgets"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "accesskit",
  "bevy_a11y",
@@ -1940,7 +1876,6 @@ dependencies = [
 [[package]]
 name = "bevy_utils"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "async-channel",
  "bevy_platform",
@@ -1953,7 +1888,6 @@ dependencies = [
 [[package]]
 name = "bevy_window"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_asset",
@@ -1971,7 +1905,6 @@ dependencies = [
 [[package]]
 name = "bevy_winit"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -2003,7 +1936,6 @@ dependencies = [
 [[package]]
 name = "bevy_world_serialization"
 version = "0.20.0-dev"
-source = "git+https://github.com/slyedoc/bevy.git?branch=aurora#a1ddaecdaf235025f196840b5abbf3b80794e16c"
 dependencies = [
  "bevy_app",
  "bevy_asset",
@@ -7518,11 +7450,11 @@ dependencies = [
 ]
 
 [[patch.unused]]
-name = "avian3d"
-version = "0.8.0-dev"
-source = "git+https://github.com/slyedoc/avian?branch=aurora#d1071c079fec99e042fb407d3679cffe7903cff7"
-
-[[patch.unused]]
 name = "bevy_enhanced_input"
 version = "0.26.0"
 source = "git+https://github.com/slyedoc/bevy_enhanced_input?branch=aurora#120b9dfe3e19a6ce4f4cb4c1265565838151e240"
+
+[[patch.unused]]
+name = "avian3d"
+version = "0.8.0-dev"
+source = "git+https://github.com/slyedoc/avian?branch=aurora#d1071c079fec99e042fb407d3679cffe7903cff7"
