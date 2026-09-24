@@ -1,0 +1,34 @@
+# `scene_editor` — build a world out of baked `.bsn` props. R0 is the palette: find every kit
+# manifest under the asset root and list what it holds. Ladder in scene_editor.md.
+[package]
+name = "scene_editor"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "scene_editor"
+path = "src/main.rs"
+
+[features]
+# VR: the point of the whole exercise — a shelf of real props you reach out and place. The
+# palette has to work on a flat screen first.
+xr = ["bevy_aurora/xr"]
+
+[dependencies]
+bevy = { workspace = true, features = [
+    "bevy_camera_controller",
+    "free_camera",
+    # NOT `bevy_feathers` — that is `render_materials`, which wants bevy_render's own `Shader`
+    # asset. Core is the render-free half, which is all this stack has.
+    "experimental_bevy_feathers_inspector",
+    "default_font",
+    "debug",
+] }
+bevy_aurora = { workspace = true, features = ["dev"] }
+# The kit manifest is RON, the same as every other hand-readable asset here.
+ron = "0.10"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+clap.workspace = true
+util = { path = "../util" }

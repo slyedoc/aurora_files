@@ -26,6 +26,7 @@ members = [
   "importers/zeroday",
   "importers/animlib",
   "crates/animgraph_editor",
+  "crates/scene_editor",
 ]
 exclude = [
   "crates/furnace",
