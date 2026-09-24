@@ -11,7 +11,7 @@ that number is misleading:
 | graph layout data, graph mutations, saving, asset tree | 1786 | PORTED nearly as-is |
 | FSM editor (1078) | 1078 | PORTED onto the same canvas (R6) |
 | event track editor (747) | 747 | PORTED as a timeline (R7) |
-| ragdoll editor | 2808 | DEFERRED |
+| ragdoll editor (2808) | 2808 | PORTED as gizmos on the rig (R8) |
 | windows, panes, generic widgets | ~10.6k | mostly egui glue; a fraction survives |
 
 The editor is a separate binary and does NOT have to be render-free — but it is anyway, because
@@ -32,7 +32,8 @@ cargo run --release -p animgraph_editor -- -a /mnt/code/p/zero/assets \
   -o anim/human/locomotion.animgraph.ron --save-layout
 ```
 
-A `.anim.ron` opens as a timeline instead: **left-drag a bar** to move an event in time,
+A `.rag.ron` opens as gizmos on the preview rig with a body list to pick from; a `.anim.ron`
+opens as a timeline instead: **left-drag a bar** to move an event in time,
 **left-click** it to select, wheel to zoom the time axis, middle/right-drag to scroll it.
 
 Canvas controls: **left-drag a node** to move it, **left-click** it to select, **drag pin to pin**
@@ -233,8 +234,38 @@ would be a zero-width bar, so bars have a minimum width.
 `assets/anim/mannequin/Walk_Loop.anim.ron` in zero carries the first real event tracks — two
 footfalls and a both-feet-down contact window, which is the classic reason event tracks exist.
 
-**Deferred past R7:** the ragdoll editor. aurora has 3D gizmos, so the blocker I assumed is not
-one; it is simply its own piece of work, and nothing in zero has a ragdoll yet. Each is its own
+**R8 — the ragdoll editor (DONE).** A `.rag.ron` opens as GIZMOS ON THE PREVIEW RIG, plus a
+list to pick from. There is no canvas, and that is the point: a ragdoll is not a graph, it is
+geometry in the character's own space, and the only honest view of a collider offset is the
+collider drawn where it will be.
+
+A body has an offset in the CHARACTER's frame and its colliders have offsets relative to that,
+so a collider lands at `rig * body.offset * collider.local_offset`. Composing through the preview
+rig's own transform is what puts the geometry on the body it will drive instead of floating at
+the world origin. Sphere, capsule and cuboid all have `primitive_3d` gizmo builders already, so
+the three shapes cost three match arms.
+
+Joints draw as a cross at the anchor with a line to each body they bind — a joint that has
+drifted off its bodies is then visible, rather than merely wrong in the file.
+
+Selecting a body tints its colliders and points the inspector at that body (`InspectorRoot::Custom`
+a third time: `bodies` is a `HashMap<BodyId, Body>`, which a `ParsedPath` cannot spell). Saving is
+the simplest of the four — `Ragdoll` derives `Serialize` itself, with no serial mirror and no type
+registry, because it holds no `dyn` values and no asset handles, only geometry.
+
+`assets/people/mannequin.rag.ron` in zero is the first one: seven bodies down the spine and the
+legs, six joints, deliberately coarse. A ragdoll wants few bodies and generous limits — the point
+is a body that falls plausibly, not a skeleton reproduced in physics.
+
+## Where the ladder ended
+
+R0-R8. Every window upstream's editor had that matters for authoring is here, on one canvas
+concept and one inspector. The three "deferred" sub-editors turned out to cost far less than
+their line counts suggested, for the same reason the whole port did: the canvas, the pin sockets,
+the drag handling, the save shape and `InspectorRoot::Custom` were each written once and reused
+three more times. The FSM reuses the canvas outright; the timeline reuses its pan/zoom with a
+different unit; the ragdoll reuses only the selection and the inspector, because it genuinely is
+a different kind of thing. Each is its own
 sub-editor upstream and none blocks authoring a locomotion graph.
 
 ## Notes

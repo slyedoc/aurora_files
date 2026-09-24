@@ -44,6 +44,7 @@ use bevy_animation_graph::{
         },
         edge_data::{events::AnimationEvent, DataSpec, DataValue},
         skeleton::Skeleton,
+        ragdoll::definition::{Body, BodyId, ColliderShape, JointVariant, Ragdoll},
         state_machine::high_level::{
             serial::StateMachineSerial, DirectTransition, StateId, StateMachine,
         },
@@ -120,6 +121,7 @@ enum Kind {
     Clip,
     Skeleton,
     StateMachine,
+    Ragdoll,
 }
 
 impl Kind {
@@ -133,6 +135,8 @@ impl Kind {
             Some(Self::Skeleton)
         } else if name.ends_with(".fsm.ron") {
             Some(Self::StateMachine)
+        } else if name.ends_with(".rag.ron") {
+            Some(Self::Ragdoll)
         } else {
             None
         }
@@ -144,6 +148,7 @@ impl Kind {
             Self::Clip => "clip",
             Self::Skeleton => "skeleton",
             Self::StateMachine => "fsm",
+            Self::Ragdoll => "ragdoll",
         }
     }
 
@@ -153,6 +158,7 @@ impl Kind {
             Self::Clip => TypeId::of::<GraphClip>(),
             Self::Skeleton => TypeId::of::<Skeleton>(),
             Self::StateMachine => TypeId::of::<StateMachine>(),
+            Self::Ragdoll => TypeId::of::<Ragdoll>(),
         }
     }
 }
@@ -324,6 +330,8 @@ fn main() {
             highlight_selected,
             highlight_pins,
             highlight_bars,
+            highlight_ragdoll_rows,
+            draw_ragdoll,
             show_pin_values,
             show_node_params,
             delete_selected,
@@ -506,6 +514,7 @@ fn setup_ui(
                 Kind::Clip => assets.load::<GraphClip>(path).untyped(),
                 Kind::Skeleton => assets.load::<Skeleton>(path).untyped(),
                 Kind::StateMachine => assets.load::<StateMachine>(path).untyped(),
+                Kind::Ragdoll => assets.load::<Ragdoll>(path).untyped(),
             };
             commands.insert_resource(Opening {
                 handle,
@@ -829,6 +838,7 @@ fn spawn_dir(
                         Kind::Clip => assets.load::<GraphClip>(&entry.path).untyped(),
                         Kind::Skeleton => assets.load::<Skeleton>(&entry.path).untyped(),
                         Kind::StateMachine => assets.load::<StateMachine>(&entry.path).untyped(),
+                        Kind::Ragdoll => assets.load::<Ragdoll>(&entry.path).untyped(),
                     };
                     commands.insert_resource(Opening {
                         handle,
@@ -877,6 +887,7 @@ fn bind_when_loaded(
             seed_layout(&mut view, graph);
             view.fsm = None;
             view.clip = None;
+            view.ragdoll = None;
             view.graph = Some(handle.clone());
             view.path = Some(opening.path.clone());
             view.dirty = true;
@@ -900,6 +911,7 @@ fn bind_when_loaded(
             seed_fsm_layout(&mut view, fsm);
             view.graph = None;
             view.clip = None;
+            view.ragdoll = None;
             view.fsm = Some(handle);
             view.path = Some(opening.path.clone());
             view.dirty = true;
@@ -926,12 +938,21 @@ fn bind_when_loaded(
         }
         view.graph = None;
         view.fsm = None;
+        view.ragdoll = None;
         view.clip = Some(handle);
         view.path = Some(opening.path.clone());
         // A timeline scrolls in TIME, so pan starts at the left edge rather than inset, and
         // zoom is pixels-per-second rather than a canvas scale.
         view.pan = Vec2::new(0.0, 12.0);
         view.zoom = 1.0;
+        view.dirty = true;
+    }
+    if opening.kind == Kind::Ragdoll {
+        view.graph = None;
+        view.fsm = None;
+        view.clip = None;
+        view.ragdoll = Some(opening.handle.clone().typed::<Ragdoll>());
+        view.path = Some(opening.path.clone());
         view.dirty = true;
     }
     info!("opened {}", opening.path);
@@ -974,6 +995,9 @@ struct CanvasView {
     fsm: Option<Handle<StateMachine>>,
     /// The clip open instead, if this is an event-track timeline.
     clip: Option<Handle<GraphClip>>,
+    /// The ragdoll open instead. This one has no canvas — it is drawn as 3D gizmos on the
+    /// preview rig, because a body offset and a collider shape only mean anything in space.
+    ragdoll: Option<Handle<Ragdoll>>,
     /// Asset-relative path of the open asset, which is where a save writes.
     path: Option<String>,
     /// Keyed by the raw `Uuid` that both `NodeId` and `StateId` wrap, so one canvas serves a
@@ -992,6 +1016,7 @@ impl Default for CanvasView {
             graph: None,
             fsm: None,
             clip: None,
+            ragdoll: None,
             path: None,
             positions: std::collections::HashMap::new(),
             input_pos: Vec2::ZERO,
@@ -1399,6 +1424,7 @@ fn draw_canvas(
     graphs: Res<Assets<AnimationGraph>>,
     fsms: Res<Assets<StateMachine>>,
     clips: Res<Assets<GraphClip>>,
+    ragdolls: Res<Assets<Ragdoll>>,
     cursor: Res<TimelineCursor>,
     canvas: Single<(Entity, Option<&Children>), With<Canvas>>,
 ) {
@@ -1408,6 +1434,10 @@ fn draw_canvas(
     // Endpoints come back in canvas coordinates; the draw pass below maps them to pixels.
     if view.clip.is_some() {
         draw_timeline(&mut commands, &mut view, &clips, &cursor, *canvas);
+        return;
+    }
+    if view.ragdoll.is_some() {
+        draw_ragdoll_list(&mut commands, &mut view, &ragdolls, *canvas);
         return;
     }
     let built = match (&view.graph, &view.fsm) {
@@ -2241,6 +2271,14 @@ fn show_node_params(
         });
         return;
     }
+    if view.ragdoll.is_some() {
+        commands.queue(BuildCustomInspector {
+            read: read_selected_body,
+            write: write_selected_body,
+            panel: *host,
+        });
+        return;
+    }
     commands.queue(BuildCustomInspector {
         read: read_selected_node,
         write: write_selected_node,
@@ -2398,6 +2436,7 @@ fn save_graph(
     graphs: Res<Assets<AnimationGraph>>,
     fsms: Res<Assets<StateMachine>>,
     clips: Res<Assets<GraphClip>>,
+    ragdolls: Res<Assets<Ragdoll>>,
     registry: Res<AppTypeRegistry>,
 ) {
     if !keys.just_pressed(KeyCode::KeyS)
@@ -2405,7 +2444,7 @@ fn save_graph(
     {
         return;
     }
-    write_graph(&view, &graphs, &fsms, &clips, &registry);
+    write_graph(&view, &graphs, &fsms, &clips, &ragdolls, &registry);
 }
 
 /// `--save-layout`: lay the open graph out, write it, and exit. The wait is for the asset to
@@ -2416,17 +2455,21 @@ fn save_layout_and_exit(
     graphs: Res<Assets<AnimationGraph>>,
     fsms: Res<Assets<StateMachine>>,
     clips: Res<Assets<GraphClip>>,
+    ragdolls: Res<Assets<Ragdoll>>,
     registry: Res<AppTypeRegistry>,
     mut exit: MessageWriter<AppExit>,
 ) {
     // Either asset will do — an FSM open means `graph` is None and vice versa. Gating on the
     // graph alone left `--save-layout` on an `.fsm.ron` sitting in a window for ever.
     if !args.save_layout
-        || (view.graph.is_none() && view.fsm.is_none() && view.clip.is_none())
+        || (view.graph.is_none()
+            && view.fsm.is_none()
+            && view.clip.is_none()
+            && view.ragdoll.is_none())
     {
         return;
     }
-    write_graph(&view, &graphs, &fsms, &clips, &registry);
+    write_graph(&view, &graphs, &fsms, &clips, &ragdolls, &registry);
     exit.write(AppExit::Success);
 }
 
@@ -2436,6 +2479,7 @@ fn write_graph(
     graphs: &Assets<AnimationGraph>,
     fsms: &Assets<StateMachine>,
     clips: &Assets<GraphClip>,
+    ragdolls: &Assets<Ragdoll>,
     registry: &AppTypeRegistry,
 ) {
     if view.fsm.is_some() {
@@ -2444,6 +2488,10 @@ fn write_graph(
     }
     if view.clip.is_some() {
         write_clip(view, clips);
+        return;
+    }
+    if view.ragdoll.is_some() {
+        write_ragdoll(view, ragdolls);
         return;
     }
     let (Some(handle), Some(path)) = (&view.graph, &view.path) else {
@@ -3122,6 +3170,296 @@ fn write_clip(view: &CanvasView, clips: &Assets<GraphClip>) {
         return;
     };
     let text = match ron::ser::to_string_pretty(&serial, ron::ser::PrettyConfig::default()) {
+        Ok(text) => text,
+        Err(err) => {
+            error!("save {path}: {err}");
+            return;
+        }
+    };
+    let file = PathBuf::from(std::env::var_os("BEVY_ASSET_ROOT").expect("set in main"))
+        .join("assets")
+        .join(path);
+    let existing = std::fs::read_to_string(&file).unwrap_or_default();
+    let text = format!("{}{text}", leading_comment(&existing));
+    let backup = file.with_extension("ron.bak");
+    if file.exists() && !backup.exists() {
+        let _ = std::fs::copy(&file, &backup);
+    }
+    match std::fs::write(&file, text) {
+        Ok(()) => info!("saved {}", file.display()),
+        Err(err) => error!("save {}: {err}", file.display()),
+    }
+}
+
+// ------------------------------------------------------------------- ragdoll
+
+/// A row in the ragdoll list, so a click knows which body it selected.
+#[derive(Component, Clone, Copy)]
+struct RagdollRow(BodyId);
+
+/// Body colours: the ragdoll's own geometry, drawn over the rig it will drive.
+const BODY_IDLE: Color = Color::srgb(0.35, 0.72, 0.95);
+const BODY_PICKED: Color = Color::srgb(1.0, 0.78, 0.25);
+const JOINT_COLOR: Color = Color::srgb(0.95, 0.45, 0.75);
+
+/// The ragdoll's bodies and joints, as a list beside the preview.
+///
+/// There is no canvas here. A ragdoll is not a graph — it is geometry in the character's own
+/// space, and the only honest view of a collider offset is the collider, drawn where it will
+/// be. So the list is just for picking; [`draw_ragdoll`] is the actual editor.
+fn draw_ragdoll_list(
+    commands: &mut Commands,
+    view: &mut CanvasView,
+    ragdolls: &Assets<Ragdoll>,
+    canvas: (Entity, Option<&Children>),
+) {
+    let Some(ragdoll) = view.ragdoll.clone().and_then(|h| ragdolls.get(&h)) else {
+        return;
+    };
+    view.dirty = false;
+    let (canvas_entity, existing) = canvas;
+    if let Some(existing) = existing {
+        for child in existing.iter() {
+            commands.entity(child).despawn();
+        }
+    }
+
+    let mut bodies: Vec<&Body> = ragdoll.bodies.values().collect();
+    bodies.sort_by(|a, b| a.label.cmp(&b.label));
+    let mut rows = Vec::new();
+    for body in &bodies {
+        let id = body.id;
+        // Colliders are listed under their body because that is how they are POSITIONED —
+        // a collider's offset is relative to the body, and means nothing without it.
+        let shapes: Vec<String> = body
+            .colliders
+            .iter()
+            .filter_map(|c| ragdoll.colliders.get(c))
+            .map(|c| match &c.shape {
+                ColliderShape::Sphere(s) => format!("sphere {:.2}", s.radius),
+                ColliderShape::Capsule(c) => {
+                    format!("capsule {:.2}x{:.2}", c.radius, c.half_length * 2.0)
+                }
+                ColliderShape::Cuboid(c) => format!(
+                    "box {:.2},{:.2},{:.2}",
+                    c.half_size.x * 2.0,
+                    c.half_size.y * 2.0,
+                    c.half_size.z * 2.0
+                ),
+            })
+            .collect();
+        let label = format!(
+            "{}   [{}]   {}",
+            body.label,
+            match body.default_mode {
+                bevy_animation_graph::core::ragdoll::definition::BodyMode::Dynamic => "dyn",
+                _ => "kin",
+            },
+            shapes.join(", ")
+        );
+        rows.push(
+            commands
+                .spawn((
+                    Node {
+                        padding: UiRect::new(
+                            Val::Px(8.0),
+                            Val::Px(6.0),
+                            Val::Px(3.0),
+                            Val::Px(3.0),
+                        ),
+                        overflow: Overflow::clip(),
+                        ..default()
+                    },
+                    BackgroundColor(Color::NONE),
+                    RagdollRow(id),
+                    Children::spawn(Spawn((
+                        Text::new(ascii(&label)),
+                        ThemedText,
+                        TextFont {
+                            font_size: FontSize::Px(11.0),
+                            ..default()
+                        },
+                        TextLayout {
+                            linebreak: bevy::text::LineBreak::NoWrap,
+                            ..default()
+                        },
+                    ))),
+                ))
+                .observe(
+                    move |mut click: On<PointerClick>, mut selected: ResMut<Selected>| {
+                        if click.button != PointerButton::Primary {
+                            return;
+                        }
+                        click.propagate(false);
+                        selected.node = Some(id.uuid());
+                        selected.track = None;
+                        selected.dirty = true;
+                    },
+                )
+                .id(),
+        );
+    }
+
+    let panel = commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(8.0),
+                top: Val::Px(8.0),
+                width: Val::Px(330.0),
+                max_height: Val::Percent(70.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(1.0),
+                padding: UiRect::all(Val::Px(6.0)),
+                overflow: Overflow::scroll_y(),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.08, 0.09, 0.11, 0.94)),
+        ))
+        .add_children(&rows)
+        .id();
+    commands.entity(canvas_entity).add_child(panel);
+    info!(
+        "ragdoll: {} bodies, {} colliders, {} joints",
+        ragdoll.bodies.len(),
+        ragdoll.colliders.len(),
+        ragdoll.joints.len()
+    );
+}
+
+/// Draw the ragdoll in the preview, every frame.
+///
+/// A body has an offset in the CHARACTER's space and its colliders have offsets relative to
+/// that, so a collider lands at `rig * body.offset * collider.local_offset`. Composing through
+/// the preview rig's transform is what puts the geometry on the body it will drive, rather than
+/// floating at the world origin.
+fn draw_ragdoll(
+    mut gizmos: Gizmos,
+    view: Res<CanvasView>,
+    selected: Res<Selected>,
+    ragdolls: Res<Assets<Ragdoll>>,
+    preview: Res<Preview>,
+    places: Query<&GlobalTransform>,
+) {
+    let Some(ragdoll) = view.ragdoll.as_ref().and_then(|h| ragdolls.get(h)) else {
+        return;
+    };
+    let rig = places
+        .get(preview.root)
+        .map(|t| t.affine())
+        .unwrap_or_default();
+
+    for body in ragdoll.bodies.values() {
+        let picked = selected.node == Some(body.id.uuid());
+        let color = if picked { BODY_PICKED } else { BODY_IDLE };
+        for collider in body.colliders.iter().filter_map(|c| ragdoll.colliders.get(c)) {
+            let local = Transform::from_translation(body.offset)
+                * Transform::from_isometry(collider.local_offset);
+            let place = Transform::from_matrix((rig * local.compute_affine()).into());
+            let iso = Isometry3d::new(place.translation, place.rotation);
+            match &collider.shape {
+                ColliderShape::Sphere(sphere) => {
+                    gizmos.primitive_3d(sphere, iso, color);
+                }
+                ColliderShape::Capsule(capsule) => {
+                    gizmos.primitive_3d(capsule, iso, color);
+                }
+                ColliderShape::Cuboid(cuboid) => {
+                    gizmos.primitive_3d(cuboid, iso, color);
+                }
+            }
+        }
+    }
+
+    // Joints: a cross at the anchor, and a line to each body it binds, so a joint that has
+    // drifted off its bodies is visible rather than merely wrong in the file.
+    let body_at = |id: &BodyId| {
+        ragdoll
+            .bodies
+            .get(id)
+            .map(|b| rig.transform_point3(b.offset))
+    };
+    for joint in ragdoll.joints.values() {
+        let (anchor, b1, b2) = match &joint.variant {
+            JointVariant::Spherical(j) => (j.position, j.body1, j.body2),
+            JointVariant::Revolute(j) => (j.position, j.body1, j.body2),
+        };
+        let anchor = rig.transform_point3(anchor);
+        gizmos.cross(anchor, 0.06, JOINT_COLOR);
+        for id in [b1, b2] {
+            if let Some(at) = body_at(&id) {
+                gizmos.line(anchor, at, JOINT_COLOR.with_alpha(0.5));
+            }
+        }
+    }
+}
+
+/// Tint the selected body's row.
+fn highlight_ragdoll_rows(
+    selected: Res<Selected>,
+    mut rows: Query<(&RagdollRow, &mut BackgroundColor)>,
+) {
+    for (row, mut background) in &mut rows {
+        let want = if selected.node == Some(row.0.uuid()) {
+            Color::srgba(0.22, 0.26, 0.34, 1.0)
+        } else {
+            Color::NONE
+        };
+        if background.0 != want {
+            background.0 = want;
+        }
+    }
+}
+
+/// Which ragdoll body the two resolvers below are pointed at.
+fn selected_body(world: &World) -> Option<(BodyId, Handle<Ragdoll>)> {
+    let id = world.get_resource::<Selected>()?.node?;
+    let handle = world.get_resource::<CanvasView>()?.ragdoll.clone()?;
+    Some((BodyId::from_uuid(id), handle))
+}
+
+fn read_selected_body(world: &World, visit: &mut dyn FnMut(&dyn Reflect)) {
+    let Some((id, handle)) = selected_body(world) else {
+        return;
+    };
+    let Some(body) = world
+        .get_resource::<Assets<Ragdoll>>()
+        .and_then(|r| r.get(&handle))
+        .and_then(|r| r.bodies.get(&id))
+    else {
+        return;
+    };
+    visit(body.as_reflect());
+}
+
+fn write_selected_body(world: &mut World, visit: &mut dyn FnMut(&mut dyn Reflect)) {
+    let Some((id, handle)) = selected_body(world) else {
+        return;
+    };
+    let Some(mut ragdolls) = world.get_resource_mut::<Assets<Ragdoll>>() else {
+        return;
+    };
+    let Some(mut ragdoll) = ragdolls.get_mut(&handle) else {
+        return;
+    };
+    let Some(body) = ragdoll.bodies.get_mut(&id) else {
+        return;
+    };
+    visit(body.as_reflect_mut());
+}
+
+/// Write the open ragdoll back to its `.rag.ron`.
+///
+/// `Ragdoll` derives `Serialize` itself — no serial mirror and no type registry, because it
+/// holds no `dyn` bodies and no asset handles, only geometry.
+fn write_ragdoll(view: &CanvasView, ragdolls: &Assets<Ragdoll>) {
+    let (Some(handle), Some(path)) = (&view.ragdoll, &view.path) else {
+        return;
+    };
+    let Some(ragdoll) = ragdolls.get(handle) else {
+        return;
+    };
+    let text = match ron::ser::to_string_pretty(ragdoll, ron::ser::PrettyConfig::default()) {
         Ok(text) => text,
         Err(err) => {
             error!("save {path}: {err}");
