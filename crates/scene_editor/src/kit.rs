@@ -73,17 +73,6 @@ impl KitProp {
         }
         rest
     }
-
-    /// The scale that fits this prop inside a cube of side `cell`, capped at 1 so a teaspoon
-    /// is not blown up to the size of a forge. What a palette lays out with.
-    pub fn fit(&self, cell: f32) -> f32 {
-        let longest = self.size().max_element();
-        if longest <= f32::EPSILON {
-            1.0
-        } else {
-            (cell / longest).min(1.0)
-        }
-    }
 }
 
 /// Every kit found under the asset root, in load order.

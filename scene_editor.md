@@ -38,7 +38,8 @@ accessibility node, which is not free. Virtualize if it starts to matter.
 ## R1 — the shelf
 
 Replace the text rows with **live prop instances** — the real `.bsn`, scaled into a uniform cell
-by `KitProp::fit()`. This is cheap here in a way it is not elsewhere: aurora does ~1M shared-BLAS
+by the manifest's extent (cap that scale at 1, or a teaspoon gets blown up to the size of a
+forge). This is cheap here in a way it is not elsewhere: aurora does ~1M shared-BLAS
 instances at 240+ fps, so 297 real props cost nothing and no thumbnail bake, render-to-texture or
 icon pipeline is needed. The extent in the manifest is what makes the layout possible without
 instantiating everything first and measuring it.

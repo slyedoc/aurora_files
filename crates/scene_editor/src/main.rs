@@ -453,13 +453,13 @@ fn row(label: String, trailing: String, prop: PropRow) -> impl Scene {
                     overflow: {Overflow::clip_x()},
                 }
                 Children [(
-                    Text::new({label})
+                    Text::new(label)
                     ThemedText
                     TextLayout { linebreak: {bevy::text::LineBreak::NoWrap} }
                 )]
             ),
             (
-                Text::new({trailing})
+                Text::new(trailing)
                 TextColor({Color::srgb(0.50, 0.52, 0.56)})
                 ThemedText
                 InheritableFont { font_size: {bevy::text::FontSize::Px(12.0)} }
