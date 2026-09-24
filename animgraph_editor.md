@@ -9,7 +9,8 @@ that number is misleading:
 | `egui_nodes/` (a vendored imnodes port) | 2145 | REPLACED by a feathers canvas |
 | egui reflect widgets (`egui_inspector_impls`, `old_reflect_widgets`) | 1761 | REPLACED by `bevy_feathers_inspector` |
 | graph layout data, graph mutations, saving, asset tree | 1786 | PORTED nearly as-is |
-| FSM editor, event track editor, ragdoll editor | 4633 | DEFERRED |
+| FSM editor (1078) | 1078 | PORTED onto the same canvas (R6) |
+| event track editor, ragdoll editor | 3555 | DEFERRED |
 | windows, panes, generic widgets | ~10.6k | mostly egui glue; a fraction survives |
 
 The editor is a separate binary and does NOT have to be render-free — but it is anyway, because
@@ -172,7 +173,33 @@ feedback edge) gets a wide offset instead, so it bulges around the boxes rather 
 through them. Segment count scales with length, 8 to 28, so forty links do not become ten thousand
 quads.
 
-**Deferred past R5:** the FSM editor, the event-track editor, the ragdoll editor. Each is its own
+**R6 — the FSM canvas (DONE).** A state machine opens on the SAME canvas as a graph: states are
+boxes, transitions are links, drag to move, drag pin-to-pin to add a transition, Ctrl+S (or
+`--save-layout`) to write it back through `StateMachineSerial`.
+
+It shares the canvas rather than copying it, and the join is smaller than expected. Canvas
+positions are keyed by the raw `Uuid` that BOTH `NodeId` and `StateId` wrap, so one layout map,
+one drag handler and one selection serve both; the split is only in what produces the boxes
+(`graph_boxes` / `fsm_boxes`) and what resolves the links between them (`graph_links` /
+`fsm_links`). `PinSocket` grew `StateOut` / `StateIn`, and `connects()` returns "an edge or a
+transition" instead of always an edge.
+
+Two things made this cheaper than the graph canvas was. `StateMachine::states` and `transitions`
+are NOT `#[reflect(ignore)]`, so the R0 asset inspector reaches them with no `InspectorRoot::Custom`
+needed; and a transition has no TYPE to agree on, so a state needs exactly one pin a side and
+none of the `DataSpec` matching. `add_transition_from_ui` also validates both ends and rebuilds
+the low-level FSM — the thing that actually runs — so wiring goes through it rather than
+`add_transition_unchecked`.
+
+An FSM has no evaluation order to lay out along (a state machine is a cycle by nature), so the
+fallback layout is a plain column rather than the graph's longest-path layering.
+
+`assets/anim/mannequin/locomotion.fsm.ron` in zero is the test fixture — and the skeleton of a
+real fix: the blend graph under-covers BELOW `walk_speed` by ~15%, because blending a moving gait
+against a stationary idle always does, and a machine with a standing state and a moving state is
+the shape that solves it.
+
+**Deferred past R6:** the event-track editor and the ragdoll editor. Each is its own
 sub-editor upstream and none blocks authoring a locomotion graph.
 
 ## Notes
