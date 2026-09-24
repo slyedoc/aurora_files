@@ -446,6 +446,22 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
         bsn::f(s[1]),
         bsn::f(s[2]),
     );
+    // A skinned node names its joint palette; aurora's `resolve_skin_joints` turns the names
+    // into a real `SkinnedMesh` once they resolve in the spawned subtree, taking the inverse
+    // bind poses from the joints' own bind transforms. Order must match the glTF skin's joint
+    // list, because that is what JOINT_INDEX indexes.
+    let skin_joints = node.skin().map(|skin| {
+        skin.joints()
+            .map(|j| {
+                j.name()
+                    .map(|n| n.replace('"', "'"))
+                    .unwrap_or_else(|| format!("node{}", j.index()))
+            })
+            .map(|n| format!("\"{n}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    });
+
     // Single-primitive mesh: inline it on the node (the common case). Extra primitives drop to
     // identity-transform children below so this entity keeps the node's Name for animation.
     if let Some(stem) = prims.first() {
@@ -455,6 +471,12 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
              {pad}bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {{{mat_fields}}})\n",
             ctx.asset_prefix,
         );
+        if let Some(joints) = &skin_joints {
+            let _ = write!(
+                out,
+                "{pad}bevy_aurora::skinning::SkinJointsByName([{joints}])\n"
+            );
+        }
         ctx.emitted += 1;
     } else {
         ctx.emitted += 1; // empty/camera anchor node (Name + Transform only)
@@ -469,12 +491,20 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
             .and_then(|m| m.primitives().nth(i))
             .map(|p| material_fields(&p.material(), ctx))
             .unwrap_or_default();
+        // Extra primitives of a skinned mesh share the node's skin.
+        let skin = match &skin_joints {
+            Some(joints) => {
+                format!("{cpad}bevy_aurora::skinning::SkinJointsByName([{joints}])\n")
+            }
+            None => String::new(),
+        };
         let _ = write!(
             kids,
             "{cpad}bevy_ecs::name::Name(\"{name}#{i}\")\n\
              {cpad}bevy_transform::components::transform::Transform {{ translation: glam::Vec3 {{ x: 0.0, y: 0.0, z: 0.0 }}, rotation: glam::Quat {{ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }}, scale: glam::Vec3 {{ x: 1.0, y: 1.0, z: 1.0 }} }}\n\
              {cpad}bevy_mesh::components::Mesh3d(\"{}/meshes/{stem}.cluster_mesh\")\n\
-             {cpad}bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {{{mat}}}),\n",
+             {cpad}bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {{{mat}}})\n\
+             {skin}{cpad},\n",
             ctx.asset_prefix,
         );
         ctx.emitted += 1;
@@ -587,6 +617,21 @@ pub(crate) fn build_primitive_mesh(
     {
         if uvs.len() == n {
             mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+        }
+    }
+
+    // Skin, for a rigged source. Both streams or neither: the bake and the renderer both gate
+    // on a palette that covers every vertex. The joint INDICES here are into the glTF skin's
+    // joint list, which is the same order `SkinJointsByName` writes the names in.
+    if let (Some(j), Some(w)) = (reader.read_joints(0), reader.read_weights(0)) {
+        let joints: Vec<[u16; 4]> = j.into_u16().collect();
+        let weights: Vec<[f32; 4]> = w.into_f32().collect();
+        if joints.len() == n && weights.len() == n {
+            mesh.insert_attribute(
+                Mesh::ATTRIBUTE_JOINT_INDEX,
+                bevy::mesh::VertexAttributeValues::Uint16x4(joints),
+            );
+            mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, weights);
         }
     }
 

@@ -192,6 +192,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "animlib_import"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "glam",
+ "gltf",
+ "ron 0.10.1",
+ "serde",
+]
+
+[[package]]
 name = "annotate-snippets"
 version = "0.12.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -453,7 +464,7 @@ dependencies = [
 name = "aurora_bsn"
 version = "0.1.0"
 dependencies = [
- "aurora_cluster_mesh 0.1.0 (git+https://github.com/slyedoc/aurora.git?branch=main)",
+ "aurora_cluster_mesh",
  "bevy",
  "cc",
  "gltf",
@@ -464,17 +475,6 @@ dependencies = [
 [[package]]
 name = "aurora_cluster_mesh"
 version = "0.1.0"
-dependencies = [
- "bevy",
- "bytemuck",
- "lz4_flex",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "aurora_cluster_mesh"
-version = "0.1.0"
-source = "git+https://github.com/slyedoc/aurora.git?branch=main#b0e1a8da92a52e96794582660fbe21a380d59f37"
 dependencies = [
  "bevy",
  "bytemuck",
@@ -559,7 +559,7 @@ dependencies = [
  "downcast-rs 2.0.2",
  "either",
  "petgraph",
- "ron",
+ "ron 0.12.2",
  "serde",
  "smallvec",
  "thiserror 2.0.20",
@@ -653,7 +653,7 @@ dependencies = [
  "futures-util",
  "js-sys",
  "notify-debouncer-full",
- "ron",
+ "ron 0.12.2",
  "serde",
  "stackfuture",
  "thiserror 2.0.20",
@@ -696,7 +696,7 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "ash-window",
- "aurora_cluster_mesh 0.1.0",
+ "aurora_cluster_mesh",
  "bevy",
  "bytemuck",
  "crossbeam",
@@ -2015,7 +2015,7 @@ dependencies = [
  "bevy_transform",
  "bevy_utils",
  "derive_more",
- "ron",
+ "ron 0.12.2",
  "serde",
  "thiserror 2.0.20",
  "uuid",
@@ -3734,7 +3734,7 @@ dependencies = [
 name = "kenney_import"
 version = "0.1.0"
 dependencies = [
- "aurora_cluster_mesh 0.1.0 (git+https://github.com/slyedoc/aurora.git?branch=main)",
+ "aurora_cluster_mesh",
  "bevy",
  "clap",
  "gltf",
@@ -5388,6 +5388,19 @@ dependencies = [
  "num-rational",
  "thiserror 2.0.20",
  "tracing",
+]
+
+[[package]]
+name = "ron"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "beceb6f7bf81c73e73aeef6dd1356d9a1b2b4909e1f0fc3e59b034f9572d7b7f"
+dependencies = [
+ "base64 0.22.1",
+ "bitflags 2.13.1",
+ "serde",
+ "serde_derive",
+ "unicode-ident",
 ]
 
 [[package]]
@@ -7258,7 +7271,7 @@ name = "wow_import"
 version = "0.1.0"
 dependencies = [
  "aurora_bsn",
- "aurora_cluster_mesh 0.1.0 (git+https://github.com/slyedoc/aurora.git?branch=main)",
+ "aurora_cluster_mesh",
  "bevy",
  "clap",
  "image",
@@ -7505,11 +7518,11 @@ dependencies = [
 ]
 
 [[patch.unused]]
-name = "bevy_enhanced_input"
-version = "0.26.0"
-source = "git+https://github.com/slyedoc/bevy_enhanced_input?branch=aurora#120b9dfe3e19a6ce4f4cb4c1265565838151e240"
-
-[[patch.unused]]
 name = "avian3d"
 version = "0.8.0-dev"
 source = "git+https://github.com/slyedoc/avian?branch=aurora#d1071c079fec99e042fb407d3679cffe7903cff7"
+
+[[patch.unused]]
+name = "bevy_enhanced_input"
+version = "0.26.0"
+source = "git+https://github.com/slyedoc/bevy_enhanced_input?branch=aurora#120b9dfe3e19a6ce4f4cb4c1265565838151e240"

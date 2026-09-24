@@ -1,0 +1,24 @@
+# Animation library importer: a skinned `.glb` clip library (Quaternius UAL, Mixamo, ...) in,
+# one `.animclip` per named clip out, already retargeted onto a baked person's rig
+# (`assets/people/<name>.bsn`, Rig::GameEngine names, identity bind). The runtime never sees glTF.
+#
+#   cargo run --release -p animlib_import -- /mnt/code/p/core/assets/models/UAL1_Standard.glb \
+#       ../zero/assets/people/player.bsn ../zero/assets/anim/human --clips Idle_Loop,Walk_Loop,Jog_Fwd_Loop
+[package]
+name = "animlib_import"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "animlib_import"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+# `serde` here so the `.skn.ron` / `.anim.ron` sidecars are written by the same glam impls
+# bevy_animation_graph reads them back with, instead of hand-formatted RON.
+glam = { version = "0.33", features = ["serde"] }
+ron = "0.10"
+serde = { version = "1", features = ["derive"] }
+gltf = { version = "1.4.0", default-features = false, features = ["import", "utils", "names"] }

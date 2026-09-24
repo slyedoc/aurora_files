@@ -302,6 +302,58 @@ slide, so a large joint rotation stretches the pairing; cables are bound to one 
 across a bending joint. One clip only — no idle, turn or aim states.
 
 
+# UAL (Quaternius, itch.io) — the first SKINNED asset
+
+Universal Animation Library [Standard]: <https://quaternius.itch.io/universal-animation-library>
+(paid, CC0-style licence in `raw/ual/License.txt`). 43 clips on a UE-named rig plus the
+mannequin that rig was authored for. Drop the download under `raw/ual/` so the glb is at
+`raw/ual/Unreal-Godot/UAL1_Standard.glb` (the `_RM` twin is the root-motion export; `Unity/`
+holds the FBX pair, which nothing here reads).
+
+```sh
+# the body: skinned glb -> .cluster_mesh + .bsn
+cargo run --release -p prop_import -- raw/ual/Unreal-Godot/UAL1_Standard.glb assets/ual \
+  --scene-name Mannequin --hierarchy
+# the clips, retargeted onto a rig of your choice (its .bsn), plus .skn.ron / .anim.ron sidecars
+cargo run --release -p animlib_import -- raw/ual/Unreal-Godot/UAL1_Standard.glb \
+  ../zero/assets/ual/Mannequin.bsn ../zero/assets/anim/mannequin \
+  --clips Idle_Loop,Walk_Loop,Jog_Fwd_Loop,Sprint_Loop
+cp -r assets/ual /mnt/code/p/zero/assets/
+cd /mnt/code/p/zero && cargo run --release --example bodies   # beside a make_human bake
+```
+
+| | |
+|---|---|
+| height / pelvis | 1.75 m / 0.917 m |
+| node entities | 68 (1 mesh node + 65 joints + armature + a second primitive) |
+| materials / textures | 2 / 0 (flat orange body, purple joints — a MANNEQUIN, not a character) |
+| clips | 43, 30 fps; v3.0 added root motion to every locomotion clip |
+
+**This is why `from_mesh_flat` learned about skin.** Everything baked before this was rigid:
+the mech's stride is joint ROTATIONS on nested entities, no vertex is bound to anything. A
+skinned source carries `JOINTS_0` / `WEIGHTS_0` per vertex, and the bake was dropping both on
+the floor — the engine's `to_mesh` already read them back out of the v4 slices, so only the
+writer was missing. `build_primitive_mesh` now reads the pair and `emit_node` writes
+`SkinJointsByName` (the glTF skin's joint list, in palette order, which is what `JOINT_INDEX`
+indexes) so aurora's `resolve_skin_joints` can rebuild the real `SkinnedMesh` at spawn.
+
+**Baking a rig onto ITSELF is the retarget's unit test.** `animlib_import` targets any `.bsn`,
+so pointing it at `Mannequin.bsn` should be an identity: it prints `pelvis height 0.917 vs
+source 0.917 (scale 1.000)` and source/target facing agree. It did not, at first, and the two
+failures it exposed were both real:
+
+* `TargetRig` summed bone offsets assuming IDENTITY rest rotations — true of every make_human
+  bake, false here, and it put the mannequin's pelvis at 0.05 m instead of 0.92.
+* The retarget applied the source's delta without the TARGET's own rest rotation
+  (`T = S Sb^-1 align` rather than `... align Tb`). With `Tb` identity on a make_human rig that
+  term vanishes, which is why it went unnoticed; on UAL's rig it splayed every limb.
+
+**The mannequin is a mannequin.** Two flat colours, no textures, no face. It earns its place as
+the animation's ground truth — the pose the clip was authored for, before any retarget — not as
+a character. The Quaternius packs that DO ship characters (Modular Outfits, Base Characters)
+use this same rig and naming, so they drop into the same two commands.
+
+
 # Viewer
 
 Run from the repo root, passing a tab-completed path (add `--features dlss` for DLSS):

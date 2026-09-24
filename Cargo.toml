@@ -24,6 +24,7 @@ members = [
   "importers/speedtree",
   "importers/wow",
   "importers/zeroday",
+  "importers/animlib",
 ]
 exclude = [
   "crates/furnace",
@@ -67,6 +68,9 @@ clap = { version = "4", features = ["derive"] }
 
 [patch."https://github.com/slyedoc/aurora"]
 bevy_aurora = { path = "../aurora" }
+# The cluster-mesh format crate too: the skinned bake (UAL) needed `from_mesh_flat` to carry
+# JOINT_INDEX / JOINT_WEIGHT, which `to_mesh` already read back.
+aurora_cluster_mesh = { path = "../aurora/crates/aurora_cluster_mesh" }
 
 # make_human's manifest reaches bevy/avian/enhanced_input by their upstream
 # URLs (same convention as zero); redirect them onto the one stacked graph.
