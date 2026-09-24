@@ -10,6 +10,7 @@
 //! address. The centre pane is where the preview (R2) and the node canvas (R3) go.
 
 use bevy::{
+    animation::{AnimatedBy, AnimationTargetId},
     feathers::{
         dark_theme::create_dark_theme,
         theme::{ThemedText, UiTheme},
@@ -20,7 +21,11 @@ use bevy::{
 };
 use bevy_animation_graph::{
     core::{
-        animation_clip::GraphClip, animation_graph::AnimationGraph, skeleton::Skeleton,
+        animation_clip::GraphClip,
+        animation_graph::AnimationGraph,
+        animation_graph_player::AnimationGraphPlayer,
+        edge_data::DataValue,
+        skeleton::Skeleton,
         state_machine::high_level::StateMachine,
     },
     AnimationGraphPlugin,
@@ -142,6 +147,10 @@ struct InspectorPane(Entity);
 #[derive(Component)]
 struct SelectionLabel;
 
+/// The centre pane's input-slider column.
+#[derive(Component)]
+struct InputsHost;
+
 /// The browser pane, so the pre-spawned rows can be parented to it.
 #[derive(Component)]
 struct Browser;
@@ -149,6 +158,24 @@ struct Browser;
 /// The inspector pane's parent, so the pre-spawned body can be parented to it.
 #[derive(Component)]
 struct InspectorHost;
+
+/// The rig the preview plays on, and the graph currently armed on it.
+#[derive(Resource)]
+struct Preview {
+    /// Prefab root, so it can be despawned when the rig changes.
+    root: Entity,
+    armature: Option<Entity>,
+    graph: Option<Handle<AnimationGraph>>,
+    skeleton: Handle<Skeleton>,
+}
+
+/// One generated slider's binding: which graph input it drives.
+#[derive(Component)]
+struct GraphInput(String);
+
+/// The pane the generated input sliders live in.
+#[derive(Resource)]
+struct InputsPane(Entity);
 
 /// A handle kept alive while its asset is open, plus what to bind once it finishes loading.
 #[derive(Resource)]
@@ -201,7 +228,7 @@ fn main() {
     // Start with every top-level directory open, so the tree is not a wall of `+`.
     app.insert_resource(BrowserDirty(true));
     app.add_systems(Startup, (scan_library, setup_ui, attach_panes).chain());
-    app.add_systems(Update, (rebuild_browser, bind_when_loaded));
+    app.add_systems(Update, (rebuild_browser, bind_when_loaded, arm_preview));
     app.run();
 }
 
@@ -249,7 +276,7 @@ fn scan_library(mut library: ResMut<Library>, mut expanded: ResMut<Expanded>) {
     );
 }
 
-fn setup_ui(mut commands: Commands, library: Res<Library>) {
+fn setup_ui(mut commands: Commands, assets: Res<AssetServer>) {
     // aurora's render_frame wants exactly one of ITS cameras, so even a UI-only shell needs a
     // 3d one. It also becomes the preview camera at R2.
     commands.spawn((
@@ -259,7 +286,25 @@ fn setup_ui(mut commands: Commands, library: Res<Library>) {
         Transform::from_xyz(0.0, 1.2, -3.2).looking_at(Vec3::new(0.0, 0.95, 0.0), Vec3::Y),
     ));
 
-    // Left: the browser. Centre: preview + canvas, once R2/R3 land. Right: the inspector.
+    // The preview rig: the mannequin, because its clips are an identity retarget and so show
+    // a graph as authored. `Locomotion`-style arming is done here rather than pulled from
+    // zero, which this workspace does not depend on.
+    let root = commands
+        .spawn((
+            Name::new("preview rig"),
+            ScenePatchInstance(assets.load("ual/Mannequin.bsn")),
+            Transform::from_rotation(Quat::from_rotation_y(std::f32::consts::PI)),
+            Visibility::Visible,
+        ))
+        .id();
+    commands.insert_resource(Preview {
+        root,
+        armature: None,
+        graph: None,
+        skeleton: assets.load("ual/Mannequin.skn.ron"),
+    });
+
+    // Left: the browser. Centre: preview + the generated input sliders. Right: the inspector.
     let inspector = commands
         .spawn((
             Name::new("inspector body"),
@@ -306,13 +351,20 @@ fn setup_ui(mut commands: Commands, library: Res<Library>) {
                 Node {
                     flex_grow: 1.0,
                     height: Val::Percent(100.0),
-                    align_items: AlignItems::Center,
-                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::FlexEnd,
+                    justify_content: JustifyContent::FlexEnd,
                     ..default()
                 },
                 Children::spawn(Spawn((
-                    Text::new("preview + canvas land here (R2/R3)"),
-                    ThemedText,
+                    Name::new("inputs"),
+                    InputsHost,
+                    Node {
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(4.0),
+                        padding: UiRect::all(Val::Px(8.0)),
+                        width: Val::Px(320.0),
+                        ..default()
+                    },
                 ))),
             )),
             // inspector
@@ -491,5 +543,109 @@ fn bind_when_loaded(
         type_id: opening.kind.type_id(),
         panel: pane.0,
     });
+    if opening.kind == Kind::Graph {
+        commands.insert_resource(ArmGraph(opening.handle.clone().typed::<AnimationGraph>()));
+    }
     info!("opened {}", opening.path);
+}
+
+/// A graph waiting to be put on the preview rig.
+#[derive(Resource)]
+struct ArmGraph(Handle<AnimationGraph>);
+
+/// Find the rig's armature (once it streams in), swap in an `AnimationGraphPlayer` for the
+/// requested graph, and rebuild the input sliders from the graph's own `io_spec`.
+fn arm_preview(
+    mut commands: Commands,
+    arm: Option<Res<ArmGraph>>,
+    mut preview: ResMut<Preview>,
+    graphs: Res<Assets<AnimationGraph>>,
+    names: Query<&Name>,
+    children: Query<&Children>,
+    host: Single<(Entity, Option<&Children>), With<InputsHost>>,
+) {
+    let Some(arm) = arm else { return };
+    let Some(graph) = graphs.get(&arm.0) else {
+        return;
+    };
+    // Hydrate the name-path components a text `.bsn` cannot carry, exactly as zero's
+    // locomotion module does, then bind the player.
+    let Some(armature) = children
+        .get(preview.root)
+        .ok()
+        .and_then(|kids| {
+            kids.iter()
+                .find(|&k| names.get(k).is_ok_and(|n| n.as_str() == "Armature"))
+        })
+    else {
+        return;
+    };
+    let Ok(bones) = children.get(armature) else {
+        return;
+    };
+    let root_name = Name::new("Armature");
+    commands.entity(armature).insert((
+        AnimationTargetId::from_names([root_name.clone()].iter()),
+        AnimatedBy(preview.root),
+    ));
+    let mut stack: Vec<(Entity, Vec<Name>)> = bones
+        .iter()
+        .map(|bone| (bone, vec![root_name.clone()]))
+        .collect();
+    while let Some((bone, path)) = stack.pop() {
+        let Ok(name) = names.get(bone) else { continue };
+        let mut path = path;
+        path.push(name.clone());
+        commands.entity(bone).insert((
+            AnimationTargetId::from_names(path.iter()),
+            AnimatedBy(armature),
+        ));
+        if let Ok(kids) = children.get(bone) {
+            stack.extend(kids.iter().map(|kid| (kid, path.clone())));
+        }
+    }
+    commands
+        .entity(armature)
+        .remove::<AnimationPlayer>()
+        .insert(AnimationGraphPlayer::new(preview.skeleton.clone()).with_graph(arm.0.clone()));
+    preview.armature = Some(armature);
+    preview.graph = Some(arm.0.clone());
+
+    // One row per F32 input, seeded from the graph's own default. `default_data` rather than
+    // `io_spec.input_data` because the spec's map has no public reader — and the defaults are
+    // what a slider wants to start at anyway.
+    let (host_entity, existing) = *host;
+    if let Some(existing) = existing {
+        for child in existing.iter() {
+            commands.entity(child).despawn();
+        }
+    }
+    let mut rows = Vec::new();
+    let mut inputs: Vec<(String, f32)> = graph
+        .default_data
+        .iter()
+        .filter_map(|(pin, value)| match value {
+            DataValue::F32(v) => Some((format!("{pin:?}"), *v)),
+            _ => None,
+        })
+        .collect();
+    inputs.sort_by(|a, b| a.0.cmp(&b.0));
+    for (name, value) in inputs {
+        let label = format!("{name} = {value:.2}");
+        rows.push(
+            commands
+                .spawn((
+                    Node {
+                        flex_direction: FlexDirection::Column,
+                        ..default()
+                    },
+                    GraphInput(name.clone()),
+                    Children::spawn(Spawn((Text::new(label), ThemedText))),
+                ))
+                .id(),
+        );
+    }
+    commands.entity(host_entity).add_children(&rows);
+    commands.remove_resource::<ArmGraph>();
+    info!("preview armed, {} f32 inputs", rows.len());
 }
