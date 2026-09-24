@@ -46,6 +46,7 @@ use bevy_aurora::{
     dev_shaders::DevShaderPlugin,
     dev_ui::DevUIPlugin,
     ray_default_plugins::RayDefaultPlugins,
+    ui_render::UiPolyline,
     util::{ScreenshotExt, TimeoutAppExt},
 };
 use clap::Parser;
@@ -1317,7 +1318,7 @@ fn draw_canvas(
         } else {
             Color::srgba(0.35, 0.55, 0.85, 0.85)
         };
-        children.extend(manhattan(&mut commands, to_px(*from), to_px(*to), zoom, color));
+        children.push(curve(&mut commands, to_px(*from), to_px(*to), zoom, color));
         drawn += 1;
     }
 
@@ -1920,51 +1921,52 @@ fn one_line(value: &dyn PartialReflect) -> String {
     }
 }
 
-/// Three rectangles: out from the source, across, then in to the target. No rotation, so this
-/// is plain bevy_ui — which is why the canvas needed no rendering work.
-fn manhattan(
-    commands: &mut Commands,
-    from: Vec2,
-    to: Vec2,
-    zoom: f32,
-    color: Color,
-) -> Vec<Entity> {
-    let thickness = (LINK_THICKNESS * zoom).max(1.0);
-    // Step out of the source before turning, so a link leaving a pin is readable even when the
-    // target sits to its left (a feedback edge) and the midpoint lands inside the box.
-    let stub = 14.0 * zoom;
-    let mid_x = if to.x > from.x + stub * 2.0 {
-        (from.x + to.x) * 0.5
+/// One cubic bezier per link, as an aurora [`UiPolyline`] — a single entity, where the
+/// manhattan routing this replaced took three.
+///
+/// The curve leaves the source pin horizontally and arrives at the target the same way, which
+/// is the convention every node editor uses, and it is why the control offset grows with the
+/// horizontal gap: a short link stays taut, a long one bows. A BACKWARD link (the target sits
+/// left of the source, a feedback edge) gets a wide offset instead, so it bulges out around the
+/// boxes rather than doubling back through them.
+fn curve(commands: &mut Commands, from: Vec2, to: Vec2, zoom: f32, color: Color) -> Entity {
+    let gap = to.x - from.x;
+    let reach = if gap > 0.0 {
+        (gap * 0.5).clamp(30.0 * zoom, 180.0 * zoom)
     } else {
-        from.x + stub
+        (60.0 - gap * 0.35).min(320.0) * zoom
     };
-    let mut rect = |x: f32, y: f32, w: f32, h: f32| {
-        commands
-            .spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(x),
-                    top: Val::Px(y),
-                    width: Val::Px(w.max(thickness)),
-                    height: Val::Px(h.max(thickness)),
-                    ..default()
-                },
-                BackgroundColor(color),
-                // Links must not swallow a background drag meant to pan the canvas.
-                Pickable::IGNORE,
-            ))
-            .id()
-    };
-    vec![
-        rect(
-            from.x.min(mid_x),
-            from.y,
-            (mid_x - from.x).abs(),
-            thickness,
-        ),
-        rect(mid_x, from.y.min(to.y), thickness, (to.y - from.y).abs()),
-        rect(mid_x.min(to.x), to.y, (to.x - mid_x).abs(), thickness),
-    ]
+    let points = UiPolyline::bezier(
+        from,
+        from + Vec2::new(reach, 0.0),
+        to - Vec2::new(reach, 0.0),
+        to,
+        // Enough segments that the longest link reads as a curve, few enough that a canvas of
+        // forty does not become ten thousand quads.
+        ((from.distance(to) / 14.0) as usize).clamp(8, 28),
+    );
+    commands
+        .spawn((
+            // The polyline's points are in ITS node's space, so the node spans the canvas and
+            // the points are the canvas pixels already computed.
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                top: Val::Px(0.0),
+                right: Val::Px(0.0),
+                bottom: Val::Px(0.0),
+                ..default()
+            },
+            UiPolyline {
+                points,
+                thickness: LINK_THICKNESS * zoom,
+                color,
+                closed: false,
+            },
+            // A full-canvas node would otherwise swallow every background drag meant to pan.
+            Pickable::IGNORE,
+        ))
+        .id()
 }
 
 /// Ctrl+S: write the open graph back to its `.ron`, carrying the canvas layout into

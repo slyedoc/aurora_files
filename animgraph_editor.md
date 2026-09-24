@@ -124,9 +124,20 @@ its reflection to the inner value, or give the inspector a root that resolves th
 rather than a `ParsedPath`. Upstream sidesteps both with `ReflectEditProxy`, which converts a node
 to and from a plain reflectable proxy struct; that is probably the right seam here too.
 
-**R5 — curves.** Swap manhattan links for beziers. aurora's `UiQuad` carries an arbitrary
-`Affine2`, so a curve is N thin ROTATED quads through the existing pipeline — it needs a small
-`UiPolyline` extract in `ui_render.rs`, not a new shader or pass.
+**R5 — curves (DONE).** Links are cubic beziers now, one `UiPolyline` entity each where the
+manhattan routing took three rectangles. The primitive lives in aurora (`ui_render.rs`,
+`ff56585`) and it needed no shader and no pass: `UiQuad::transform` is an arbitrary `Affine2` and
+`UiItem::Node` already carries node-LOCAL `size`, `point` and corner radius, so a segment is one
+ROTATED quad through the ordinary node path and the round ends come free from the radius the
+fragment shader applies in that local space. Overlapping segments by half a thickness at each end
+is what makes the joins continuous rather than notching on the outside of every bend.
+
+A curve leaves its source pin horizontally and arrives at its target the same way, which is the
+convention every node editor uses; the control offset grows with the horizontal gap so a short
+link stays taut and a long one bows. A BACKWARD link (the target sits left of the source, a
+feedback edge) gets a wide offset instead, so it bulges around the boxes rather than doubling back
+through them. Segment count scales with length, 8 to 28, so forty links do not become ten thousand
+quads.
 
 **Deferred past R5:** the FSM editor, the event-track editor, the ragdoll editor. Each is its own
 sub-editor upstream and none blocks authoring a locomotion graph.
