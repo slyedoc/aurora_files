@@ -43,7 +43,9 @@ use bevy_animation_graph::{
         },
         edge_data::{DataSpec, DataValue},
         skeleton::Skeleton,
-        state_machine::high_level::StateMachine,
+        state_machine::high_level::{
+            serial::StateMachineSerial, DirectTransition, StateId, StateMachine,
+        },
     },
     AnimationGraphPlugin,
 };
@@ -843,6 +845,7 @@ fn bind_when_loaded(
     assets: Res<AssetServer>,
     pane: Res<InspectorPane>,
     graphs: Res<Assets<AnimationGraph>>,
+    fsms: Res<Assets<StateMachine>>,
     args: Res<Args>,
     mut view: ResMut<CanvasView>,
     mut selected: ResMut<Selected>,
@@ -866,6 +869,7 @@ fn bind_when_loaded(
         let handle = opening.handle.clone().typed::<AnimationGraph>();
         if let Some(graph) = graphs.get(&handle) {
             seed_layout(&mut view, graph);
+            view.fsm = None;
             view.graph = Some(handle.clone());
             view.path = Some(opening.path.clone());
             view.dirty = true;
@@ -874,7 +878,7 @@ fn bind_when_loaded(
                     .nodes
                     .iter()
                     .find(|(_, node)| &node.name == want)
-                    .map(|(id, _)| *id);
+                    .map(|(id, _)| id.uuid());
                 selected.dirty = true;
                 if selected.node.is_none() {
                     warn!("--select {want}: no node by that name");
@@ -882,6 +886,16 @@ fn bind_when_loaded(
             }
         }
         commands.insert_resource(ArmGraph(handle));
+    }
+    if opening.kind == Kind::StateMachine {
+        let handle = opening.handle.clone().typed::<StateMachine>();
+        if let Some(fsm) = fsms.get(&handle) {
+            seed_fsm_layout(&mut view, fsm);
+            view.graph = None;
+            view.fsm = Some(handle);
+            view.path = Some(opening.path.clone());
+            view.dirty = true;
+        }
     }
     info!("opened {}", opening.path);
 }
@@ -1024,12 +1038,39 @@ fn seed_layout(view: &mut CanvasView, graph: &AnimationGraph) {
         let column = depth[id];
         let y = column_y.entry(column).or_insert(0.0);
         view.positions
-            .insert(*id, Vec2::new(column as f32 * (NODE_W + 80.0), *y));
+            .insert(id.uuid(), Vec2::new(column as f32 * (NODE_W + 80.0), *y));
         *y += 130.0;
     }
     let last = depth.values().copied().max().unwrap_or(0);
     view.input_pos = Vec2::new(-(NODE_W + 80.0), 0.0);
     view.output_pos = Vec2::new((last + 1) as f32 * (NODE_W + 80.0), 0.0);
+    frame_layout(view);
+}
+
+/// Take the state machine's authored layout, or lay it out in a column.
+///
+/// An FSM has no evaluation order to lay out ALONG — a state machine is a cycle by nature —
+/// so the fallback is a plain column rather than the graph's longest-path layering. Dragging
+/// and saving is how a real arrangement gets made.
+fn seed_fsm_layout(view: &mut CanvasView, fsm: &StateMachine) {
+    view.positions.clear();
+    view.pan = Vec2::splat(24.0);
+    view.zoom = 1.0;
+    let authored = fsm.editor_metadata.states.values().any(|p| *p != Vec2::ZERO);
+    let mut ids: Vec<StateId> = fsm.states.keys().copied().collect();
+    ids.sort_by_key(|id| format!("{id:?}"));
+    for (i, id) in ids.iter().enumerate() {
+        let pos = if authored {
+            fsm.editor_metadata
+                .states
+                .get(id)
+                .copied()
+                .unwrap_or(Vec2::ZERO)
+        } else {
+            Vec2::new((i % 3) as f32 * (NODE_W + 90.0), (i / 3) as f32 * 130.0)
+        };
+        view.positions.insert(id.uuid(), pos);
+    }
     frame_layout(view);
 }
 
@@ -1227,28 +1268,43 @@ enum BoxKind {
 /// One pin row, and what a link dropped on it would connect. The `DataSpec` rides along so a
 /// wiring drag can reject a mismatch without going back to the graph for the spec — `None` is a
 /// TIME pin, which only ever connects to another time pin.
-#[derive(Component, Clone)]
+#[derive(Component, Clone, PartialEq)]
 enum PinSocket {
     Source(SourcePin, Option<DataSpec>),
     Target(TargetPin, Option<DataSpec>),
+    /// A state's outgoing side. A state machine has no pin TYPES — a transition is a
+    /// transition — so these carry no `DataSpec` and only ever meet each other.
+    StateOut(StateId),
+    StateIn(StateId),
+}
+
+/// What dropping one pin on another would make.
+enum Wire {
+    Edge(SourcePin, TargetPin),
+    /// Source state, target state.
+    Transition(StateId, StateId),
 }
 
 impl PinSocket {
     fn spec(&self) -> Option<DataSpec> {
         match self {
             Self::Source(_, spec) | Self::Target(_, spec) => *spec,
+            Self::StateOut(_) | Self::StateIn(_) => None,
         }
     }
 
-    /// A link runs source to target, and a time pin only ever meets a time pin.
-    fn connects(&self, other: &Self) -> Option<(SourcePin, TargetPin)> {
-        if self.spec() != other.spec() {
-            return None;
-        }
+    /// A link runs source to target, a time pin only ever meets a time pin, and a state pin
+    /// only ever meets a state pin.
+    fn connects(&self, other: &Self) -> Option<Wire> {
         match (self, other) {
-            (Self::Source(source, _), Self::Target(target, _))
-            | (Self::Target(target, _), Self::Source(source, _)) => {
-                Some((source.clone(), target.clone()))
+            (Self::StateOut(from), Self::StateIn(to))
+            | (Self::StateIn(to), Self::StateOut(from)) => {
+                // A self-transition is a real thing in an FSM, so this does not reject it.
+                Some(Wire::Transition(*from, *to))
+            }
+            (Self::Source(source, a), Self::Target(target, b))
+            | (Self::Target(target, b), Self::Source(source, a)) if a == b => {
+                Some(Wire::Edge(source.clone(), target.clone()))
             }
             _ => None,
         }
@@ -1260,10 +1316,10 @@ struct Boxed {
     pos: Vec2,
     title: String,
     kind: BoxKind,
-    /// Left-hand pins, top to bottom, each with the edge target it terminates.
-    inputs: Vec<(String, TargetPin, Option<DataSpec>)>,
-    /// Right-hand pins, top to bottom, each with the edge source it originates.
-    outputs: Vec<(String, SourcePin, Option<DataSpec>)>,
+    /// Left-hand pins, top to bottom: a label and what a link dropped there would connect.
+    inputs: Vec<(String, PinSocket)>,
+    /// Right-hand pins, top to bottom.
+    outputs: Vec<(String, PinSocket)>,
 }
 
 impl Boxed {
@@ -1292,9 +1348,11 @@ fn node_spec(
     .unwrap_or_default()
 }
 
-/// R3: draw the graph. A box per node with its real pin rows, plus the two graph-level rails,
-/// and a link per edge MANHATTAN-routed as three plain rectangles — ordinary bevy_ui, with no
-/// line primitive and no new render pass.
+/// Draw whatever is open: an animation graph, or a state machine.
+///
+/// One canvas serves both. A graph node and an FSM state are the same THING here — a box with
+/// pin rows, a position and a drag handler — so the split is only in what produces the boxes
+/// and what resolves the links between them.
 fn draw_canvas(
     mut commands: Commands,
     mut view: ResMut<CanvasView>,
@@ -1305,11 +1363,25 @@ fn draw_canvas(
     if !view.dirty {
         return;
     }
-    let Some(handle) = view.graph.clone() else {
-        view.dirty = false;
-        return;
+    // Endpoints come back in canvas coordinates; the draw pass below maps them to pixels.
+    let built = match (&view.graph, &view.fsm) {
+        (Some(handle), _) => graphs.get(handle).map(|graph| {
+            let boxes = graph_boxes(&view, graph, &graphs, &fsms);
+            let links = graph_links(graph, &boxes);
+            (boxes, links, graph.nodes.len())
+        }),
+        (_, Some(handle)) => fsms.get(handle).map(|fsm| {
+            let boxes = fsm_boxes(&view, fsm);
+            let links = fsm_links(fsm, &boxes);
+            (boxes, links, fsm.states.len())
+        }),
+        _ => {
+            view.dirty = false;
+            return;
+        }
     };
-    let Some(graph) = graphs.get(&handle) else {
+    // Still streaming: stay dirty and try again next frame.
+    let Some((boxes, links, count)) = built else {
         return;
     };
     view.dirty = false;
@@ -1321,8 +1393,32 @@ fn draw_canvas(
         }
     }
 
-    let mut boxes: Vec<Boxed> = Vec::new();
+    let zoom = view.zoom;
+    let pan = view.pan;
+    let to_px = |p: Vec2| p * zoom + pan;
+    let mut children = Vec::new();
+    // Links first, so the boxes draw over them.
+    for (from, to, color) in &links {
+        children.push(curve(&mut commands, to_px(*from), to_px(*to), zoom, *color));
+    }
+    for boxed in &boxes {
+        children.push(spawn_box(&mut commands, boxed, to_px(boxed.pos), zoom));
+    }
+    commands.entity(canvas_entity).add_children(&children);
+    info!(
+        "canvas: {count} boxes, {} links, zoom {zoom:.2}",
+        links.len()
+    );
+}
 
+/// A graph's nodes, plus the two graph-level rails.
+fn graph_boxes(
+    view: &CanvasView,
+    graph: &AnimationGraph,
+    graphs: &Assets<AnimationGraph>,
+    fsms: &Assets<StateMachine>,
+) -> Vec<Boxed> {
+    let mut boxes = Vec::new();
     // The graph's own inputs are SOURCES on the canvas, and its outputs are TARGETS: the rails
     // are ordinary boxes with one side empty.
     boxes.push(Boxed {
@@ -1337,12 +1433,12 @@ fn draw_canvas(
             .map(|input| match input {
                 NodeInput::Time(pin) => (
                     format!("t {}", pin_name(&pin)),
-                    SourcePin::InputTime(pin),
-                    None,
+                    PinSocket::Source(SourcePin::InputTime(pin), None),
                 ),
-                NodeInput::Data(pin, spec) => {
-                    (pin_name(&pin), SourcePin::InputData(pin), Some(spec))
-                }
+                NodeInput::Data(pin, spec) => (
+                    pin_name(&pin),
+                    PinSocket::Source(SourcePin::InputData(pin), Some(spec)),
+                ),
             })
             .collect(),
     });
@@ -1355,10 +1451,14 @@ fn draw_canvas(
             .sorted_outputs()
             .into_iter()
             .map(|output| match output {
-                NodeOutput::Time => ("t".to_string(), TargetPin::OutputTime, None),
-                NodeOutput::Data(pin, spec) => {
-                    (pin.clone(), TargetPin::OutputData(pin), Some(spec))
-                }
+                NodeOutput::Time => (
+                    "t".to_string(),
+                    PinSocket::Target(TargetPin::OutputTime, None),
+                ),
+                NodeOutput::Data(pin, spec) => (
+                    pin.clone(),
+                    PinSocket::Target(TargetPin::OutputData(pin), Some(spec)),
+                ),
             })
             .collect(),
         outputs: Vec::new(),
@@ -1370,7 +1470,7 @@ fn draw_canvas(
         let Some(node) = graph.nodes.get(id) else {
             continue;
         };
-        let spec = node_spec(node, &graphs, &fsms);
+        let spec = node_spec(node, graphs, fsms);
         boxes.push(Boxed {
             pos: view.positions.get(&id.uuid()).copied().unwrap_or(Vec2::ZERO),
             title: if node.name.is_empty() {
@@ -1385,76 +1485,119 @@ fn draw_canvas(
                 .map(|input| match input {
                     NodeInput::Time(pin) => (
                         format!("t {pin}"),
-                        TargetPin::NodeTime(*id, pin),
-                        None,
+                        PinSocket::Target(TargetPin::NodeTime(*id, pin), None),
                     ),
-                    NodeInput::Data(pin, spec) => {
-                        (pin.clone(), TargetPin::NodeData(*id, pin), Some(spec))
-                    }
+                    NodeInput::Data(pin, spec) => (
+                        pin.clone(),
+                        PinSocket::Target(TargetPin::NodeData(*id, pin), Some(spec)),
+                    ),
                 })
                 .collect(),
             outputs: spec
                 .sorted_outputs()
                 .into_iter()
                 .map(|output| match output {
-                    NodeOutput::Time => ("t".to_string(), SourcePin::NodeTime(*id), None),
-                    NodeOutput::Data(pin, spec) => {
-                        (pin.clone(), SourcePin::NodeData(*id, pin), Some(spec))
-                    }
+                    NodeOutput::Time => (
+                        "t".to_string(),
+                        PinSocket::Source(SourcePin::NodeTime(*id), None),
+                    ),
+                    NodeOutput::Data(pin, spec) => (
+                        pin.clone(),
+                        PinSocket::Source(SourcePin::NodeData(*id, pin), Some(spec)),
+                    ),
                 })
                 .collect(),
         });
     }
+    boxes
+}
 
-    // Endpoint tables in canvas coordinates, so a link is two lookups rather than a search.
-    let zoom = view.zoom;
-    let pan = view.pan;
-    let to_px = |p: Vec2| p * zoom + pan;
+/// One resolved link per edge: `(from, to, colour)` in canvas coordinates.
+fn graph_links(graph: &AnimationGraph, boxes: &[Boxed]) -> Vec<(Vec2, Vec2, Color)> {
     let mut source_at: std::collections::HashMap<&SourcePin, Vec2> =
         std::collections::HashMap::new();
     let mut target_at: std::collections::HashMap<&TargetPin, Vec2> =
         std::collections::HashMap::new();
-    for boxed in &boxes {
-        for (i, (_, pin, _)) in boxed.inputs.iter().enumerate() {
-            target_at.insert(pin, boxed.pos + Vec2::new(0.0, boxed.pin_y(i)));
+    for boxed in boxes {
+        for (i, (_, socket)) in boxed.inputs.iter().enumerate() {
+            if let PinSocket::Target(pin, _) = socket {
+                target_at.insert(pin, boxed.pos + Vec2::new(0.0, boxed.pin_y(i)));
+            }
         }
-        for (i, (_, pin, _)) in boxed.outputs.iter().enumerate() {
-            source_at.insert(pin, boxed.pos + Vec2::new(NODE_W, boxed.pin_y(i)));
+        for (i, (_, socket)) in boxed.outputs.iter().enumerate() {
+            if let PinSocket::Source(pin, _) = socket {
+                source_at.insert(pin, boxed.pos + Vec2::new(NODE_W, boxed.pin_y(i)));
+            }
         }
     }
+    graph
+        .edges_inverted
+        .iter()
+        .filter_map(|(target, source)| {
+            let (from, to) = (source_at.get(source)?, target_at.get(target)?);
+            // Time edges carry the clock, data edges carry poses and values: colour them
+            // apart, so the timing spine of a graph is visible at a glance.
+            let is_time = matches!(target, TargetPin::NodeTime(..) | TargetPin::OutputTime);
+            let color = if is_time {
+                Color::srgba(0.85, 0.62, 0.30, 0.85)
+            } else {
+                Color::srgba(0.35, 0.55, 0.85, 0.85)
+            };
+            Some((*from, *to, color))
+        })
+        .collect()
+}
 
-    let mut children = Vec::new();
+/// A state machine's states. Each is one box with one pin a side — a transition has no type to
+/// agree on, so there is nothing else to draw.
+fn fsm_boxes(view: &CanvasView, fsm: &StateMachine) -> Vec<Boxed> {
+    let mut ids: Vec<StateId> = fsm.states.keys().copied().collect();
+    ids.sort_by_key(|id| format!("{id:?}"));
+    ids.iter()
+        .filter_map(|id| {
+            let state = fsm.states.get(id)?;
+            let start = fsm.start_state == *id;
+            Some(Boxed {
+                pos: view.positions.get(&id.uuid()).copied().unwrap_or(Vec2::ZERO),
+                // The start state is where the machine begins and there is exactly one, so it
+                // is worth seeing without opening the inspector.
+                title: if start {
+                    format!("{}  (start)", state.label)
+                } else {
+                    state.label.clone()
+                },
+                kind: BoxKind::Node(id.uuid()),
+                inputs: vec![("in".to_string(), PinSocket::StateIn(*id))],
+                outputs: vec![("out".to_string(), PinSocket::StateOut(*id))],
+            })
+        })
+        .collect()
+}
 
-    // Links first, so the boxes draw over them.
-    let mut drawn = 0;
-    for (target, source) in graph.edges_inverted.iter() {
-        let (Some(from), Some(to)) = (source_at.get(source), target_at.get(target)) else {
-            continue;
-        };
-        // Time edges carry the clock, data edges carry poses and values: colour them apart, so
-        // the timing spine of a graph is visible at a glance.
-        let is_time = matches!(target, TargetPin::NodeTime(..) | TargetPin::OutputTime);
-        let color = if is_time {
-            Color::srgba(0.85, 0.62, 0.30, 0.85)
-        } else {
-            Color::srgba(0.35, 0.55, 0.85, 0.85)
-        };
-        children.push(curve(&mut commands, to_px(*from), to_px(*to), zoom, color));
-        drawn += 1;
+/// One resolved link per transition.
+fn fsm_links(fsm: &StateMachine, boxes: &[Boxed]) -> Vec<(Vec2, Vec2, Color)> {
+    let mut out_at: std::collections::HashMap<StateId, Vec2> = std::collections::HashMap::new();
+    let mut in_at: std::collections::HashMap<StateId, Vec2> = std::collections::HashMap::new();
+    for boxed in boxes {
+        for (i, (_, socket)) in boxed.inputs.iter().enumerate() {
+            if let PinSocket::StateIn(id) = socket {
+                in_at.insert(*id, boxed.pos + Vec2::new(0.0, boxed.pin_y(i)));
+            }
+        }
+        for (i, (_, socket)) in boxed.outputs.iter().enumerate() {
+            if let PinSocket::StateOut(id) = socket {
+                out_at.insert(*id, boxed.pos + Vec2::new(NODE_W, boxed.pin_y(i)));
+            }
+        }
     }
-
-    for boxed in &boxes {
-        children.push(spawn_box(&mut commands, boxed, to_px(boxed.pos), zoom));
-    }
-
-    commands.entity(canvas_entity).add_children(&children);
-    info!(
-        "canvas: {} nodes, {}/{} links drawn, zoom {:.2}",
-        graph.nodes.len(),
-        drawn,
-        graph.edges_inverted.len(),
-        zoom
-    );
+    fsm.transitions
+        .values()
+        .filter_map(|transition| {
+            let from = out_at.get(&transition.source)?;
+            let to = in_at.get(&transition.target)?;
+            Some((*from, *to, Color::srgba(0.62, 0.48, 0.85, 0.9)))
+        })
+        .collect()
 }
 
 /// One box: a title strip, then the input pins down the left and the output pins down the
@@ -1536,7 +1679,8 @@ fn spawn_box(commands: &mut Commands, boxed: &Boxed, px: Vec2, zoom: f32) -> Ent
                  sockets: Query<&PinSocket>,
                  mut view: ResMut<CanvasView>,
                  mut wiring: ResMut<Wiring>,
-                 mut graphs: ResMut<Assets<AnimationGraph>>| {
+                 mut graphs: ResMut<Assets<AnimationGraph>>,
+                 mut fsms: ResMut<Assets<StateMachine>>| {
                     drop.propagate(false);
                     wiring.0 = None;
                     let (Ok(onto), Ok(from)) =
@@ -1544,17 +1688,40 @@ fn spawn_box(commands: &mut Commands, boxed: &Boxed, px: Vec2, zoom: f32) -> Ent
                     else {
                         return;
                     };
-                    let Some((source, target)) = from.connects(onto) else {
+                    let Some(wire) = from.connects(onto) else {
                         info!("wiring: those two pins do not connect");
                         return;
                     };
-                    let Some(handle) = view.graph.clone() else {
-                        return;
-                    };
-                    let Some(mut graph) = graphs.get_mut(&handle) else {
-                        return;
-                    };
-                    connect(&mut graph, source, target);
+                    match wire {
+                        Wire::Edge(source, target) => {
+                            let Some(handle) = view.graph.clone() else {
+                                return;
+                            };
+                            let Some(mut graph) = graphs.get_mut(&handle) else {
+                                return;
+                            };
+                            connect(&mut graph, source, target);
+                        }
+                        Wire::Transition(from, to) => {
+                            let Some(handle) = view.fsm.clone() else {
+                                return;
+                            };
+                            let Some(mut fsm) = fsms.get_mut(&handle) else {
+                                return;
+                            };
+                            // `add_transition_from_ui` validates that both states exist and
+                            // rebuilds the low-level FSM, which is what actually runs.
+                            if let Err(err) = fsm.add_transition_from_ui(DirectTransition {
+                                id: Uuid::new_v4().into(),
+                                source: from,
+                                target: to,
+                                data: default(),
+                            }) {
+                                warn!("wiring: {err:?}");
+                                return;
+                            }
+                        }
+                    }
                     view.dirty = true;
                 },
             )
@@ -1602,18 +1769,8 @@ fn spawn_box(commands: &mut Commands, boxed: &Boxed, px: Vec2, zoom: f32) -> Ent
             .id()
     };
 
-    let in_pins: Vec<(String, PinSocket)> = boxed
-        .inputs
-        .iter()
-        .map(|(label, pin, spec)| (label.clone(), PinSocket::Target(pin.clone(), *spec)))
-        .collect();
-    let out_pins: Vec<(String, PinSocket)> = boxed
-        .outputs
-        .iter()
-        .map(|(label, pin, spec)| (label.clone(), PinSocket::Source(pin.clone(), *spec)))
-        .collect();
-    let left = column(commands, in_pins, false);
-    let right = column(commands, out_pins, true);
+    let left = column(commands, boxed.inputs.clone(), false);
+    let right = column(commands, boxed.outputs.clone(), true);
 
     let header = commands
         .spawn((
@@ -1962,8 +2119,8 @@ fn delete_selected(
     let Some(mut graph) = graphs.get_mut(&handle) else {
         return;
     };
-    let cut = delete_node(&mut graph, id);
-    view.positions.remove(&id.uuid());
+    let cut = delete_node(&mut graph, id.into());
+    view.positions.remove(&id);
     view.dirty = true;
     selected.node = None;
     selected.dirty = true;
@@ -2040,7 +2197,7 @@ fn show_node_params(
 fn selected_node(world: &World) -> Option<(NodeId, Handle<AnimationGraph>)> {
     let id = world.get_resource::<Selected>()?.node?;
     let handle = world.get_resource::<CanvasView>()?.graph.clone()?;
-    Some((id, handle))
+    Some((id.into(), handle))
 }
 
 fn read_selected_node(world: &World, visit: &mut dyn FnMut(&dyn Reflect)) {
@@ -2128,6 +2285,7 @@ fn save_graph(
     keys: Res<ButtonInput<KeyCode>>,
     view: Res<CanvasView>,
     graphs: Res<Assets<AnimationGraph>>,
+    fsms: Res<Assets<StateMachine>>,
     registry: Res<AppTypeRegistry>,
 ) {
     if !keys.just_pressed(KeyCode::KeyS)
@@ -2135,7 +2293,7 @@ fn save_graph(
     {
         return;
     }
-    write_graph(&view, &graphs, &registry);
+    write_graph(&view, &graphs, &fsms, &registry);
 }
 
 /// `--save-layout`: lay the open graph out, write it, and exit. The wait is for the asset to
@@ -2144,13 +2302,16 @@ fn save_layout_and_exit(
     args: Res<Args>,
     view: Res<CanvasView>,
     graphs: Res<Assets<AnimationGraph>>,
+    fsms: Res<Assets<StateMachine>>,
     registry: Res<AppTypeRegistry>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    if !args.save_layout || view.graph.is_none() {
+    // Either asset will do — an FSM open means `graph` is None and vice versa. Gating on the
+    // graph alone left `--save-layout` on an `.fsm.ron` sitting in a window for ever.
+    if !args.save_layout || (view.graph.is_none() && view.fsm.is_none()) {
         return;
     }
-    write_graph(&view, &graphs, &registry);
+    write_graph(&view, &graphs, &fsms, &registry);
     exit.write(AppExit::Success);
 }
 
@@ -2158,8 +2319,13 @@ fn save_layout_and_exit(
 fn write_graph(
     view: &CanvasView,
     graphs: &Assets<AnimationGraph>,
+    fsms: &Assets<StateMachine>,
     registry: &AppTypeRegistry,
 ) {
+    if view.fsm.is_some() {
+        write_fsm(view, fsms);
+        return;
+    }
     let (Some(handle), Some(path)) = (&view.graph, &view.path) else {
         return;
     };
@@ -2410,7 +2576,7 @@ fn check_node_edit(world: &mut World) -> Result<String, String> {
     let (id, field) = graph
         .nodes
         .iter()
-        .find_map(|(id, node)| first_bool(node.inner_ref()).map(|(name, _)| (*id, name)))
+        .find_map(|(id, node)| first_bool(node.inner_ref()).map(|(name, _)| (id.uuid(), name)))
         .ok_or("no node in this graph has a bool to flip")?;
     world.resource_mut::<Selected>().node = Some(id);
 
@@ -2449,4 +2615,48 @@ fn first_bool(value: &dyn Reflect) -> Option<(String, bool)> {
         let value = *field.try_as_reflect()?.downcast_ref::<bool>()?;
         Some((body.name_at(i)?.to_string(), value))
     })
+}
+
+/// Write the open state machine back to its `.ron`, layout included.
+///
+/// Simpler than the graph's: `StateMachineSerial` is a plain `TryFrom<&StateMachine>`, with no
+/// dyn node bodies to route through the type registry.
+fn write_fsm(view: &CanvasView, fsms: &Assets<StateMachine>) {
+    let (Some(handle), Some(path)) = (&view.fsm, &view.path) else {
+        return;
+    };
+    let Some(fsm) = fsms.get(handle) else {
+        return;
+    };
+    let mut fsm = fsm.clone();
+    for (id, pos) in &view.positions {
+        fsm.editor_metadata.states.insert((*id).into(), *pos);
+    }
+    let serial = match StateMachineSerial::try_from(&fsm) {
+        Ok(serial) => serial,
+        Err(err) => {
+            error!("save {path}: {err:?}");
+            return;
+        }
+    };
+    let text = match ron::ser::to_string_pretty(&serial, ron::ser::PrettyConfig::default()) {
+        Ok(text) => text,
+        Err(err) => {
+            error!("save {path}: {err}");
+            return;
+        }
+    };
+    let file = PathBuf::from(std::env::var_os("BEVY_ASSET_ROOT").expect("set in main"))
+        .join("assets")
+        .join(path);
+    let existing = std::fs::read_to_string(&file).unwrap_or_default();
+    let text = format!("{}{text}", leading_comment(&existing));
+    let backup = file.with_extension("ron.bak");
+    if file.exists() && !backup.exists() {
+        let _ = std::fs::copy(&file, &backup);
+    }
+    match std::fs::write(&file, text) {
+        Ok(()) => info!("saved {}", file.display()),
+        Err(err) => error!("save {}: {err}", file.display()),
+    }
 }

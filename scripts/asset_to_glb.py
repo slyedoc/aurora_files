@@ -663,6 +663,10 @@ def main():
         use_selection=True,
         export_apply=True,
         export_materials="EXPORT",
+        # Carries object custom properties into each node's `extras`. That is how a
+        # proxy empty tagged ["bsn"] = "x.bsn" in Blender reaches the importer, which
+        # swaps it for a scene reference (see aurora_bsn::gltf::bsn_proxy).
+        export_extras=True,
         export_cameras=False,
         export_lights=False,
         export_yup=True,

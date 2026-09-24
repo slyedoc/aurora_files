@@ -37,3 +37,4 @@ gltf = { version = "1.4.0", default-features = false, features = [
   # Bistro.glb lists this in extensionsRequired; the lights themselves are not imported.
   "KHR_lights_punctual",
 ] }
+serde_json = "1.0.151"

@@ -85,6 +85,7 @@ pub fn bake_gltf_scene(cfg: &GltfConfig) {
         entities: String::new(),
         emitted: 0,
         baked_count: 0,
+        proxies: 0,
         failed_count: 0,
     };
 
@@ -156,6 +157,7 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
         entities: String::new(),
         emitted: 0,
         baked_count: 0,
+        proxies: 0,
         failed_count: 0,
     };
 
@@ -252,6 +254,8 @@ struct Ctx<'a> {
     entities: String,
     emitted: usize,
     baked_count: usize,
+    /// Nodes swapped for a `.bsn` reference (see [`bsn_proxy`]).
+    proxies: usize,
     failed_count: usize,
 }
 
@@ -355,6 +359,7 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
         entities: String::new(),
         emitted: 0,
         baked_count: 0,
+        proxies: 0,
         failed_count: 0,
     };
 
@@ -388,6 +393,23 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
 /// Emit one node as a `.bsn` entity block (comma-terminated) at `depth`, recursing into children.
 /// Every node carries a `Name` (the animation binds to it) + its LOCAL `Transform`. A single-primitive
 /// mesh is inlined on the node; extra primitives and the node's glTF children become nested `Children`.
+/// A node tagged in Blender with a `bsn` custom property is a PROXY: something
+/// you can see and place in the viewport (an empty, a box, whatever) that stands
+/// in for an asset baked elsewhere. The importer emits a scene reference at the
+/// proxy's transform and drops its geometry.
+///
+///     empty.  ["bsn"] = "speedtree/White_Oak.bsn"
+///
+/// Blender writes object custom properties into the glTF node's `extras`
+/// (`export_extras=True`), so placement stays in the .blend where you can see it
+/// while the asset itself is baked once and shared.
+fn bsn_proxy(node: &gltf::Node) -> Option<String> {
+    let extras = node.extras().as_ref()?;
+    let value: serde_json::Value = serde_json::from_str(extras.get()).ok()?;
+    let path = value.get("bsn")?.as_str()?;
+    (!path.is_empty()).then(|| path.replace('"', "'"))
+}
+
 fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
     let pad = "    ".repeat(depth);
     let (t, r, s) = node.transform().decomposed();
@@ -446,6 +468,18 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
         bsn::f(s[1]),
         bsn::f(s[2]),
     );
+
+    // A proxy stands in for a separately baked scene: the name and transform above
+    // are exactly what it needs, so emit the reference and stop -- its own geometry
+    // is only a viewport stand-in and nothing of it is baked.
+    if let Some(bsn_path) = bsn_proxy(node) {
+        let _ = write!(
+            out,
+            "{pad}bevy_scene::scene_patch::ScenePatchInstance(\"{bsn_path}\"),\n\n"
+        );
+        ctx.proxies += 1;
+        return;
+    }
     // A skinned node names its joint palette; aurora's `resolve_skin_joints` turns the names
     // into a real `SkinnedMesh` once they resolve in the spawned subtree, taking the inverse
     // bind poses from the joints' own bind transforms. Order must match the glTF skin's joint

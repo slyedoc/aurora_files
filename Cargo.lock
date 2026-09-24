@@ -483,6 +483,7 @@ dependencies = [
  "cc",
  "gltf",
  "image",
+ "serde_json",
  "tobj",
 ]
 
