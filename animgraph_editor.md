@@ -33,15 +33,18 @@ resource, so an animation graph's node parameters — which live inside an `Anim
 Addressed by `UntypedAssetId` so a binding outlives the handle that opened it. The fork already
 calls `register_asset_reflect::<AnimationGraph>()`, so nothing is needed on that side.
 
-**R1 — shell + browser.** Three panes (feathers `pane`/`subpane`): asset list, centre, inspector.
+**R1 — shell + browser (DONE).** Three panes (feathers `pane`/`subpane`): asset list, centre, inspector.
 Walk the assets dir for `*.animgraph.ron` / `*.anim.ron` / `*.skn.ron` / `*.fsm.ron` and list them
 in a `listview`; selecting one loads it and points the inspector at it via `BuildAssetInspector`.
-Port `tree.rs` for the directory walk. No canvas yet — this alone already beats hand-editing RON.
+The browser is a directory TREE (`Expanded` holds the open paths, a dirty flag respawns rows on
+toggle, so a collapsed subtree costs nothing). ASCII `+` / `-` markers, because this shell
+inherits whatever font feathers ships and a missing glyph reads as tofu.
 
-**R2 — preview.** Spawn a rig in the centre pane and play the selected graph on it: the
-`examples/bodies` wiring, lifted. Drive the graph's `io_spec.input_data` from generated widgets
-(one slider per `F32` input) and read `get_outputs` back as live values. This is the rung that
-pays for the whole tool — it is the thing a text editor fundamentally cannot do.
+**R2 — preview (DONE).** Spawn a rig in the centre pane and play the selected graph on it: the
+`examples/bodies` wiring, lifted. One feathers slider per `F32` input, seeded from `default_data` (the spec's map has no public
+reader) and writing back through `set_input_data`, so the rig re-poses as you drag. `--open
+<asset>` opens one at startup: scriptable, and how this is smoke-tested, since a screenshot run
+cannot click. Still to do here: read `get_outputs` back as live readouts.
 
 **R3 — canvas, read only.** Port `graph_show.rs`'s LAYOUT half (node boxes, pin rows, link
 endpoints) and draw it: nodes are feathers panes at absolute positions, pins are small nodes,
