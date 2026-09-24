@@ -315,6 +315,34 @@ slide, so a large joint rotation stretches the pairing; cables are bound to one 
 across a bending joint. One clip only — no idle, turn or aim states.
 
 
+# Hex (authored) — the first WALKABLE asset
+
+A building rather than a prop: `p/assets/hex` builds it in Blender, and it is the first asset
+baked with **collision**, so zero can put a navmesh over it.
+
+```sh
+# the .blend is an OUTPUT; run.main(export=True) writes hex_export.blend with nits emissive
+blender -b /mnt/code/p/assets/hex/hex_export.blend --python scripts/asset_to_glb.py -- \
+  --out raw/hex/hex.glb --collection HEX --origin keep
+cargo run --release -p prop_import -- raw/hex/hex.glb assets/hex --hierarchy \
+  --scene-name hex --replace --colliders
+./target/release/bsn assets/hex/hex.bsn --pos 0,3,42 --target 0,3,25     # at the door
+cp -r assets/hex /mnt/code/p/zero/assets/
+cd /mnt/code/p/zero && cargo run --release -- -s hex --nav-debug
+```
+
+`--colliders` writes a `.collider` beside every `.cluster_mesh`, cached by `(mesh, prim)` like
+the render mesh — the wall panel 270 nodes share bakes ONE collider file. A Blender object with
+`collide = 0` in its custom properties is left out (water, ceilings, light fixtures). Last bake:
+53 meshes, 44 colliders, 270 of 333 mesh entities collide; zero bakes 4 nav islands over it in
+about 120 ms.
+
+The component is `bevy_aurora::collision::CollisionMesh`, which carries GEOMETRY only. A `.bsn`
+that names a game's physics types is refused outright by every other reader — the WoW tiles
+emitted avian's `RigidBody` and so could not be opened in the `bsn` viewer at all
+(`unknown type: avian3d::dynamics::rigid_body::RigidBody`, whole scene fails). Zero's
+`BakedColliderPlugin` is the only thing that turns one into an avian `Collider` + static body.
+
 # UAL (Quaternius, itch.io) — the first SKINNED asset
 
 Universal Animation Library [Standard]: <https://quaternius.itch.io/universal-animation-library>
