@@ -55,7 +55,22 @@ inherits whatever font feathers ships and a missing glyph reads as tofu.
 `examples/bodies` wiring, lifted. One feathers slider per `F32` input, seeded from `default_data` (the spec's map has no public
 reader) and writing back through `set_input_data`, so the rig re-poses as you drag. `--open
 <asset>` opens one at startup: scriptable, and how this is smoke-tested, since a screenshot run
-cannot click. Still to do here: read `get_outputs` back as live readouts.
+cannot click.
+
+**R2b — live values (DONE).** Every output pin on the canvas shows what it is CURRENTLY
+producing, which is what turns the canvas from a diagram into a debugger: drag `speed` and watch
+`fac_walk`, `fac_jog` and `rate` move on the boxes that compute them. Nothing is recomputed
+beside the graph — `player.get_context_arena()` reaches the evaluator's own `node_caches`, keyed
+by `(StateKey, PinId)`, so a readout is literally what the pose was built from. The cache is
+cleared per frame, so a pin that did not take part in THIS frame's evaluation reads empty rather
+than stale; that is the honest answer, because a node behind a zero-weight blend genuinely did
+not run. This supersedes the `get_outputs` readout originally planned here: a locomotion graph's
+only graph-level output is a pose, which has no useful short form, while the INTERESTING numbers
+were always the intermediate ones.
+
+Worth stating why this matters beyond convenience. zero's locomotion graph shipped with guessed
+`walk_speed` / `jog_speed`, which slid the feet 23% at its walk speed; the arithmetic that proves
+it is exactly what these pins display. A wrong blend is now visible rather than deduced.
 
 **R3 — canvas, read only (DONE).** A box per node with its real PIN ROWS — inputs down the left,
 outputs down the right, from `AnimationNode::new_spec` — plus the two graph-level rails (`inputs`

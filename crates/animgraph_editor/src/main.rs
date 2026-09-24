@@ -37,7 +37,10 @@ use bevy_animation_graph::{
         },
         animation_graph_player::AnimationGraphPlayer,
         animation_node::{dyn_node_like::DynNodeLike, AnimationNode, NodeLike, ReflectNodeLike},
-        context::spec_context::{NodeInput, NodeOutput, NodeSpec, SpecResources},
+        context::{
+            node_states::StateKey,
+            spec_context::{NodeInput, NodeOutput, NodeSpec, SpecResources},
+        },
         edge_data::{DataSpec, DataValue},
         skeleton::Skeleton,
         state_machine::high_level::StateMachine,
@@ -314,6 +317,7 @@ fn main() {
             draw_canvas,
             highlight_selected,
             highlight_pins,
+            show_pin_values,
             show_node_params,
             delete_selected,
             toggle_palette,
@@ -1472,16 +1476,35 @@ fn spawn_box(commands: &mut Commands, boxed: &Boxed, px: Vec2, zoom: f32) -> Ent
                     ..default()
                 },
                 BackgroundColor(Color::NONE),
-                socket,
-                Children::spawn(Spawn((
-                    Text::new(label.to_string()),
-                    ThemedText,
-                    font(10.0),
-                    TextLayout {
-                        linebreak: bevy::text::LineBreak::NoWrap,
-                        ..default()
-                    },
-                ))),
+                socket.clone(),
+                Children::spawn((
+                    Spawn((
+                        Text::new(label.to_string()),
+                        ThemedText,
+                        font(10.0),
+                        TextLayout {
+                            linebreak: bevy::text::LineBreak::NoWrap,
+                            ..default()
+                        },
+                    )),
+                    // Filled every frame from the running graph's own cache. Empty on an
+                    // input pin, which has no value of its own — it shows whatever its edge
+                    // brought, which is already on the far end of the link.
+                    Spawn((
+                        Text::new(String::new()),
+                        PinValue(socket),
+                        TextColor(Color::srgb(0.55, 0.82, 0.62)),
+                        font(10.0),
+                        Node {
+                            margin: UiRect::left(Val::Px(6.0 * zoom)),
+                            ..default()
+                        },
+                        TextLayout {
+                            linebreak: bevy::text::LineBreak::NoWrap,
+                            ..default()
+                        },
+                    )),
+                )),
             ))
             .observe(
                 |mut start: On<PointerDragStart>,
@@ -1844,6 +1867,59 @@ fn unique_name(graph: &AnimationGraph, base: &str) -> String {
 /// The canvas box colours, picked apart enough that a selected node reads at a glance.
 const BOX_IDLE: Color = Color::srgba(0.13, 0.14, 0.17, 0.97);
 const BOX_SELECTED: Color = Color::srgba(0.20, 0.26, 0.34, 0.99);
+
+/// The value slot on a pin row.
+#[derive(Component)]
+struct PinValue(PinSocket);
+
+/// Write each output pin's CURRENT value onto its row.
+///
+/// This is what turns the canvas from a diagram into a debugger: drag `speed` and watch
+/// `fac_walk`, `fac_jog` and `rate` move on the boxes that compute them. The graph already
+/// caches every pin it evaluates — `node_caches`, keyed by `(StateKey, PinId)` — so this reads
+/// what the pose was actually built from rather than recomputing anything beside it.
+///
+/// The cache is cleared per frame, so a pin that did not take part in THIS frame's evaluation
+/// reads empty rather than stale. That is the honest answer: a node behind a zero-weight blend
+/// genuinely did not run.
+fn show_pin_values(
+    preview: Res<Preview>,
+    players: Query<&AnimationGraphPlayer>,
+    mut values: Query<(&mut Text, &PinValue)>,
+) {
+    let Some(player) = preview.armature.and_then(|a| players.get(a).ok()) else {
+        return;
+    };
+    let Some(arena) = player.get_context_arena() else {
+        return;
+    };
+    let caches = &arena.get_toplevel().node_caches;
+    for (mut text, slot) in &mut values {
+        // Inputs and time pins carry nothing of their own.
+        let PinSocket::Source(SourcePin::NodeData(node, pin), _) = &slot.0 else {
+            continue;
+        };
+        let shown = caches
+            .get_output_data(*node, StateKey::Default, pin.clone())
+            .map(|value| short_value(&value))
+            .unwrap_or_default();
+        if text.0 != shown {
+            text.0 = shown;
+        }
+    }
+}
+
+/// A `DataValue` in as few characters as a pin row can spare.
+fn short_value(value: &DataValue) -> String {
+    match value {
+        DataValue::F32(v) => format!("{v:.2}"),
+        DataValue::Bool(v) => (if *v { "T" } else { "F" }).to_string(),
+        DataValue::Vec3(v) => format!("{:.1},{:.1},{:.1}", v.x, v.y, v.z),
+        // A pose or an event queue has no short form worth the width, and the link already
+        // shows that one is flowing.
+        _ => String::new(),
+    }
+}
 
 /// While a wire is in flight, light up every pin it could legally land on.
 ///
