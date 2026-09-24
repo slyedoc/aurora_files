@@ -12,12 +12,14 @@
 use bevy::{
     animation::{AnimatedBy, AnimationTargetId},
     feathers::{
+        controls::{slider_bundle, FeathersSliderProps},
         dark_theme::create_dark_theme,
         theme::{ThemedText, UiTheme},
     },
     feathers_inspector::BuildAssetInspector,
     prelude::*,
-    ui::{AlignItems, FlexDirection, JustifyContent, Overflow, UiRect, Val},
+    ui::{AlignItems, BackgroundColor, FlexDirection, JustifyContent, Overflow, UiRect, Val},
+    ui_widgets::{observe, slider_self_update, SliderValue, ValueChange},
 };
 use bevy_animation_graph::{
     core::{
@@ -48,6 +50,11 @@ struct Args {
     /// Asset root to browse. Defaults to `$BEVY_ASSET_ROOT`, else a cwd that has `assets/`.
     #[arg(long, short = 'a')]
     assets: Option<PathBuf>,
+
+    /// Open this asset on startup, as an asset-relative path
+    /// (`anim/human/locomotion.animgraph.ron`). Scriptable, and how the editor is smoke-tested.
+    #[arg(long, short = 'o')]
+    open: Option<String>,
 
     /// Seconds before auto-exit.
     #[arg(long, short)]
@@ -276,14 +283,16 @@ fn scan_library(mut library: ResMut<Library>, mut expanded: ResMut<Expanded>) {
     );
 }
 
-fn setup_ui(mut commands: Commands, assets: Res<AssetServer>) {
+fn setup_ui(mut commands: Commands, assets: Res<AssetServer>, args: Res<Args>) {
     // aurora's render_frame wants exactly one of ITS cameras, so even a UI-only shell needs a
     // 3d one. It also becomes the preview camera at R2.
     commands.spawn((
         Name::new("Camera"),
         Camera3d::default(),
         AuroraExposure::SUNLIGHT,
-        Transform::from_xyz(0.0, 1.2, -3.2).looking_at(Vec3::new(0.0, 0.95, 0.0), Vec3::Y),
+        // Pulled back and offset: the browser and inspector eat the left and right thirds, so
+        // the rig is framed into what is left rather than centred on the window.
+        Transform::from_xyz(-0.35, 1.15, -4.6).looking_at(Vec3::new(-0.35, 0.95, 0.0), Vec3::Y),
     ));
 
     // The preview rig: the mannequin, because its clips are an identity retarget and so show
@@ -303,6 +312,25 @@ fn setup_ui(mut commands: Commands, assets: Res<AssetServer>) {
         graph: None,
         skeleton: assets.load("ual/Mannequin.skn.ron"),
     });
+
+    if let Some(path) = &args.open {
+        if let Some(kind) = Kind::of(path) {
+            let handle: UntypedHandle = match kind {
+                Kind::Graph => assets.load::<AnimationGraph>(path).untyped(),
+                Kind::Clip => assets.load::<GraphClip>(path).untyped(),
+                Kind::Skeleton => assets.load::<Skeleton>(path).untyped(),
+                Kind::StateMachine => assets.load::<StateMachine>(path).untyped(),
+            };
+            commands.insert_resource(Opening {
+                handle,
+                kind,
+                path: path.clone(),
+                bound: false,
+            });
+        } else {
+            warn!("--open {path}: not a type this editor knows");
+        }
+    }
 
     // Left: the browser. Centre: preview + the generated input sliders. Right: the inspector.
     let inspector = commands
@@ -333,6 +361,10 @@ fn setup_ui(mut commands: Commands, assets: Res<AssetServer>) {
             Spawn((
                 Name::new("browser"),
                 Browser,
+                // The rig renders BEHIND the ui, so a pane without a background reads as text
+                // floating on the mannequin. Near-black rather than a theme token: this is a
+                // backdrop, not a surface the theme has an opinion about.
+                BackgroundColor(Color::srgba(0.06, 0.06, 0.07, 0.94)),
                 Node {
                     width: Val::Px(420.0),
                     height: Val::Percent(100.0),
@@ -358,6 +390,7 @@ fn setup_ui(mut commands: Commands, assets: Res<AssetServer>) {
                 Children::spawn(Spawn((
                     Name::new("inputs"),
                     InputsHost,
+                    BackgroundColor(Color::srgba(0.06, 0.06, 0.07, 0.86)),
                     Node {
                         flex_direction: FlexDirection::Column,
                         row_gap: Val::Px(4.0),
@@ -371,6 +404,7 @@ fn setup_ui(mut commands: Commands, assets: Res<AssetServer>) {
             Spawn((
                 Name::new("inspector"),
                 InspectorHost,
+                BackgroundColor(Color::srgba(0.06, 0.06, 0.07, 0.94)),
                 Node {
                     width: Val::Px(380.0),
                     height: Val::Percent(100.0),
@@ -549,6 +583,16 @@ fn bind_when_loaded(
     info!("opened {}", opening.path);
 }
 
+/// `GraphInputPin`'s `Debug` is `Passthrough("speed")`; the pin NAME is what belongs on a
+/// slider. No public accessor for it, so unwrap the one shape it prints.
+fn pin_name(pin: &impl std::fmt::Debug) -> String {
+    let text = format!("{pin:?}");
+    text.split_once('"')
+        .and_then(|(_, rest)| rest.rsplit_once('"'))
+        .map(|(name, _)| name.to_string())
+        .unwrap_or(text)
+}
+
 /// A graph waiting to be put on the preview rig.
 #[derive(Resource)]
 struct ArmGraph(Handle<AnimationGraph>);
@@ -625,25 +669,63 @@ fn arm_preview(
         .default_data
         .iter()
         .filter_map(|(pin, value)| match value {
-            DataValue::F32(v) => Some((format!("{pin:?}"), *v)),
+            DataValue::F32(v) => Some((pin_name(pin), *v)),
             _ => None,
         })
         .collect();
     inputs.sort_by(|a, b| a.0.cmp(&b.0));
     for (name, value) in inputs {
-        let label = format!("{name} = {value:.2}");
-        rows.push(
-            commands
-                .spawn((
-                    Node {
-                        flex_direction: FlexDirection::Column,
-                        ..default()
-                    },
-                    GraphInput(name.clone()),
-                    Children::spawn(Spawn((Text::new(label), ThemedText))),
-                ))
-                .id(),
-        );
+        // Range is a guess until a graph declares one: 0 ..= max(4, 2x the default) covers a
+        // speed in m/s and a 0..1 factor alike without clipping either.
+        let max = (value * 2.0).max(4.0);
+        let pin = name.clone();
+        let readout = commands
+            .spawn((
+                Text::new(format!("{name}  {value:.2}")),
+                ThemedText,
+                GraphInput(pin.clone()),
+            ))
+            .id();
+        let observer_pin = pin.clone();
+        #[expect(
+            deprecated,
+            reason = "the BSN slider() builds a scene; these rows are spawned imperatively"
+        )]
+        let slider = commands
+            .spawn((
+                // `SliderValue` rides the bundle already, so it goes in as an INSERT below —
+                // passing it as an override duplicates the component and panics the spawn.
+                slider_bundle(FeathersSliderProps { min: 0.0, max }, GraphInput(pin.clone())),
+                // Feathers sliders are INERT without this: the thumb only moves because
+                // `slider_self_update` writes the new SliderValue back onto the entity.
+                observe(slider_self_update),
+            ))
+            .insert(SliderValue(value))
+            .observe(
+                move |change: On<ValueChange<f32>>,
+                      mut players: Query<&mut AnimationGraphPlayer>,
+                      mut texts: Query<(&mut Text, &GraphInput)>| {
+                    let v = change.value;
+                    for mut player in &mut players {
+                        player.set_input_data(observer_pin.clone(), DataValue::F32(v));
+                    }
+                    for (mut text, input) in &mut texts {
+                        if input.0 == observer_pin {
+                            text.0 = format!("{observer_pin}  {v:.2}");
+                        }
+                    }
+                },
+            )
+            .id();
+        let row = commands
+            .spawn(Node {
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(2.0),
+                ..default()
+            })
+            .add_children(&[readout, slider])
+            .id();
+        rows.push(row);
     }
     commands.entity(host_entity).add_children(&rows);
     commands.remove_resource::<ArmGraph>();
