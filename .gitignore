@@ -14,3 +14,9 @@ assets
 raw/*
 !raw/.gitkeep
 crash-dumps/
+
+# stray cargo output
+log.txt
+
+# compiled Aftermath dump decoder (build from decode.c)
+scripts/aftermath/decode

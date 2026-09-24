@@ -10,6 +10,7 @@
 //!
 //! Output:
 //!   assets/wow/meshes/*.cluster_mesh + textures/*   baked models (shared)
+//!   assets/wow/meshes/*.collider                     one collision mesh per model that has one
 //!   assets/wow/<map>_X_Y.bsn                        doodad/WMO entities, TILE-LOCAL coords
 //!   assets/wow/map/<map>_X_Y_height.png             129² 16-bit height grid (min/max in json)
 //!   assets/wow/map/<map>_X_Y_alpha.png              1024² RGBA alphamap atlas (16×16 × 64²)
@@ -51,6 +52,13 @@
 //! RGB^`--unlit-contrast`, so a lantern's bright glass glows and its dark frame does not.
 //! The tracer's light table averages the emissive texture, so an emitter lights the scene
 //! by what it actually emits.
+//!
+//! Collision: every placement of a model with collision gets a second, static-body entity
+//! (`RigidBody::Static` + zero's `ColliderMesh`, which shares one built collider between all
+//! of the model's instances). An M2's comes from wow.export's `<model>.phys.obj` -- WoW's own
+//! collision mesh, so a tree is its trunk and bushes are walked through; a WMO's from its
+//! render triangles, keeping what the json's per-triangle flags mark collidable (collision-
+//! only triangles are not in the OBJ and are lost). Ground clutter never collides.
 //!
 //! Ground clutter: each splat layer's `effectID` (wow.export tex json) -> GroundEffectTexture
 //! (density, up to four doodads with weights) -> GroundEffectDoodad (model file id) -> the
@@ -423,6 +431,7 @@ fn main() {
     let mut baked_models: HashMap<String, Vec<BakedSubmesh>> = HashMap::new();
     let mut cutmask_cache: HashMap<String, bool> = HashMap::new();
     let mut derived: DerivedGlows = HashMap::new();
+    let mut colliders: HashMap<String, String> = HashMap::new();
     for rel in &unique_models {
         let submeshes = bake_model(
             &args,
@@ -434,7 +443,11 @@ fn main() {
             &mut derived,
         );
         baked_models.insert(rel.clone(), submeshes);
+        if let Some(stem) = bake_collider(&args, &args.wow_root.join(rel), rel) {
+            colliders.insert(rel.clone(), stem);
+        }
     }
+    println!("{} of {} models collide", colliders.len(), unique_models.len());
 
     // Pass 3 — write each tile's `.bsn` (doodads/WMOs only) and its terrain map data.
     let mut palette = PaletteBuilder::default();
@@ -450,6 +463,9 @@ fn main() {
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
+            if let Some(stem) = colliders.get(&p.model) {
+                write_collider_entity(&mut entities, &args.asset_prefix, &name, stem, p);
+            }
             for sub in submeshes {
                 // Instance transform composed with the submesh's local centroid offset.
                 let t = p.translation + p.rotation * (sub.centroid * p.scale);
@@ -1082,6 +1098,125 @@ fn bake_model(
         });
     }
     out
+}
+
+// ---- collision -----------------------------------------------------------------------------
+
+/// A model's collision triangles in model space (the frame its placements transform).
+#[derive(Default)]
+struct CollisionMesh {
+    positions: Vec<[f32; 3]>,
+    indices: Vec<[u32; 3]>,
+}
+
+impl CollisionMesh {
+    fn extend(&mut self, mesh: &tobj::Mesh, keep: impl Fn(usize) -> bool) {
+        let base = self.positions.len() as u32;
+        self.positions
+            .extend(mesh.positions.chunks_exact(3).map(|p| [p[0], p[1], p[2]]));
+        for (triangle, i) in mesh.indices.chunks_exact(3).enumerate() {
+            if keep(triangle) {
+                self.indices.push([base + i[0], base + i[1], base + i[2]]);
+            }
+        }
+    }
+
+    /// `.collider`: `ACOL`, version, vertex count, triangle count (u32 LE), then the
+    /// positions (f32 LE x 3) and the triangles (u32 LE x 3). Read by zero's `physics`.
+    fn write(&self, path: &Path) {
+        let mut bytes = Vec::with_capacity(16 + self.positions.len() * 12 + self.indices.len() * 12);
+        bytes.extend_from_slice(b"ACOL");
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&(self.positions.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&(self.indices.len() as u32).to_le_bytes());
+        for v in self.positions.iter().flatten() {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        for i in self.indices.iter().flatten() {
+            bytes.extend_from_slice(&i.to_le_bytes());
+        }
+        fs::write(path, bytes).expect("write .collider");
+    }
+}
+
+/// Bakes a model's collision to `meshes/<stem>.collider` and returns the stem, or `None`
+/// when WoW gives the model none (most bushes, all glow cards). An M2 collides with the
+/// collision mesh wow.export writes beside it (`<model>.phys.obj`: a tree is its trunk, not
+/// its leaf cards); a WMO with the render triangles its json marks collidable.
+fn bake_collider(args: &Args, obj_path: &Path, rel: &str) -> Option<String> {
+    let stem = sanitize(rel.trim_end_matches(".obj").trim_start_matches("world/"));
+    let file = args.out_dir.join("meshes").join(format!("{stem}.collider"));
+    let json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(obj_path.with_extension("json")).ok()?).ok()?;
+    let mut collision = CollisionMesh::default();
+    match json["fileType"].as_str()? {
+        "m2" => {
+            let phys = obj_path.with_extension("phys.obj");
+            if !phys.exists() {
+                return None;
+            }
+            for m in load_obj(&phys)?.0 {
+                collision.extend(&m.mesh, |_| true);
+            }
+        }
+        "wmo" => {
+            let (models, _) = load_obj(obj_path)?;
+            // OBJ group `<GroupName><batch>` -> that batch's triangles' MOPY flags.
+            let mut flags: HashMap<String, Vec<u64>> = HashMap::new();
+            for group in json["groups"].as_array()? {
+                let Some(name) = group["groupName"].as_str() else { continue };
+                let info = group["materialInfo"].as_array();
+                for (batch, b) in group["renderBatches"].as_array().into_iter().flatten().enumerate() {
+                    let first = b["firstFace"].as_u64().unwrap_or(0) as usize / 3;
+                    let count = b["numFaces"].as_u64().unwrap_or(0) as usize / 3;
+                    let batch_flags = (first..first + count)
+                        .map(|t| info.and_then(|i| i.get(t)).and_then(|m| m["flags"].as_u64()).unwrap_or(0x20))
+                        .collect();
+                    flags.entry(format!("{name}{batch}")).or_insert(batch_flags);
+                }
+            }
+            for m in &models {
+                // MOPY: 0x08 collision, 0x20 render, 0x04 detail (render-only trim).
+                let batch = flags.get(&m.name).filter(|f| f.len() == m.mesh.indices.len() / 3);
+                collision.extend(&m.mesh, |t| {
+                    batch.is_none_or(|f| f[t] & 0x08 != 0 || (f[t] & 0x20 != 0 && f[t] & 0x04 == 0))
+                });
+            }
+        }
+        _ => return None,
+    }
+    if collision.indices.is_empty() {
+        return None;
+    }
+    if args.replace || !file.exists() {
+        collision.write(&file);
+    }
+    Some(stem)
+}
+
+/// A static body at a placement: the model's shared `.collider`, under the placement's own
+/// transform (collision lives in model space, not on the centred render submeshes).
+fn write_collider_entity(out: &mut String, prefix: &str, name: &str, stem: &str, p: &Placement) {
+    let (t, r) = (p.translation, p.rotation);
+    let _ = write!(
+        out,
+        "    bevy_ecs::name::Name(\"{} collider\")\n    \
+         bevy_transform::components::transform::Transform {{ \
+         translation: glam::Vec3 {{ x: {}, y: {}, z: {} }}, \
+         rotation: glam::Quat {{ x: {}, y: {}, z: {}, w: {} }}, \
+         scale: glam::Vec3 {{ x: {s}, y: {s}, z: {s} }} }}\n    \
+         avian3d::dynamics::rigid_body::RigidBody::Static\n    \
+         zero::physics::ColliderMesh(\"{prefix}/meshes/{stem}.collider\"),\n\n",
+        name.replace('"', "'"),
+        fmt_f(t.x),
+        fmt_f(t.y),
+        fmt_f(t.z),
+        fmt_f(r.x),
+        fmt_f(r.y),
+        fmt_f(r.z),
+        fmt_f(r.w),
+        s = fmt_f(p.scale),
+    );
 }
 
 // ---- placements ------------------------------------------------------------------------------

@@ -202,7 +202,7 @@ struct NodeParamsHost;
 /// The canvas node the inspector is showing, and whether that list needs rebuilding.
 #[derive(Resource, Default)]
 struct Selected {
-    node: Option<NodeId>,
+    node: Option<Uuid>,
     dirty: bool,
 }
 
@@ -902,7 +902,7 @@ struct Canvas;
 
 /// A node box on the canvas. Dragging one moves it; the id is what the drag writes back to.
 #[derive(Component)]
-struct CanvasNode(NodeId);
+struct CanvasNode(Uuid);
 
 /// Node box geometry, in CANVAS coordinates — screen pixels are `canvas * zoom + pan`. Boxes
 /// are laid out arithmetically rather than measured, so a link endpoint is known the moment
@@ -919,9 +919,13 @@ const LINK_THICKNESS: f32 = 2.0;
 #[derive(Resource)]
 struct CanvasView {
     graph: Option<Handle<AnimationGraph>>,
-    /// Asset-relative path of the open graph, which is where a save writes.
+    /// The state machine open instead, if this is an FSM rather than a graph.
+    fsm: Option<Handle<StateMachine>>,
+    /// Asset-relative path of the open asset, which is where a save writes.
     path: Option<String>,
-    positions: std::collections::HashMap<NodeId, Vec2>,
+    /// Keyed by the raw `Uuid` that both `NodeId` and `StateId` wrap, so one canvas serves a
+    /// graph's nodes and a state machine's states without a second layout map.
+    positions: std::collections::HashMap<Uuid, Vec2>,
     input_pos: Vec2,
     output_pos: Vec2,
     pan: Vec2,
@@ -933,6 +937,7 @@ impl Default for CanvasView {
     fn default() -> Self {
         Self {
             graph: None,
+            fsm: None,
             path: None,
             positions: std::collections::HashMap::new(),
             input_pos: Vec2::ZERO,
@@ -973,7 +978,7 @@ fn seed_layout(view: &mut CanvasView, graph: &AnimationGraph) {
                 .get(id)
                 .copied()
                 .unwrap_or(Vec2::ZERO);
-            view.positions.insert(*id, pos);
+            view.positions.insert(id.uuid(), pos);
         }
         view.input_pos = graph.editor_metadata.input_position;
         view.output_pos = graph.editor_metadata.output_position;
@@ -1210,7 +1215,9 @@ fn arm_preview(
 /// What a canvas box stands for, and therefore where a drag on it writes back.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BoxKind {
-    Node(NodeId),
+    /// A graph node or an FSM state — the canvas treats them the same, only the draw pass
+    /// that produced the box knows which.
+    Node(Uuid),
     /// The graph's own inputs — sources, so this rail has only output pins.
     Inputs,
     /// The graph's own outputs — targets, so this rail has only input pins.
@@ -1365,13 +1372,13 @@ fn draw_canvas(
         };
         let spec = node_spec(node, &graphs, &fsms);
         boxes.push(Boxed {
-            pos: view.positions.get(id).copied().unwrap_or(Vec2::ZERO),
+            pos: view.positions.get(&id.uuid()).copied().unwrap_or(Vec2::ZERO),
             title: if node.name.is_empty() {
                 ascii(&node.inner.display_name())
             } else {
                 format!("{}  ({})", node.name, ascii(&node.inner.display_name()))
             },
-            kind: BoxKind::Node(*id),
+            kind: BoxKind::Node(id.uuid()),
             inputs: spec
                 .sorted_inputs()
                 .into_iter()
@@ -1828,9 +1835,9 @@ fn build_palette(
                         // Drop it in the middle of what is on screen, in canvas coordinates.
                         let centre = canvas.size * canvas.inverse_scale_factor() * 0.5;
                         let at = (centre - view.pan) / view.zoom - Vec2::new(NODE_W * 0.5, 0.0);
-                        view.positions.insert(id, at);
+                        view.positions.insert(id.uuid(), at);
                         view.dirty = true;
-                        selected.node = Some(id);
+                        selected.node = Some(id.uuid());
                         selected.dirty = true;
                         commands.queue(|world: &mut World| {
                             world.resource_mut::<PaletteState>().open = false;
@@ -1956,7 +1963,7 @@ fn delete_selected(
         return;
     };
     let cut = delete_node(&mut graph, id);
-    view.positions.remove(&id);
+    view.positions.remove(&id.uuid());
     view.dirty = true;
     selected.node = None;
     selected.dirty = true;
@@ -2162,7 +2169,7 @@ fn write_graph(
 
     let mut graph = graph.clone();
     for (id, pos) in &view.positions {
-        graph.editor_metadata.node_positions.insert(*id, *pos);
+        graph.editor_metadata.node_positions.insert((*id).into(), *pos);
     }
     graph.editor_metadata.input_position = view.input_pos;
     graph.editor_metadata.output_position = view.output_pos;
@@ -2339,7 +2346,7 @@ fn self_test(
             drop(graph);
             // Redraw too, so the test covers the canvas rebuilding around a node that was not
             // there when the layout was seeded.
-            view.positions.insert(id, Vec2::new(-260.0, 400.0));
+            view.positions.insert(id.uuid(), Vec2::new(-260.0, 400.0));
             view.dirty = true;
             info!("self-test: added a node, {before} -> {after}");
         }
@@ -2357,7 +2364,7 @@ fn self_test(
             delete_node(&mut graph, id);
             let after = graph.nodes.len();
             drop(graph);
-            view.positions.remove(&id);
+            view.positions.remove(&id.uuid());
             view.dirty = true;
             info!("self-test: deleted it, back to {after} nodes");
         }
