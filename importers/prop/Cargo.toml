@@ -21,3 +21,5 @@ aurora_bsn = { path = "../../crates/aurora_bsn" }
 clap.workspace = true
 # `load_test` validates the baked `.bsn` headlessly.
 bevy.workspace = true
+# Reading the per-kit tint table (`--tints`).
+ron = "0.10"

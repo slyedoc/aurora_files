@@ -1,0 +1,41 @@
+// Base-colour tints for the fantasy-city kit, recovered from the source Unity materials.
+//
+// The kit's URP foliage shader multiplies a WHITE MASK texture by a custom `_BaseTexColorTint`
+// property. glTF has no slot for that, so the export dropped it -- and wrote `baseColorFactor`
+// as 0,0,0,0 rather than leaving it at 1,1,1,1, which is why every plant came through black.
+//
+// Recovering the factor alone only gets you white leaves: for the trees and the grass the
+// TEXTURE carries no colour at all, so the tint was the only colour information there was. These
+// values are read from `Assets/Fantastic City Pack/Materials/*.mat` inside the pack's nested
+// URP unitypackage, in linear space, which is the space glTF's factor and aurora's `base_color`
+// both use.
+//
+// The plants are grey rather than green on purpose: their texture IS coloured, so the tint only
+// dims it.
+//
+// `textures` is the other half: the export dropped `M_ENV_Foliage_Tree_City_02`'s texture
+// reference outright, so that material had no alpha and its leaf cards traced as solid quads.
+// The file exists in the pack; only the reference was lost.
+(
+    tints: {
+        "M_ENV_Foliage_Tree_City_01": (0.2706, 0.5098, 0.0824, 1.0),
+        "M_ENV_Foliage_Tree_City_02": (0.1059, 0.3412, 0.1882, 1.0),
+        "M_ENV_Foliage_Grass_City": (0.2983, 0.4906, 0.2198, 1.0),
+        "M_ENV_Foliage_Plants_City": (0.7264, 0.7264, 0.7264, 1.0),
+        "M_ENV_Foliage_Plants_City_Static_foliage": (0.7547, 0.7547, 0.7547, 1.0),
+        "M_ENV_Foliage_Plants_City_Static_pot": (0.5472, 0.5472, 0.5472, 1.0),
+        "M_PROP_Flags_City": (1.0, 1.0, 1.0, 1.0),
+
+        // Water and mountain read `_BaseColor` rather than the foliage shader's tint, but the
+        // export lost them the same way: both name no texture, so the factor was the only colour
+        // and zeroing it left them black.
+        "M_ENV_Water_City_Small": (0.0941, 0.1853, 0.6314, 1.0),
+        "M_ENV_Water_City": (0.0501, 0.2949, 0.4245, 1.0),
+        // Not zeroed, just very dark (0.0139) where the source says 0.1226 -- a silhouette rather
+        // than a black hole.
+        "M_ENV_Mountain_City": (0.1226, 0.1226, 0.1226, 1.0),
+    },
+    textures: {
+        "M_ENV_Foliage_Tree_City_02": "T_ENV_tree_leaves_city_02_BC.png",
+    },
+)

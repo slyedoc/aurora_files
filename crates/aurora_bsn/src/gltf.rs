@@ -22,6 +22,23 @@ use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
 use crate::bsn;
 use crate::mesh;
 
+/// What an export lost, supplied per material because it cannot be derived from the file.
+///
+/// A custom shader's parameters have nowhere to go in glTF. The fantasy-city kit multiplies a
+/// white mask by a URP `_BaseTexColorTint`; the export wrote `baseColorFactor: 0,0,0,0` and, for
+/// one material, dropped the texture reference entirely. Where the texture is a plain mask the
+/// tint was the ONLY colour information and no repair derived from the file can recover it, and a
+/// material naming no texture has no alpha to cut with however the importer squints at it.
+#[derive(Default, Clone, serde::Deserialize)]
+#[serde(default)]
+pub struct Fixups {
+    /// Base-colour tint by material name, LINEAR, overriding the material's own factor.
+    pub tints: HashMap<String, [f32; 4]>,
+    /// Base-colour texture FILENAME by material name, for a material whose reference was lost.
+    /// Resolved against the texture override directory, so the file ships with the bake.
+    pub textures: HashMap<String, String>,
+}
+
 /// Per-asset knobs for the glTF importer.
 pub struct GltfConfig {
     /// Source `.glb`/`.gltf` (self-contained GLB, or `.gltf` with sibling `.bin`/textures).
@@ -40,6 +57,8 @@ pub struct GltfConfig {
     /// Per-scene fallback for emissive magnitude (nits), keyed on material name, used only when a
     /// material ships no `KHR_materials_emissive_strength`. `None` keeps the glTF value (×1).
     pub emissive_nits: Option<fn(&str) -> f32>,
+    /// Per-material repairs for things the export did not carry. See [`Fixups`].
+    pub fixups: Fixups,
     /// Directory of replacement textures, matched by the filename the embedded image would get.
     ///
     /// For a kit whose glb was exported lossily beside an intact texture pack. Anything not found
@@ -68,6 +87,7 @@ impl Default for GltfConfig {
             replace: false,
             root_components: String::new(),
             emissive_nits: None,
+            fixups: Fixups::default(),
             textures: None,
             colliders: false,
             group_depth: 1,
@@ -99,7 +119,14 @@ pub fn bake_gltf_scene(cfg: &GltfConfig) {
     lint_materials(doc, cfg.emissive_nits).print();
 
     // Extract every embedded/sourced image once (raw bytes, no re-encode) → `image index → file`.
-    let image_files = extract_images(doc, &buffers, base, &textures_dir, cfg.textures.as_deref());
+    let image_files = extract_images(
+        doc,
+        &buffers,
+        base,
+        &textures_dir,
+        cfg.textures.as_deref(),
+        &cfg.fixups,
+    );
     println!(
         "extracted {} textures -> {}",
         image_files.len(),
@@ -114,6 +141,7 @@ pub fn bake_gltf_scene(cfg: &GltfConfig) {
         asset_prefix: &cfg.asset_prefix,
         replace: cfg.replace,
         emissive_nits: cfg.emissive_nits,
+        fixups: &cfg.fixups,
         colliders: cfg.colliders,
         baked: HashMap::new(),
         entities: String::new(),
@@ -184,7 +212,14 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
     );
     lint_materials(doc, cfg.emissive_nits).print();
 
-    let image_files = extract_images(doc, &buffers, base, &textures_dir, cfg.textures.as_deref());
+    let image_files = extract_images(
+        doc,
+        &buffers,
+        base,
+        &textures_dir,
+        cfg.textures.as_deref(),
+        &cfg.fixups,
+    );
     println!(
         "extracted {} textures -> {}",
         image_files.len(),
@@ -199,6 +234,7 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
         asset_prefix: &cfg.asset_prefix,
         replace: cfg.replace,
         emissive_nits: cfg.emissive_nits,
+        fixups: &cfg.fixups,
         colliders: cfg.colliders,
         baked: HashMap::new(),
         entities: String::new(),
@@ -367,13 +403,28 @@ struct Repairs {
     /// Base-colour texture image index → is its alpha a genuine binary cutmask. Decoding is
     /// expensive and a kit shares a handful of atlases across hundreds of materials, so the
     /// answer is cached per image the way the OBJ path caches it per texture path.
-    cutmask: HashMap<usize, bool>,
+    cutmask: HashMap<String, bool>,
     /// Materials whose zeroed base-colour factor was ignored, and whose alpha mode was promoted.
     zeroed: Vec<String>,
     promoted: Vec<String>,
 }
 
 impl Ctx<'_> {
+    /// The base-colour texture FILENAME for a material, fixup first.
+    ///
+    /// Every consumer goes through here — the emitted `.bsn`, the cutmask test and the OMM bake —
+    /// so a material's texture, its alpha mode and its micromap cannot end up disagreeing about
+    /// which image they are talking about.
+    fn base_color_file(&self, material: &gltf::Material) -> Option<String> {
+        if let Some(file) = material.name().and_then(|n| self.fixups.textures.get(n)) {
+            return Some(file.clone());
+        }
+        let info = material.pbr_metallic_roughness().base_color_texture()?;
+        self.image_files
+            .get(&info.texture().source().index())
+            .cloned()
+    }
+
     /// The alpha cutoff this material should be treated as having, or `None` for opaque.
     ///
     /// `Mask` is taken at its word. `Opaque` is NOT, when the base-colour texture's alpha is a
@@ -388,17 +439,15 @@ impl Ctx<'_> {
             gltf::material::AlphaMode::Blend => return None,
             gltf::material::AlphaMode::Opaque => {}
         }
-        let info = material.pbr_metallic_roughness().base_color_texture()?;
-        let image = info.texture().source().index();
-        if let Some(&known) = self.repairs.borrow().cutmask.get(&image) {
+        let file = self.base_color_file(material)?;
+        if let Some(&known) = self.repairs.borrow().cutmask.get(&file) {
             return known.then_some(0.5);
         }
-        let file = self.image_files.get(&image)?;
-        let cutmask = image::open(self.textures_dir.join(file))
+        let cutmask = image::open(self.textures_dir.join(&file))
             .map(|img| crate::img::classify_cutmask(&img.into_rgba8()))
             .unwrap_or(false);
         let mut repairs = self.repairs.borrow_mut();
-        repairs.cutmask.insert(image, cutmask);
+        repairs.cutmask.insert(file, cutmask);
         if cutmask {
             let name = material.name().unwrap_or("<unnamed>").to_string();
             if !repairs.promoted.contains(&name) {
@@ -444,6 +493,7 @@ struct Ctx<'a> {
     asset_prefix: &'a str,
     replace: bool,
     emissive_nits: Option<fn(&str) -> f32>,
+    fixups: &'a Fixups,
     colliders: bool,
     /// `(mesh index, primitive index) → owner stem`, so shared meshes bake once and instance nodes
     /// reuse the baked `.cluster_mesh`. `None` marks a primitive whose bake failed (entities skipped).
@@ -595,7 +645,14 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
     );
     lint_materials(doc, cfg.emissive_nits).print();
 
-    let image_files = extract_images(doc, &buffers, base, &textures_dir, cfg.textures.as_deref());
+    let image_files = extract_images(
+        doc,
+        &buffers,
+        base,
+        &textures_dir,
+        cfg.textures.as_deref(),
+        &cfg.fixups,
+    );
     println!(
         "extracted {} textures -> {}",
         image_files.len(),
@@ -610,6 +667,7 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
         asset_prefix: &cfg.asset_prefix,
         replace: cfg.replace,
         emissive_nits: cfg.emissive_nits,
+        fixups: &cfg.fixups,
         colliders: cfg.colliders,
         baked: HashMap::new(),
         entities: String::new(),
@@ -958,15 +1016,14 @@ fn bake_primitive(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> O
             // alpha (the material's own cutoff).
             let material = prim.material();
             if let Some(cutoff) = ctx.alpha_cutout(&material)
-                && let Some(info) = material.pbr_metallic_roughness().base_color_texture()
-                && let Some(file) = ctx.image_files.get(&info.texture().source().index())
-                && let Ok(img) = image::open(ctx.textures_dir.join(file))
+                && let Some(file) = ctx.base_color_file(&material)
+                && let Ok(img) = image::open(ctx.textures_dir.join(&file))
             {
                 mesh::attach_omm_rgba(
                     &mut cm,
                     &img.into_rgba8(),
                     cutoff,
-                    file,
+                    &file,
                     &mesh::OmmOptions::from_env(),
                 );
             }
@@ -1144,6 +1201,11 @@ fn material_fields(material: &gltf::Material, ctx: &Ctx) -> String {
     // `base_color` is a `Color` ENUM, so it needs the tuple-variant form (unlike `emissive`,
     // which is a plain `LinearRgba` struct).
     let mut bc = pbr.base_color_factor();
+    // A supplied tint wins over whatever the file says: it exists precisely because the file is
+    // wrong, and it is the only colour some of these materials have.
+    if let Some(tint) = material.name().and_then(|n| ctx.fixups.tints.get(n)) {
+        bc = *tint;
+    } else
     // An all-zero base colour factor beside a base-colour TEXTURE is an export bug, not a black
     // material: multiplying the texture by zero would make referencing it pointless. The
     // fantasy-city kit proves it is a slip rather than a convention -- its foliage materials
@@ -1186,10 +1248,12 @@ fn material_fields(material: &gltf::Material, ctx: &Ctx) -> String {
         }
     }
 
-    if let Some(info) = pbr.base_color_texture() {
-        if let Some(p) = tex_file(info.texture(), ctx) {
-            let _ = write!(fields, " base_color_texture: \"{p}\",");
-        }
+    if let Some(file) = ctx.base_color_file(material) {
+        let _ = write!(
+            fields,
+            " base_color_texture: \"{}/textures/{file}\",",
+            ctx.asset_prefix
+        );
     }
     if let Some(info) = pbr.metallic_roughness_texture() {
         if let Some(p) = tex_file(info.texture(), ctx) {
@@ -1265,6 +1329,7 @@ fn extract_images(
     base: Option<&Path>,
     textures_dir: &Path,
     overrides: Option<&Path>,
+    fixups: &Fixups,
 ) -> HashMap<usize, String> {
     let mut files = HashMap::new();
     let mut used_names: HashSet<String> = HashSet::new();
@@ -1317,6 +1382,17 @@ fn extract_images(
     }
     if overridden > 0 {
         println!("  took {overridden} texture(s) from the override directory");
+    }
+    // A fixup names a texture the glTF never referenced, so nothing above copied it in. Do that
+    // here or the `.bsn` points at a file that is not there.
+    for file in fixups.textures.values() {
+        if textures_dir.join(file).exists() {
+            continue;
+        }
+        match overrides.map(|dir| fs::copy(dir.join(file), textures_dir.join(file))) {
+            Some(Ok(_)) => println!("  added {file} for a material that referenced none"),
+            _ => eprintln!("  fixup texture {file} not found in the override directory"),
+        }
     }
     files
 }

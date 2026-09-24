@@ -38,3 +38,5 @@ gltf = { version = "1.4.0", default-features = false, features = [
   "KHR_lights_punctual",
 ] }
 serde_json = "1.0.151"
+# `Fixups` is read from a per-kit RON file by the importers.
+serde = { version = "1", features = ["derive"] }

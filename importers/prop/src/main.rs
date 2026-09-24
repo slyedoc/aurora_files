@@ -51,6 +51,11 @@ struct Args {
     /// Re-bake `.cluster_mesh` files even if they already exist.
     #[arg(long)]
     replace: bool,
+    /// RON file of per-material repairs for what the export did not carry: base-colour tints
+    /// (LINEAR) and base-colour textures for materials whose reference was lost. See
+    /// `kits/fantasy_city.fixups.ron`.
+    #[arg(long)]
+    fixups: Option<PathBuf>,
     /// Directory of replacement textures, matched by the filename the embedded image would get.
     /// For a kit whose glb was exported lossily beside an intact texture pack -- the fantasy-city
     /// glb flattened its foliage from RGBA to RGB, discarding the cutout alpha.
@@ -105,6 +110,14 @@ fn main() {
         replace: args.replace,
         root_components,
         emissive_nits,
+        fixups: args
+            .fixups
+            .map(|path| {
+                let text = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+                ron::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+            })
+            .unwrap_or_default(),
         textures: args.textures,
         colliders: args.colliders,
         group_depth: args.group_depth,
