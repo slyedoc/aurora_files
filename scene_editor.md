@@ -35,14 +35,29 @@ per prop, its name, and the longest side of the AABB it was baked at. A search b
 Known: ~50 fps with 297 rows live. Every row is a `ListItem` with hover, theming and an
 accessibility node, which is not free. Virtualize if it starts to matter.
 
-## R1 — the shelf
+## R1 — the shelf (done)
 
-Replace the text rows with **live prop instances** — the real `.bsn`, scaled into a uniform cell
-by the manifest's extent (cap that scale at 1, or a teaspoon gets blown up to the size of a
-forge). This is cheap here in a way it is not elsewhere: aurora does ~1M shared-BLAS
-instances at 240+ fps, so 297 real props cost nothing and no thumbnail bake, render-to-texture or
-icon pipeline is needed. The extent in the manifest is what makes the layout possible without
-instantiating everything first and measuring it.
+The filtered props stand on a grid as **live instances** — the real `.bsn`, no thumbnail bake, no
+render-to-texture, no icon pipeline. Cheap here in a way it is not elsewhere: aurora carries ~1M
+shared-BLAS instances, so 297 real props run at 120 fps and anything sharing geometry shares a
+BLAS. Searching narrows the shelf and the list together.
+
+* The manifest makes the layout single-pass. Scale (`KitProp::fit`, capped at 1 so a teaspoon is
+  not inflated to the size of a forge) and placement (`shelf_offset`, because a prop's origin is
+  wherever the artist left it — the blacksmith station runs -2.5 to +3.8 across) both come off the
+  baked AABB. Measuring the spawned scenes instead would mean laying out only after 297 assets
+  had streamed, and re-laying out as each arrived.
+* Columns are `ceil(sqrt(n))`, so the grid stays roughly square whether the search left three
+  props or three hundred. A fixed width turns 297 props into a 38-row corridor.
+* The camera frames into the part of the window the palette pane does NOT cover, rather than the
+  window centre, or a third of the grid hides behind the list.
+* Selecting lifts the prop out of the grid rather than spawning a copy elsewhere: it is already
+  on the shelf, and a second instance somewhere else asks you to find it twice.
+
+**Aiming this camera means moving two things.** `FreeCameraState` caches yaw and pitch, seeded
+once from the transform and authoritative after that — the controller rebuilds `rotation` from
+the cache the moment the mouse moves. Writing `Transform` alone looks right until you touch the
+mouse, at which point the camera snaps back to its startup orientation. `aim()` sets both.
 
 ## R2 — place
 

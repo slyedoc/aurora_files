@@ -23,7 +23,7 @@
 mod kit;
 
 use bevy::{
-    camera_controller::free_camera::{FreeCamera, FreeCameraPlugin},
+    camera_controller::free_camera::{FreeCamera, FreeCameraPlugin, FreeCameraState},
     feathers::{
         controls::{
             FeathersListRow, FeathersListView, FeathersTextInput, FeathersTextInputContainer,
@@ -105,10 +105,11 @@ fn main() {
     app.insert_resource(args);
     app.init_resource::<PaletteDirty>();
     app.init_resource::<Selection>();
+    app.init_resource::<Shelf>();
     app.add_systems(Startup, setup);
     app.add_systems(
         Update,
-        (seed_filter, rebuild_palette, show_selection).chain(),
+        (seed_filter, rebuild_palette, rebuild_shelf, show_selection).chain(),
     );
     app.run();
 }
@@ -125,13 +126,14 @@ struct PaletteHeader;
 #[derive(Component, Clone, Default)]
 struct PaletteSearch;
 
-/// A row's prop, so a selection says which one — and how big it is, which is what lets the
-/// preview frame it without loading it first.
+/// A row's prop: the manifest entry whole, not a copy of some of its fields.
+///
+/// The bounds are the reason. Scale, shelf placement and camera framing all come off the baked
+/// AABB, and an origin that is not centred in its own box (the blacksmith station runs -2.5 to
+/// +3.8 across) has to be corrected for — which needs `min` and `max`, not just their difference.
 #[derive(Component, Clone, Default)]
 struct PropRow {
-    name: String,
-    bsn: String,
-    size: Vec3,
+    prop: kit::KitProp,
 }
 
 /// Substring match against prop names, lower-cased by the time it gets here.
@@ -140,11 +142,11 @@ struct Filter(String);
 
 /// The prop currently selected in the palette.
 #[derive(Resource, Default)]
-struct Selection(Option<PropRow>);
+struct Selection(Option<kit::KitProp>);
 
-/// The prop instance standing in the world, so the next selection can replace it.
-#[derive(Component)]
-struct Preview;
+/// The props currently on the shelf, in layout order — the filtered set.
+#[derive(Resource, Default)]
+struct Shelf(Vec<kit::KitProp>);
 
 /// Set when the rows need respawning — the search changed, or a manifest finished loading.
 #[derive(Resource, Default)]
@@ -319,48 +321,142 @@ fn row_selected(
     let Ok(row) = rows.get(change.value) else {
         return;
     };
-    info!("palette: selected {} ({})", row.name, row.bsn);
-    selection.0 = Some(row.clone());
+    info!("palette: selected {} ({})", row.prop.name, row.prop.bsn);
+    selection.0 = Some(row.prop.clone());
 }
 
-/// Show the selected prop: one instance at the origin, with the camera pulled back to frame it.
+/// Metres per shelf cell.
+const CELL: f32 = 1.6;
+/// Fraction of the window the palette pane covers on the left. The shelf is framed into what is
+/// LEFT of it rather than on the window centre, or half the grid hides behind the list.
+const PANE: f32 = 0.30;
+
+/// Columns for `n` props: roughly square, so the grid frames well whether the search left three
+/// props or three hundred. A fixed width makes 297 props a 38-row corridor the camera has to
+/// retreat down until nothing is legible.
+fn columns_for(n: usize) -> usize {
+    (n as f32).sqrt().ceil().max(1.0) as usize
+}
+
+/// A prop standing on the shelf, and where it sits.
+#[derive(Component)]
+struct ShelfItem {
+    prop: kit::KitProp,
+    /// Cell centre on the floor, so a pick can test against the prop's own box.
+    centre: Vec3,
+    scale: f32,
+}
+
+/// Lay the filtered props out as LIVE instances on a grid.
 ///
-/// Framing comes from the manifest rather than from the loaded scene, which is the whole reason
-/// the extent is baked in. A `.bsn` streams in over several frames, so measuring the spawned
-/// entity would mean waiting, guessing when it had settled, and moving the camera after the prop
-/// was already on screen. Knowing the size up front means the shot is right on the first frame —
-/// and it is the same fact R1 needs to lay 297 of these out in uniform cells.
-fn show_selection(
+/// No thumbnails, no render-to-texture, no icon bake: the shelf shows the real `.bsn`, because on
+/// this engine that is the cheap option rather than the expensive one — aurora carries ~1M
+/// shared-BLAS instances, so a few hundred props are nothing, and every prop that shares geometry
+/// with another shares its BLAS too.
+///
+/// The manifest is what makes the layout possible in one pass. Scale and offset come from the
+/// baked AABB, so each prop is placed correctly on the frame it is requested; measuring the
+/// spawned scenes instead would mean laying out only after 297 assets had finished streaming,
+/// and re-laying out as each one arrived.
+fn rebuild_shelf(
     mut commands: Commands,
     assets: Res<AssetServer>,
-    selection: Res<Selection>,
-    previous: Query<Entity, With<Preview>>,
-    mut camera: Single<&mut Transform, With<Camera3d>>,
+    shelf: Res<Shelf>,
+    previous: Query<Entity, With<ShelfItem>>,
+    camera: Single<(&mut Transform, &mut FreeCameraState), With<Camera3d>>,
 ) {
-    if !selection.is_changed() {
+    if !shelf.is_changed() {
         return;
     }
     for entity in &previous {
         commands.entity(entity).despawn();
     }
-    let Some(prop) = &selection.0 else {
-        return;
-    };
-    commands.spawn((
-        Name::new(prop.name.clone()),
-        Preview,
-        ScenePatchInstance(assets.load(&prop.bsn)),
-        // Props bake with their origin on the floor, so nothing needs lifting.
-        Transform::IDENTITY,
-        Visibility::Visible,
-    ));
+    let columns = columns_for(shelf.0.len());
+    let rows = shelf.0.len().div_ceil(columns).max(1);
+    // Centre the grid on the origin so the camera framing below is symmetric.
+    let origin = Vec3::new(
+        -(columns.min(shelf.0.len().max(1)) as f32 - 1.0) * CELL * 0.5,
+        0.0,
+        -(rows as f32 - 1.0) * CELL * 0.5,
+    );
+    for (i, prop) in shelf.0.iter().enumerate() {
+        let centre = origin
+            + Vec3::new(
+                (i % columns) as f32 * CELL,
+                0.0,
+                (i / columns) as f32 * CELL,
+            );
+        let scale = prop.fit(CELL * 0.8);
+        commands.spawn((
+            Name::new(prop.name.clone()),
+            ShelfItem {
+                prop: prop.clone(),
+                centre,
+                scale,
+            },
+            ScenePatchInstance(assets.load(&prop.bsn)),
+            Transform::from_translation(centre + prop.shelf_offset(scale))
+                .with_scale(Vec3::splat(scale)),
+            Visibility::Visible,
+        ));
+    }
+    // Frame the whole grid. The extents are known up front, so the shot is right immediately
+    // rather than after 297 assets have streamed in.
+    let (width, depth) = (columns as f32 * CELL, rows as f32 * CELL);
+    let span = width.max(depth);
+    // Fit the span into the part of the window the pane leaves, and slide the whole view sideways
+    // by half the pane so the grid sits in the clear.
+    let fit = span / (1.0 - PANE);
+    let shift = -fit * PANE * 0.5;
+    let eye = Vec3::new(shift, fit * 0.62, depth * 0.5 + fit * 0.72);
+    aim(camera, eye, Vec3::new(shift, CELL * 0.25, 0.0));
+    info!("shelf: {} props over {rows} row(s)", shelf.0.len());
+}
 
-    // Far enough back that the longest side fits, and never closer than arm's length — a teaspoon
-    // would otherwise put the camera inside its own near plane.
-    let longest = prop.size.max_element().max(0.1);
-    let eye = Vec3::new(0.6, 0.55, 1.0).normalize() * (longest * 1.9).max(0.8);
-    let focus = Vec3::Y * prop.size.y * 0.45;
-    **camera = Transform::from_translation(eye + focus).looking_at(focus, Vec3::Y);
+/// Point the free camera at something, and tell the CONTROLLER where it now looks.
+///
+/// `FreeCameraState` caches yaw and pitch, seeded once from the transform and authoritative from
+/// then on: the controller rebuilds `rotation` from that cache the moment the mouse moves. So
+/// writing `Transform` alone appears to work and then snaps back to the startup orientation on
+/// the first mouse input — the camera "resets" exactly when you touch it. Anything that aims this
+/// camera has to move both.
+fn aim(
+    mut camera: Single<(&mut Transform, &mut FreeCameraState), With<Camera3d>>,
+    eye: Vec3,
+    focus: Vec3,
+) {
+    let (transform, state) = &mut *camera;
+    **transform = Transform::from_translation(eye).looking_at(focus, Vec3::Y);
+    // The controller reads YXZ and writes ZYX; for a roll-free look-at the yaw/pitch pair is the
+    // same either way, which is what lets the cache be refreshed from the result.
+    let (yaw, pitch, _roll) = transform.rotation.to_euler(EulerRot::YXZ);
+    state.yaw = yaw;
+    state.pitch = pitch;
+}
+
+/// Lift the selected prop clear of the shelf.
+///
+/// A nudge upward rather than a second instance at the origin: the prop is already on the shelf,
+/// and spawning a copy somewhere else asks you to find it again. Rising out of the grid reads at
+/// a glance and keeps the thing you picked in the place you picked it from.
+fn show_selection(selection: Res<Selection>, mut items: Query<(&ShelfItem, &mut Transform)>) {
+    if !selection.is_changed() {
+        return;
+    }
+    let chosen = selection.0.as_ref().map(|p| p.bsn.as_str());
+    for (item, mut transform) in &mut items {
+        let lifted = Some(item.prop.bsn.as_str()) == chosen;
+        let base = item.centre + item.prop.shelf_offset(item.scale);
+        let want = base
+            + if lifted {
+                Vec3::Y * CELL * 0.35
+            } else {
+                Vec3::ZERO
+            };
+        if transform.translation != want {
+            transform.translation = want;
+        }
+    }
 }
 
 /// Respawn the list whenever the search changes or a manifest finishes loading.
@@ -374,6 +470,7 @@ fn rebuild_palette(
     manifests: Res<Assets<Kit>>,
     filter: Res<Filter>,
     mut selection: ResMut<Selection>,
+    mut shelf: ResMut<Shelf>,
     body: Single<(Entity, Option<&Children>), With<PaletteBody>>,
     mut header: Single<&mut Text, With<PaletteHeader>>,
 ) {
@@ -431,11 +528,7 @@ fn rebuild_palette(
                 // One figure, not three: at a glance you want "furniture or architecture", and
                 // the longest side answers that.
                 format!("{:.1}m", prop.size().max_element()),
-                PropRow {
-                    name: prop.name.clone(),
-                    bsn: prop.bsn.clone(),
-                    size: prop.size(),
-                },
+                prop.clone(),
             ));
         }
     }
@@ -454,12 +547,11 @@ fn rebuild_palette(
     {
         *selected_once = true;
         info!("palette: --select {} ({})", prop.name, prop.bsn);
-        selection.0 = Some(PropRow {
-            name: prop.name.clone(),
-            bsn: prop.bsn.clone(),
-            size: prop.size(),
-        });
+        selection.0 = Some(prop.clone());
     }
+
+    // The shelf shows exactly what the list shows, so searching narrows both.
+    shelf.0 = pending;
 
     let shown = rows.len();
     // `FeathersListViewProps::rows` is a `Box<dyn SceneList>`; `Vec<S: Scene>` is a `SceneList`,
@@ -503,10 +595,10 @@ fn rebuild_palette(
 /// Two columns rather than one string, because the pane is narrow by design and the name is the
 /// part that can afford to be cut. A single formatted line clips from the right, which loses the
 /// size — the one field you cannot reconstruct by squinting at the name.
-fn row(label: String, trailing: String, prop: PropRow) -> impl Scene {
+fn row(label: String, trailing: String, prop: kit::KitProp) -> impl Scene {
     bsn! {
         @FeathersListRow
-        PropRow { name: {prop.name}, bsn: {prop.bsn}, size: {prop.size}, }
+        PropRow { prop: {prop}, }
         Children [
             (
                 Node {

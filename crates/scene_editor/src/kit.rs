@@ -22,7 +22,7 @@ pub struct Kit {
 }
 
 /// One placeable `.bsn`, with the bounds it was baked at.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct KitProp {
     /// The prop's name, which is its source glTF node's name sanitized.
     pub name: String,
@@ -46,6 +46,31 @@ impl KitProp {
     /// The prop's extent in metres.
     pub fn size(&self) -> Vec3 {
         self.max() - self.min()
+    }
+
+    /// The uniform scale that fits this prop inside a cube of side `cell`.
+    ///
+    /// Capped at 1 so a teaspoon is not inflated to the size of a forge: a shelf is for finding
+    /// things, and blowing every prop up to the same size throws away the one cue that tells a
+    /// hand prop from a building at a glance. Small things simply sit small in their cell.
+    pub fn fit(&self, cell: f32) -> f32 {
+        let longest = self.size().max_element();
+        if longest <= f32::EPSILON {
+            1.0
+        } else {
+            (cell / longest).min(1.0)
+        }
+    }
+
+    /// Where to put this prop's origin so it stands centred on `cell`, on the floor of the shelf.
+    ///
+    /// A prop bakes with its own origin wherever the artist left it — usually on the floor, but
+    /// not always centred in X/Z (the blacksmith station runs from -2.5 to +3.8 across). Without
+    /// this the shelf lays out by ORIGIN and the grid reads as ragged even though the cells are
+    /// exact.
+    pub fn shelf_offset(&self, scale: f32) -> Vec3 {
+        let centre = (self.min() + self.max()) * 0.5 * scale;
+        Vec3::new(-centre.x, -self.min().y * scale, -centre.z)
     }
 
     /// The name with its namespace prefix removed, for display only.
