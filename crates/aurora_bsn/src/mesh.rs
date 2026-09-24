@@ -215,7 +215,19 @@ pub fn attach_omm_rgba(
     }
 
     // REPEAT to match the runtime sampler.
-    let bake = omm::bake(&alpha, w, h, &uvs, &indices, cutoff, format, subdiv, true, options.scale).ok()?;
+    let bake = omm::bake(
+        &alpha,
+        w,
+        h,
+        &uvs,
+        &indices,
+        cutoff,
+        format,
+        subdiv,
+        true,
+        options.scale,
+    )
+    .ok()?;
     if bake.descs.is_empty() {
         return None; // wholly uniform (all opaque / transparent): special indices only
     }

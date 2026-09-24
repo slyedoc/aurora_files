@@ -163,6 +163,7 @@ fn bake_clump(tree: &str, ctx: &Tree, cfg: &SpeedTreeConfig) {
             [0.0; 3],
             [0.0, 0.0, 0.0, 1.0],
             [1.0; 3],
+            None,
         );
         emitted += 1;
     }
@@ -344,6 +345,7 @@ fn walk(node: &gltf::Node, parent: Mat4, ctx: &mut Tree) {
                 [0.0; 3],
                 [0.0, 0.0, 0.0, 1.0],
                 [1.0; 3],
+                None,
             );
             ctx.emitted += 1;
         }

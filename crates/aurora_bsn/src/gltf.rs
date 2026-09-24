@@ -40,6 +40,15 @@ pub struct GltfConfig {
     /// Per-scene fallback for emissive magnitude (nits), keyed on material name, used only when a
     /// material ships no `KHR_materials_emissive_strength`. `None` keeps the glTF value (×1).
     pub emissive_nits: Option<fn(&str) -> f32>,
+    /// Directory of replacement textures, matched by the filename the embedded image would get.
+    ///
+    /// For a kit whose glb was exported lossily beside an intact texture pack. Anything not found
+    /// there falls back to the embedded copy, so a partial directory is fine.
+    pub textures: Option<PathBuf>,
+    /// Also bake each primitive's collision to `meshes/<stem>.collider` and name it from the
+    /// entity that carries the mesh. Off by default: collision is dead weight in a scene
+    /// nothing walks around in, and the file is a second copy of the geometry.
+    pub colliders: bool,
     /// [`bake_gltf_per_group`] only: how deep to descend before calling a node a "group".
     ///
     /// `1` (the default) splits on top-level scene nodes, which is right for a kit whose roots ARE
@@ -59,6 +68,8 @@ impl Default for GltfConfig {
             replace: false,
             root_components: String::new(),
             emissive_nits: None,
+            textures: None,
+            colliders: false,
             group_depth: 1,
         }
     }
@@ -88,7 +99,7 @@ pub fn bake_gltf_scene(cfg: &GltfConfig) {
     lint_materials(doc, cfg.emissive_nits).print();
 
     // Extract every embedded/sourced image once (raw bytes, no re-encode) → `image index → file`.
-    let image_files = extract_images(doc, &buffers, base, &textures_dir);
+    let image_files = extract_images(doc, &buffers, base, &textures_dir, cfg.textures.as_deref());
     println!(
         "extracted {} textures -> {}",
         image_files.len(),
@@ -103,13 +114,17 @@ pub fn bake_gltf_scene(cfg: &GltfConfig) {
         asset_prefix: &cfg.asset_prefix,
         replace: cfg.replace,
         emissive_nits: cfg.emissive_nits,
+        colliders: cfg.colliders,
         baked: HashMap::new(),
         entities: String::new(),
         emitted: 0,
         baked_count: 0,
         proxies: 0,
+        collider_count: 0,
+        collided: HashMap::new(),
         failed_count: 0,
         bounds: None,
+        repairs: Default::default(),
     };
 
     let scene = doc
@@ -124,12 +139,20 @@ pub fn bake_gltf_scene(cfg: &GltfConfig) {
     let bsn_path = cfg.out_dir.join(format!("{}.bsn", cfg.scene_name));
     fs::write(&bsn_path, bsn).expect("write .bsn");
 
+    ctx.report_repairs();
     println!(
         "baked {} meshes ({} failed) -> {}",
         ctx.baked_count,
         ctx.failed_count,
         meshes_dir.display()
     );
+    if ctx.colliders {
+        println!(
+            "baked {} colliders -> {}",
+            ctx.collider_count,
+            meshes_dir.display()
+        );
+    }
     println!("wrote {} entities -> {}", ctx.emitted, bsn_path.display());
 }
 
@@ -161,7 +184,7 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
     );
     lint_materials(doc, cfg.emissive_nits).print();
 
-    let image_files = extract_images(doc, &buffers, base, &textures_dir);
+    let image_files = extract_images(doc, &buffers, base, &textures_dir, cfg.textures.as_deref());
     println!(
         "extracted {} textures -> {}",
         image_files.len(),
@@ -176,13 +199,17 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
         asset_prefix: &cfg.asset_prefix,
         replace: cfg.replace,
         emissive_nits: cfg.emissive_nits,
+        colliders: cfg.colliders,
         baked: HashMap::new(),
         entities: String::new(),
         emitted: 0,
         baked_count: 0,
         proxies: 0,
+        collider_count: 0,
+        collided: HashMap::new(),
         failed_count: 0,
         bounds: None,
+        repairs: Default::default(),
     };
 
     let scene = doc
@@ -260,12 +287,20 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
     let master_path = cfg.out_dir.join(format!("{}.bsn", cfg.scene_name));
     fs::write(&master_path, master).expect("write master .bsn");
 
+    ctx.report_repairs();
     println!(
         "baked {} meshes ({} failed) -> {}",
         ctx.baked_count,
         ctx.failed_count,
         meshes_dir.display()
     );
+    if ctx.colliders {
+        println!(
+            "baked {} colliders -> {}",
+            ctx.collider_count,
+            meshes_dir.display()
+        );
+    }
     // The KIT MANIFEST. A bevy `AssetServer` cannot enumerate — there is no "list the .bsn files"
     // call, and a shipped build has no directory to scan anyway. So anything that wants to SHOW
     // what a kit contains (a palette, a placement tool, an XR shelf) needs an index, and bake time
@@ -320,6 +355,87 @@ fn group_scene_name(name: Option<&str>, index: usize, used: &mut HashSet<String>
     stem
 }
 
+/// Repairs for materials whose export does not say what the author meant.
+///
+/// Both cases below come from the same class of bug: a DCC material instance whose parameters
+/// were left at their slot defaults, exported literally. They are worth correcting in the
+/// importer rather than in the source, because the correction is decidable from the data — a
+/// material cannot have meant either of these — and because every kit exported that way will
+/// arrive the same shape.
+#[derive(Default)]
+struct Repairs {
+    /// Base-colour texture image index → is its alpha a genuine binary cutmask. Decoding is
+    /// expensive and a kit shares a handful of atlases across hundreds of materials, so the
+    /// answer is cached per image the way the OBJ path caches it per texture path.
+    cutmask: HashMap<usize, bool>,
+    /// Materials whose zeroed base-colour factor was ignored, and whose alpha mode was promoted.
+    zeroed: Vec<String>,
+    promoted: Vec<String>,
+}
+
+impl Ctx<'_> {
+    /// The alpha cutoff this material should be treated as having, or `None` for opaque.
+    ///
+    /// `Mask` is taken at its word. `Opaque` is NOT, when the base-colour texture's alpha is a
+    /// genuine binary cutmask: a texture that is a third holes and two thirds solid is a foliage
+    /// card, and declaring it opaque renders the card as a black quad. Blend is left alone —
+    /// that is a real choice with a different renderer path.
+    fn alpha_cutout(&self, material: &gltf::Material) -> Option<f32> {
+        match material.alpha_mode() {
+            gltf::material::AlphaMode::Mask => {
+                return Some(material.alpha_cutoff().unwrap_or(0.5));
+            }
+            gltf::material::AlphaMode::Blend => return None,
+            gltf::material::AlphaMode::Opaque => {}
+        }
+        let info = material.pbr_metallic_roughness().base_color_texture()?;
+        let image = info.texture().source().index();
+        if let Some(&known) = self.repairs.borrow().cutmask.get(&image) {
+            return known.then_some(0.5);
+        }
+        let file = self.image_files.get(&image)?;
+        let cutmask = image::open(self.textures_dir.join(file))
+            .map(|img| crate::img::classify_cutmask(&img.into_rgba8()))
+            .unwrap_or(false);
+        let mut repairs = self.repairs.borrow_mut();
+        repairs.cutmask.insert(image, cutmask);
+        if cutmask {
+            let name = material.name().unwrap_or("<unnamed>").to_string();
+            if !repairs.promoted.contains(&name) {
+                repairs.promoted.push(name);
+            }
+        }
+        cutmask.then_some(0.5)
+    }
+
+    /// Note a material whose base-colour factor was zeroed against a texture, once.
+    fn note_zeroed(&self, material: &gltf::Material) {
+        let name = material.name().unwrap_or("<unnamed>").to_string();
+        let mut repairs = self.repairs.borrow_mut();
+        if !repairs.zeroed.contains(&name) {
+            repairs.zeroed.push(name);
+        }
+    }
+
+    fn report_repairs(&self) {
+        let repairs = self.repairs.borrow();
+        if !repairs.zeroed.is_empty() {
+            println!(
+                "  repaired {} material(s) whose base colour factor was 0 beside a texture: {}",
+                repairs.zeroed.len(),
+                repairs.zeroed.join(", ")
+            );
+        }
+        if !repairs.promoted.is_empty() {
+            println!(
+                "  promoted {} opaque material(s) to alpha Mask (cutmask texture): {}",
+                repairs.promoted.len(),
+                repairs.promoted.join(", ")
+            );
+        }
+    }
+}
+
 struct Ctx<'a> {
     buffers: &'a [gltf::buffer::Data],
     image_files: &'a HashMap<usize, String>,
@@ -328,6 +444,7 @@ struct Ctx<'a> {
     asset_prefix: &'a str,
     replace: bool,
     emissive_nits: Option<fn(&str) -> f32>,
+    colliders: bool,
     /// `(mesh index, primitive index) → owner stem`, so shared meshes bake once and instance nodes
     /// reuse the baked `.cluster_mesh`. `None` marks a primitive whose bake failed (entities skipped).
     baked: HashMap<(usize, usize), Option<String>>,
@@ -336,6 +453,14 @@ struct Ctx<'a> {
     baked_count: usize,
     /// Nodes swapped for a `.bsn` reference (see [`bsn_proxy`]).
     proxies: usize,
+    /// Per-material export repairs, behind a `RefCell` because the emit path only has `&Ctx`.
+    repairs: core::cell::RefCell<Repairs>,
+    /// `.collider` files written this run.
+    collider_count: usize,
+    /// `(mesh index, primitive index) → collider stem`, separate from `baked` on purpose:
+    /// whether a primitive needs collision is a property of the NODE, and the first node to
+    /// reference a shared mesh may be one that opts out.
+    collided: HashMap<(usize, usize), Option<String>>,
     failed_count: usize,
     /// World-space AABB of everything emitted since the last reset, for the kit manifest.
     bounds: Option<(Vec3, Vec3)>,
@@ -416,6 +541,12 @@ fn walk(node: &gltf::Node, parent: Mat4, ctx: &mut Ctx) {
                 Some(mat) => format!("{node_name}.{mat}"),
                 None => format!("{node_name}#{}", prim.index()),
             };
+            // Collision, when the asset is baked with it and this node has not opted out. The
+            // flat path needs this as much as the hierarchy one: a kit of props is exactly the
+            // thing a character walks into, and `--colliders` silently did nothing here.
+            let collider = (ctx.colliders && collides(node))
+                .then(|| ensure_collider(&mesh, &prim, ctx))
+                .flatten();
             bsn::write_entity_trs(
                 &mut ctx.entities,
                 ctx.asset_prefix,
@@ -425,6 +556,7 @@ fn walk(node: &gltf::Node, parent: Mat4, ctx: &mut Ctx) {
                 translation.to_array(),
                 rotation.to_array(),
                 scale.to_array(),
+                collider.as_deref(),
             );
             ctx.emitted += 1;
         }
@@ -463,7 +595,7 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
     );
     lint_materials(doc, cfg.emissive_nits).print();
 
-    let image_files = extract_images(doc, &buffers, base, &textures_dir);
+    let image_files = extract_images(doc, &buffers, base, &textures_dir, cfg.textures.as_deref());
     println!(
         "extracted {} textures -> {}",
         image_files.len(),
@@ -478,13 +610,17 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
         asset_prefix: &cfg.asset_prefix,
         replace: cfg.replace,
         emissive_nits: cfg.emissive_nits,
+        colliders: cfg.colliders,
         baked: HashMap::new(),
         entities: String::new(),
         emitted: 0,
         baked_count: 0,
         proxies: 0,
+        collider_count: 0,
+        collided: HashMap::new(),
         failed_count: 0,
         bounds: None,
+        repairs: Default::default(),
     };
 
     let scene = doc
@@ -501,12 +637,28 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
     let bsn_path = cfg.out_dir.join(format!("{}.bsn", cfg.scene_name));
     fs::write(&bsn_path, bsn).expect("write .bsn");
 
+    ctx.report_repairs();
     println!(
         "baked {} meshes ({} failed) -> {}",
         ctx.baked_count,
         ctx.failed_count,
         meshes_dir.display()
     );
+    if ctx.colliders {
+        println!(
+            "baked {} colliders -> {}",
+            ctx.collider_count,
+            meshes_dir.display()
+        );
+    }
+    if ctx.colliders {
+        println!(
+            "baked {} colliders ({} primitives collide) -> {}",
+            ctx.collider_count,
+            ctx.collided.values().filter(|s| s.is_some()).count(),
+            meshes_dir.display()
+        );
+    }
     println!(
         "wrote {} node entities (hierarchy) -> {}",
         ctx.emitted,
@@ -522,7 +674,9 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
 /// in for an asset baked elsewhere. The importer emits a scene reference at the
 /// proxy's transform and drops its geometry.
 ///
-///     empty.  ["bsn"] = "speedtree/White_Oak.bsn"
+/// ```text
+/// empty.  ["bsn"] = "speedtree/White_Oak.bsn"
+/// ```
 ///
 /// Blender writes object custom properties into the glTF node's `extras`
 /// (`export_extras=True`), so placement stays in the .blend where you can see it
@@ -532,6 +686,85 @@ fn bsn_proxy(node: &gltf::Node) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(extras.get()).ok()?;
     let path = value.get("bsn")?.as_str()?;
     (!path.is_empty()).then(|| path.replace('"', "'"))
+}
+
+/// Does this node want collision? Default yes (with `--colliders`); a Blender object carrying
+/// `collide = 0` opts out. Water, ceilings and light fixtures are the usual ones: a collider on
+/// the pool surface has agents walking on water, and a coffered ceiling 11 m up is voxelisation
+/// cost for a surface nothing can reach.
+fn collides(node: &gltf::Node) -> bool {
+    let Some(extras) = node.extras().as_ref() else {
+        return true;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(extras.get()) else {
+        return true;
+    };
+    match value.get("collide") {
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(serde_json::Value::Number(n)) => n.as_f64().unwrap_or(1.0) != 0.0,
+        _ => true,
+    }
+}
+
+/// `.collider`: `ACOL`, version, vertex count, triangle count (u32 LE), then the positions
+/// (f32 LE x 3) and the triangles (u32 LE x 3). Read by `bevy_aurora::collision`.
+fn write_collider(mesh: &Mesh, path: &Path) -> Option<usize> {
+    let bevy::mesh::VertexAttributeValues::Float32x3(positions) =
+        mesh.attribute(Mesh::ATTRIBUTE_POSITION)?
+    else {
+        return None;
+    };
+    // Non-indexed primitives are legal glTF: the triangles are consecutive vertices.
+    let indices: Vec<u32> = match mesh.indices() {
+        Some(Indices::U16(i)) => i.iter().map(|&i| i as u32).collect(),
+        Some(Indices::U32(i)) => i.clone(),
+        _ => (0..positions.len() as u32).collect(),
+    };
+    let triangles = indices.len() / 3;
+    if triangles == 0 {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(16 + positions.len() * 12 + triangles * 12);
+    bytes.extend_from_slice(b"ACOL");
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&(positions.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&(triangles as u32).to_le_bytes());
+    for v in positions.iter().flatten() {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    for i in indices.chunks_exact(3).flatten() {
+        bytes.extend_from_slice(&i.to_le_bytes());
+    }
+    fs::write(path, bytes).ok()?;
+    Some(triangles)
+}
+
+/// Bake this primitive's collision if it is not on disk already, and return its stem.
+///
+/// Positions come from the same `build_primitive_mesh` the render bake uses, so collision is
+/// the render geometry in the node's own local space — the entity's `Transform` places both.
+/// That is only the right shape because these are ARCHITECTURAL bakes; a foliage model wants a
+/// separate collision hull, which is why the WoW importer reads `.phys.obj` instead.
+fn ensure_collider(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> Option<String> {
+    let key = (mesh.index(), prim.index());
+    if let Some(cached) = ctx.collided.get(&key) {
+        return cached.clone();
+    }
+    let stem = format!("mesh{}_{}", mesh.index(), prim.index());
+    let file = ctx.meshes_dir.join(format!("{stem}.collider"));
+    let result = if file.exists() && !ctx.replace {
+        Some(stem)
+    } else if build_primitive_mesh(prim, ctx.buffers)
+        .and_then(|m| write_collider(&m, &file))
+        .is_some()
+    {
+        ctx.collider_count += 1;
+        Some(stem)
+    } else {
+        None
+    };
+    ctx.collided.insert(key, result.clone());
+    result
 }
 
 fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
@@ -620,6 +853,11 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
             .join(", ")
     });
 
+    // Collision, when the asset is baked with it and this node has not opted out. The
+    // component names the geometry only: `bevy_aurora::collision` has no physics engine, and a
+    // scene that named one could not be opened by anything that did not have it.
+    let collide = ctx.colliders && collides(node);
+
     // Single-primitive mesh: inline it on the node (the common case). Extra primitives drop to
     // identity-transform children below so this entity keeps the node's Name for animation.
     if let Some(stem) = prims.first() {
@@ -629,6 +867,19 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
              {pad}bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {{{mat_fields}}})\n",
             ctx.asset_prefix,
         );
+        if collide
+            && let Some(mesh) = node.mesh()
+            && let Some(prim) = mesh
+                .primitives()
+                .find(|p| p.mode() == gltf::mesh::Mode::Triangles)
+            && let Some(col) = ensure_collider(&mesh, &prim, ctx)
+        {
+            let _ = write!(
+                out,
+                "{pad}bevy_aurora::collision::CollisionMesh(\"{}/meshes/{col}.collider\")\n",
+                ctx.asset_prefix,
+            );
+        }
         if let Some(joints) = &skin_joints {
             let _ = write!(
                 out,
@@ -656,13 +907,27 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
             }
             None => String::new(),
         };
+        let col = match collide {
+            true => node
+                .mesh()
+                .and_then(|m| m.primitives().nth(i).map(|p| (m, p)))
+                .and_then(|(m, p)| ensure_collider(&m, &p, ctx))
+                .map(|col| {
+                    format!(
+                        "{cpad}bevy_aurora::collision::CollisionMesh(\"{}/meshes/{col}.collider\")\n",
+                        ctx.asset_prefix,
+                    )
+                })
+                .unwrap_or_default(),
+            false => String::new(),
+        };
         let _ = write!(
             kids,
             "{cpad}bevy_ecs::name::Name(\"{name}#{i}\")\n\
              {cpad}bevy_transform::components::transform::Transform {{ translation: glam::Vec3 {{ x: 0.0, y: 0.0, z: 0.0 }}, rotation: glam::Quat {{ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }}, scale: glam::Vec3 {{ x: 1.0, y: 1.0, z: 1.0 }} }}\n\
              {cpad}bevy_mesh::components::Mesh3d(\"{}/meshes/{stem}.cluster_mesh\")\n\
              {cpad}bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {{{mat}}})\n\
-             {skin}{cpad},\n",
+             {col}{skin}{cpad},\n",
             ctx.asset_prefix,
         );
         ctx.emitted += 1;
@@ -692,13 +957,18 @@ fn bake_primitive(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> O
             // Alpha-cutout primitives get a baked opacity micromap against their base-colour
             // alpha (the material's own cutoff).
             let material = prim.material();
-            if material.alpha_mode() == gltf::material::AlphaMode::Mask
+            if let Some(cutoff) = ctx.alpha_cutout(&material)
                 && let Some(info) = material.pbr_metallic_roughness().base_color_texture()
                 && let Some(file) = ctx.image_files.get(&info.texture().source().index())
                 && let Ok(img) = image::open(ctx.textures_dir.join(file))
             {
-                let cutoff = material.alpha_cutoff().unwrap_or(0.5);
-                mesh::attach_omm_rgba(&mut cm, &img.into_rgba8(), cutoff, file, &mesh::OmmOptions::from_env());
+                mesh::attach_omm_rgba(
+                    &mut cm,
+                    &img.into_rgba8(),
+                    cutoff,
+                    file,
+                    &mesh::OmmOptions::from_env(),
+                );
             }
             let w = BufWriter::new(File::create(&mesh_file).expect("create .cluster_mesh"));
             write_cluster_mesh_sync(&cm, w).expect("write .cluster_mesh");
@@ -873,7 +1143,16 @@ fn material_fields(material: &gltf::Material, ctx: &Ctx) -> String {
     // asset falls back to default white plastic. glTF's base color factor is linear, and
     // `base_color` is a `Color` ENUM, so it needs the tuple-variant form (unlike `emissive`,
     // which is a plain `LinearRgba` struct).
-    let bc = pbr.base_color_factor();
+    let mut bc = pbr.base_color_factor();
+    // An all-zero base colour factor beside a base-colour TEXTURE is an export bug, not a black
+    // material: multiplying the texture by zero would make referencing it pointless. The
+    // fantasy-city kit proves it is a slip rather than a convention -- its foliage materials
+    // export 0,0,0,0 while one of them, `..._Static_pot`, exports 1,1,1,1 off the same atlas.
+    // Drop the factor and let the texture speak.
+    if pbr.base_color_texture().is_some() && bc[0] == 0.0 && bc[1] == 0.0 && bc[2] == 0.0 {
+        ctx.note_zeroed(material);
+        bc = [1.0, 1.0, 1.0, 1.0];
+    }
     if bc[0] != 1.0 || bc[1] != 1.0 || bc[2] != 1.0 || bc[3] != 1.0 {
         let _ = write!(
             fields,
@@ -944,8 +1223,8 @@ fn material_fields(material: &gltf::Material, ctx: &Ctx) -> String {
     }
 
     // Alpha cutout (foliage, fences): emit `AlphaMode::Mask` so the ray tracer any-hit-tests it.
-    if material.alpha_mode() == gltf::material::AlphaMode::Mask {
-        let cutoff = material.alpha_cutoff().unwrap_or(0.5);
+    // Via `alpha_cutout`, so a material the exporter wrongly called opaque still gets its cutout.
+    if let Some(cutoff) = ctx.alpha_cutout(material) {
         let _ = write!(
             fields,
             " alpha_mode: bevy_aurora::material::AlphaMode::Mask({}),",
@@ -985,15 +1264,32 @@ fn extract_images(
     buffers: &[gltf::buffer::Data],
     base: Option<&Path>,
     textures_dir: &Path,
+    overrides: Option<&Path>,
 ) -> HashMap<usize, String> {
     let mut files = HashMap::new();
     let mut used_names: HashSet<String> = HashSet::new();
+    let mut overridden = 0usize;
     for image in doc.images() {
         let idx = image.index();
         match image.source() {
             gltf::image::Source::View { view, mime_type } => {
                 let ext = ext_for_mime(mime_type);
                 let name = unique_name(image.name(), idx, ext, &mut used_names);
+                // Prefer a same-named file from the override directory over the embedded copy.
+                //
+                // A kit often ships a glb beside the texture pack it was built from, and the glb
+                // is the LOSSIER of the two: the fantasy-city export flattened every foliage
+                // texture from RGBA to RGB, discarding a cutout alpha that is 40% holes. Nothing
+                // downstream can recover that -- no alpha means no cutmask, so no `AlphaMode::Mask`
+                // and no opacity micromap, and the leaf cards trace as solid quads.
+                if let Some(dir) = overrides
+                    && let Ok(bytes) = fs::read(dir.join(&name))
+                {
+                    let _ = fs::write(textures_dir.join(&name), bytes);
+                    overridden += 1;
+                    files.insert(idx, name);
+                    continue;
+                }
                 let buf = &buffers[view.buffer().index()].0;
                 let start = view.offset();
                 let bytes = &buf[start..start + view.length()];
@@ -1018,6 +1314,9 @@ fn extract_images(
                 files.insert(idx, src_name);
             }
         }
+    }
+    if overridden > 0 {
+        println!("  took {overridden} texture(s) from the override directory");
     }
     files
 }

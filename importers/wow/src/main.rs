@@ -53,9 +53,9 @@
 //! The tracer's light table averages the emissive texture, so an emitter lights the scene
 //! by what it actually emits.
 //!
-//! Collision: every placement of a model with collision gets a second, static-body entity
-//! (`RigidBody::Static` + zero's `ColliderMesh`, which shares one built collider between all
-//! of the model's instances). An M2's comes from wow.export's `<model>.phys.obj` -- WoW's own
+//! Collision: every placement of a model with collision gets a second entity carrying
+//! `bevy_aurora::collision::CollisionMesh`, which shares one built collider between all of the
+//! model's instances (zero turns it into an avian static body). An M2's comes from wow.export's `<model>.phys.obj` -- WoW's own
 //! collision mesh, so a tree is its trunk and bushes are walked through; a WMO's from its
 //! render triangles, keeping what the json's per-triangle flags mark collidable (collision-
 //! only triangles are not in the OBJ and are lost). Ground clutter never collides.
@@ -478,6 +478,8 @@ fn main() {
                     t.to_array(),
                     p.rotation.to_array(),
                     [p.scale, p.scale, p.scale],
+                    None,
+                    None,
                 );
                 instanced += 1;
                 if let Some((color, lumens, radius)) = sub.glow_light {
@@ -1194,8 +1196,13 @@ fn bake_collider(args: &Args, obj_path: &Path, rel: &str) -> Option<String> {
     Some(stem)
 }
 
-/// A static body at a placement: the model's shared `.collider`, under the placement's own
+/// A collision body at a placement: the model's shared `.collider`, under the placement's own
 /// transform (collision lives in model space, not on the centred render submeshes).
+///
+/// The component is aurora's, which carries GEOMETRY only — zero's `BakedColliderPlugin` turns
+/// it into an avian `Collider` + `RigidBody::Static`. Naming avian here instead made the tile
+/// unopenable by anything without avian in its type registry, the plain `bsn` viewer included
+/// (`unknown type: avian3d::dynamics::rigid_body::RigidBody`, and the whole scene is refused).
 fn write_collider_entity(out: &mut String, prefix: &str, name: &str, stem: &str, p: &Placement) {
     let (t, r) = (p.translation, p.rotation);
     let _ = write!(
@@ -1205,8 +1212,7 @@ fn write_collider_entity(out: &mut String, prefix: &str, name: &str, stem: &str,
          translation: glam::Vec3 {{ x: {}, y: {}, z: {} }}, \
          rotation: glam::Quat {{ x: {}, y: {}, z: {}, w: {} }}, \
          scale: glam::Vec3 {{ x: {s}, y: {s}, z: {s} }} }}\n    \
-         avian3d::dynamics::rigid_body::RigidBody::Static\n    \
-         zero::physics::ColliderMesh(\"{prefix}/meshes/{stem}.collider\"),\n\n",
+         bevy_aurora::collision::CollisionMesh(\"{prefix}/meshes/{stem}.collider\"),\n\n",
         name.replace('"', "'"),
         fmt_f(t.x),
         fmt_f(t.y),

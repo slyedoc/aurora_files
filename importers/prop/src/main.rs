@@ -12,8 +12,8 @@
 
 use std::path::PathBuf;
 
+use aurora_bsn::{GltfConfig, bake_gltf_hierarchy, bake_gltf_per_group, bake_gltf_scene};
 use clap::Parser;
-use aurora_bsn::{bake_gltf_hierarchy, bake_gltf_per_group, bake_gltf_scene, GltfConfig};
 
 #[derive(Parser)]
 #[command(about = "Bake a normalized prop glb → .cluster_mesh + .bsn")]
@@ -51,6 +51,16 @@ struct Args {
     /// Re-bake `.cluster_mesh` files even if they already exist.
     #[arg(long)]
     replace: bool,
+    /// Directory of replacement textures, matched by the filename the embedded image would get.
+    /// For a kit whose glb was exported lossily beside an intact texture pack -- the fantasy-city
+    /// glb flattened its foliage from RGBA to RGB, discarding the cutout alpha.
+    #[arg(long)]
+    textures: Option<PathBuf>,
+    /// Also bake each mesh's collision to `meshes/<stem>.collider` and name it from the entity
+    /// that carries the mesh, so the scene can be walked (navmesh, character capsules). A
+    /// Blender object with `collide = 0` in its custom properties is left out.
+    #[arg(long)]
+    colliders: bool,
 }
 
 /// `emissive_nits` is a plain `fn` pointer in `GltfConfig` (no captures), so a CLI-provided scale
@@ -95,6 +105,8 @@ fn main() {
         replace: args.replace,
         root_components,
         emissive_nits,
+        textures: args.textures,
+        colliders: args.colliders,
         group_depth: args.group_depth,
     };
 

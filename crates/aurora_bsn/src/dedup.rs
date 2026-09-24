@@ -45,7 +45,10 @@ pub fn diffuse_key(m: &tobj::Model, materials: &[tobj::Material]) -> String {
 /// as a match). Guards mesh sharing: an instance must reuse the owner's UVs exactly.
 pub fn uvs_match(a: &tobj::Mesh, b: &tobj::Mesh) -> bool {
     a.texcoords.len() == b.texcoords.len()
-        && a.texcoords.iter().zip(&b.texcoords).all(|(x, y)| (x - y).abs() < 1e-4)
+        && a.texcoords
+            .iter()
+            .zip(&b.texcoords)
+            .all(|(x, y)| (x - y).abs() < 1e-4)
 }
 
 pub fn centroid(p: &[V3]) -> V3 {
@@ -117,7 +120,13 @@ pub fn kabsch_fit(p: &[V3], q: &[V3]) -> KabschFit {
     ];
     let shift = 1.0
         + 2.0
-            * (sxx.abs() + syy.abs() + szz.abs() + sxy.abs() + sxz.abs() + syx.abs() + syz.abs()
+            * (sxx.abs()
+                + syy.abs()
+                + szz.abs()
+                + sxy.abs()
+                + sxz.abs()
+                + syx.abs()
+                + syz.abs()
                 + szx.abs()
                 + szy.abs());
     let mut v = [1.0, 0.3, -0.2, 0.1];
@@ -140,9 +149,21 @@ pub fn kabsch_fit(p: &[V3], q: &[V3]) -> KabschFit {
     }
     let (qw, qx, qy, qz) = (v[0], v[1], v[2], v[3]);
     let rotm = [
-        [1.0 - 2.0 * (qy * qy + qz * qz), 2.0 * (qx * qy - qw * qz), 2.0 * (qx * qz + qw * qy)],
-        [2.0 * (qx * qy + qw * qz), 1.0 - 2.0 * (qx * qx + qz * qz), 2.0 * (qy * qz - qw * qx)],
-        [2.0 * (qx * qz - qw * qy), 2.0 * (qy * qz + qw * qx), 1.0 - 2.0 * (qx * qx + qy * qy)],
+        [
+            1.0 - 2.0 * (qy * qy + qz * qz),
+            2.0 * (qx * qy - qw * qz),
+            2.0 * (qx * qz + qw * qy),
+        ],
+        [
+            2.0 * (qx * qy + qw * qz),
+            1.0 - 2.0 * (qx * qx + qz * qz),
+            2.0 * (qy * qz - qw * qx),
+        ],
+        [
+            2.0 * (qx * qz - qw * qy),
+            2.0 * (qy * qz + qw * qx),
+            1.0 - 2.0 * (qx * qx + qy * qy),
+        ],
     ];
     let mut num = 0.0;
     for i in 0..n {
@@ -152,7 +173,11 @@ pub fn kabsch_fit(p: &[V3], q: &[V3]) -> KabschFit {
     let mut err = 0.0;
     for i in 0..n {
         let ra = mat_vec(&rotm, pc[i]);
-        let d = [s * ra[0] - qc[i][0], s * ra[1] - qc[i][1], s * ra[2] - qc[i][2]];
+        let d = [
+            s * ra[0] - qc[i][0],
+            s * ra[1] - qc[i][1],
+            s * ra[2] - qc[i][2],
+        ];
         err += v_dot(d, d);
     }
     let residual = (err / n as f64).sqrt() / (sq / n as f64).sqrt();

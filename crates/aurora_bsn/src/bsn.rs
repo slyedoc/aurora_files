@@ -47,19 +47,27 @@ pub fn write_entity(
     // loader does not coerce across precisions.
     let mut transform = format!(
         "translation: glam::Vec3 {{ x: {}, y: {}, z: {} }}",
-        f(translation[0] as f32), f(translation[1] as f32), f(translation[2] as f32),
+        f(translation[0] as f32),
+        f(translation[1] as f32),
+        f(translation[2] as f32),
     );
     let [qw, qx, qy, qz] = rotation;
     if qx * qx + qy * qy + qz * qz > 1e-10 {
         let _ = write!(
             transform,
             ", rotation: glam::Quat {{ x: {}, y: {}, z: {}, w: {} }}",
-            f(qx as f32), f(qy as f32), f(qz as f32), f(qw as f32),
+            f(qx as f32),
+            f(qy as f32),
+            f(qz as f32),
+            f(qw as f32),
         );
     }
     if (scale - 1.0).abs() > 1e-9 {
         let s = f(scale as f32);
-        let _ = write!(transform, ", scale: glam::Vec3 {{ x: {s}, y: {s}, z: {s} }}");
+        let _ = write!(
+            transform,
+            ", scale: glam::Vec3 {{ x: {s}, y: {s}, z: {s} }}"
+        );
     }
     let _ = write!(
         out,
@@ -86,7 +94,11 @@ pub fn material_fields(
     // NOTE: `base_color` (a `Color::LinearRgba(..)` enum tuple variant) is deferred. Textured
     // materials carry their look via `base_color_texture`.
     if let Some(tex) = material.diffuse_texture.as_deref() {
-        let _ = write!(fields, " base_color_texture: \"{asset_prefix}/textures/{}\",", img::basename(tex));
+        let _ = write!(
+            fields,
+            " base_color_texture: \"{asset_prefix}/textures/{}\",",
+            img::basename(tex)
+        );
         // Displacement (depth) map matched by name — the MTL doesn't reference it. Carried on the
         // material since glTF can't; consumed by tessellation (scale/bias tuned when it renders).
         if let Some(disp) = img::match_displacement(tex, displacement_maps) {
@@ -94,7 +106,11 @@ pub fn material_fields(
         }
     }
     if let Some(tex) = material.normal_texture.as_deref() {
-        let _ = write!(fields, " normal_map_texture: \"{asset_prefix}/textures/{}\",", img::basename(tex));
+        let _ = write!(
+            fields,
+            " normal_map_texture: \"{asset_prefix}/textures/{}\",",
+            img::basename(tex)
+        );
     }
     // Genuine alpha cutout (foliage): emit `AlphaMode::Mask` for the ray tracer.
     // The fully-qualified definition module is what the dynamic loader resolves (`Mask` is an enum
@@ -121,6 +137,10 @@ pub fn write_entity_trs(
     translation: [f32; 3],
     rotation: [f32; 4],
     scale: [f32; 3],
+    // Collision geometry stem, when the asset is baked with colliders. Names the geometry only:
+    // `bevy_aurora::collision` has no physics engine, and a scene that named one could not be
+    // opened by anything that did not have it.
+    collider: Option<&str>,
 ) {
     let [tx, ty, tz] = translation;
     let [qx, qy, qz, qw] = rotation;
@@ -128,7 +148,11 @@ pub fn write_entity_trs(
     // Entity `Name` (source `Node.Material`), for debugging/authoring. Constructs via the loader's
     // `String -> HashedStr` conversion (registered by `SolariTransformPlugin`).
     if !name.is_empty() {
-        let _ = write!(out, "    bevy_ecs::name::Name(\"{}\")\n", name.replace('"', "'"));
+        let _ = write!(
+            out,
+            "    bevy_ecs::name::Name(\"{}\")\n",
+            name.replace('"', "'")
+        );
     }
     let _ = write!(
         out,
@@ -137,11 +161,25 @@ pub fn write_entity_trs(
          rotation: glam::Quat {{ x: {}, y: {}, z: {}, w: {} }}, \
          scale: glam::Vec3 {{ x: {}, y: {}, z: {} }} }}\n    \
          bevy_mesh::components::Mesh3d(\"{asset_prefix}/meshes/{mesh_stem}.cluster_mesh\")\n    \
-         bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {{{material_fields}}}),\n\n",
-        f(tx), f(ty), f(tz),
-        f(qx), f(qy), f(qz), f(qw),
-        f(sx), f(sy), f(sz),
+         bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {{{material_fields}}}),\n",
+        f(tx),
+        f(ty),
+        f(tz),
+        f(qx),
+        f(qy),
+        f(qz),
+        f(qw),
+        f(sx),
+        f(sy),
+        f(sz),
     );
+    if let Some(stem) = collider {
+        let _ = write!(
+            out,
+            "    bevy_aurora::collision::CollisionMesh(\"{asset_prefix}/meshes/{stem}.collider\"),\n"
+        );
+    }
+    out.push('\n');
 }
 
 /// Format an f32 as a `.bsn` float literal: fixed-point (never scientific — the lexer rejects

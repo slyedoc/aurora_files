@@ -143,11 +143,13 @@ pub fn copy_textures(
 pub fn sanitize(name: &str) -> String {
     let s: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
-    if s.is_empty() {
-        "mesh".to_string()
-    } else {
-        s
-    }
+    if s.is_empty() { "mesh".to_string() } else { s }
 }

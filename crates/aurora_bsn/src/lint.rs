@@ -78,7 +78,11 @@ pub fn check_emissive(name: &str, emissive: [f32; 3]) -> Option<EmissiveVerdict>
     } else {
         None
     };
-    Some(EmissiveVerdict { luminance: lum, post_exposure: post, warning })
+    Some(EmissiveVerdict {
+        luminance: lum,
+        post_exposure: post,
+        warning,
+    })
 }
 
 /// Whether a material would render as untextured default white — the signature of an import that
@@ -96,7 +100,11 @@ mod tests {
     fn white_point_is_about_1000_nits() {
         let e = exposure(EV100_BLENDER);
         assert!((1.0 / e - 998.0).abs() < 2.0, "white point was {}", 1.0 / e);
-        assert!((0.18 / e - 179.6).abs() < 1.0, "middle grey was {}", 0.18 / e);
+        assert!(
+            (0.18 / e - 179.6).abs() < 1.0,
+            "middle grey was {}",
+            0.18 / e
+        );
     }
 
     /// Bistro-style content: emissive is a glTF [0,1] FACTOR and renders black.
@@ -105,7 +113,11 @@ mod tests {
         let v = check_emissive("wine", [0.0, 0.42, 1.0]).expect("emitter");
         let w = v.warning.expect("should warn");
         assert!(w.contains("FACTOR"), "{w}");
-        assert!(v.post_exposure < 0.001, "post exposure was {}", v.post_exposure);
+        assert!(
+            v.post_exposure < 0.001,
+            "post exposure was {}",
+            v.post_exposure
+        );
     }
 
     /// The hoverboard bug: scene-relative Cycles radiance, too big to be a factor, too dim to see.
@@ -119,9 +131,17 @@ mod tests {
     /// Physical nits — the fixed hoverboard and the shipped assets — must stay silent.
     #[test]
     fn physical_nits_are_quiet() {
-        for rgb in [[85.0, 1615.0, 1700.0], [100.0, 100.0, 100.0], [2000.0, 2000.0, 2000.0]] {
+        for rgb in [
+            [85.0, 1615.0, 1700.0],
+            [100.0, 100.0, 100.0],
+            [2000.0, 2000.0, 2000.0],
+        ] {
             let v = check_emissive("neon", rgb).expect("emitter");
-            assert!(v.warning.is_none(), "unexpected warning for {rgb:?}: {:?}", v.warning);
+            assert!(
+                v.warning.is_none(),
+                "unexpected warning for {rgb:?}: {:?}",
+                v.warning
+            );
         }
     }
 
@@ -129,8 +149,18 @@ mod tests {
     /// the CONVENTION rather than a ban on dim emitters.
     #[test]
     fn threshold_is_one_tenth_of_white() {
-        assert!(check_emissive("dim", [120.0, 120.0, 120.0]).unwrap().warning.is_none());
-        assert!(check_emissive("dimmer", [80.0, 80.0, 80.0]).unwrap().warning.is_some());
+        assert!(
+            check_emissive("dim", [120.0, 120.0, 120.0])
+                .unwrap()
+                .warning
+                .is_none()
+        );
+        assert!(
+            check_emissive("dimmer", [80.0, 80.0, 80.0])
+                .unwrap()
+                .warning
+                .is_some()
+        );
     }
 
     #[test]
