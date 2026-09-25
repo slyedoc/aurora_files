@@ -36,15 +36,7 @@ use bevy::{
     text::{EditableText, TextEdit, TextEditChange},
     ui_widgets::ValueChange,
 };
-use bevy_aurora::{
-    auto_exposure::AuroraExposure,
-    dev_shaders::DevShaderPlugin,
-    dev_ui::DevUIPlugin,
-    material::{AuroraMaterial, AuroraMaterial3d},
-    ray_default_plugins::RayDefaultPlugins,
-    sky::Sky,
-    util::{ScreenshotExt, TimeoutAppExt},
-};
+use bevy_aurora::prelude::*;
 use clap::Parser;
 
 use kit::{Kit, KitLoader, Kits};
@@ -90,7 +82,7 @@ fn main() {
     // Aurora's `DevUIPlugin` already adds `FeathersPlugins` (and the inspector's), which is where
     // the list view, scrollbar and text input systems come from.
     app.add_plugins((
-        RayDefaultPlugins.set(bevy::log::LogPlugin {
+        AuroraDefaultPlugins.set(bevy::log::LogPlugin {
             filter: util::LOG_FILTER.into(),
             ..default()
         }),

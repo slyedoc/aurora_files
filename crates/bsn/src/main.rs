@@ -15,15 +15,8 @@ use bevy::{
     prelude::*,
     scene::ScenePatchInstance,
 };
-use bevy_aurora::{
-    auto_exposure::AuroraExposure,
-    dev_shaders::DevShaderPlugin,
-    dev_ui::DevUIPlugin,
-    dlss::{DlssPlugin, RrPreset},
-    ray_default_plugins::RayDefaultPlugins,
-    sky::Sky,
-    util::{ScreenshotExt, TimeoutAppExt},
-};
+use bevy_aurora::prelude::*;
+use bevy_aurora::dlss::DlssPlugin;
 use clap::Parser;
 use util::park::HoverParkPlugin;
 
@@ -106,7 +99,7 @@ fn main() {
 
     let mut app = App::new();
     app.add_plugins((
-        RayDefaultPlugins
+        AuroraDefaultPlugins
             .set(bevy::log::LogPlugin {
                 filter: util::LOG_FILTER.into(),
                 ..default()

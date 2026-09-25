@@ -15,9 +15,7 @@ use bevy::{
     camera_controller::free_camera::{FreeCamera, FreeCameraPlugin},
     prelude::*,
 };
-use bevy_aurora::{
-    dev_shaders::DevShaderPlugin, dev_ui::DevUIPlugin, ray_default_plugins::RayDefaultPlugins,
-};
+use bevy_aurora::prelude::*;
 use clap::Parser;
 
 use crate::{
@@ -105,7 +103,7 @@ fn main() {
         .or_else(|| std::env::var_os("CLAUDECODE").map(|_| 60.0));
 
     let mut app = App::new();
-    app.add_plugins(RayDefaultPlugins.set(bevy::log::LogPlugin {
+    app.add_plugins(AuroraDefaultPlugins.set(bevy::log::LogPlugin {
         filter: util::LOG_FILTER.into(),
         ..default()
     }));

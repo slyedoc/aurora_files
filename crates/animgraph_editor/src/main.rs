@@ -50,15 +50,8 @@ use bevy_animation_graph::{
         },
     },
 };
-use bevy_aurora::{
-    auto_exposure::AuroraExposure,
-    dev_shaders::DevShaderPlugin,
-    dev_ui::DevUIPlugin,
-    material::{AuroraMaterial, AuroraMaterial3d},
-    ray_default_plugins::RayDefaultPlugins,
-    ui_render::UiPolyline,
-    util::{ScreenshotExt, TimeoutAppExt},
-};
+use bevy_aurora::prelude::*;
+use bevy_aurora::ui_render::UiPolyline;
 use clap::Parser;
 use uuid::Uuid;
 
@@ -272,7 +265,7 @@ fn main() {
     let mut app = App::new();
     app.insert_resource(UiTheme(create_dark_theme()));
     app.add_plugins((
-        RayDefaultPlugins
+        AuroraDefaultPlugins
             .set(bevy::log::LogPlugin {
                 filter: util::LOG_FILTER.into(),
                 ..default()
