@@ -1,4 +1,4 @@
-//! Generic prop importer: `.glb` → `.cluster_mesh` + `.bsn`.
+//! Generic prop importer: `.glb` → `.aurora_mesh` + `.bsn`.
 //!
 //! Most importers here differ only by a few strings, so this takes them as flags. Reach for a
 //! bespoke crate only when an asset needs real import LOGIC (san_miguel's submesh filters,
@@ -16,13 +16,13 @@ use aurora_bsn::{GltfConfig, bake_gltf_hierarchy, bake_gltf_per_group, bake_gltf
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(about = "Bake a normalized prop glb → .cluster_mesh + .bsn")]
+#[command(about = "Bake a normalized prop glb → .aurora_mesh + .bsn")]
 struct Args {
     /// Source `.glb`/`.gltf`.
     glb: PathBuf,
     /// Output asset directory (`meshes/`, `textures/`, and the `.bsn`).
     out_dir: PathBuf,
-    /// `.bsn` scene name and filename stem. Defaults to the glb's file stem.
+    /// `.bsn` scene name and filename stem. Defaults to the glb's file stem, lowercased.
     #[arg(long)]
     scene_name: Option<String>,
     /// Asset-server-relative prefix the `.bsn` uses. Defaults to the out dir's name.
@@ -41,6 +41,9 @@ struct Args {
     /// Required for any RIGGED source. The flat path bakes every primitive to a world transform
     /// and emits nothing for a transform-only node, so a joint empty vanishes and its children
     /// freeze where they were baked - leaving the game nothing to rotate.
+    ///
+    /// Any animations in the source come with it: `<clip>.animclip` + `<clip>.anim.ron` per clip
+    /// and `<scene>.skn.ron`, keyed by the node names this writes.
     #[arg(long)]
     hierarchy: bool,
     /// Multiply every emissive that ships no `KHR_materials_emissive_strength` by this, in nits.
@@ -48,7 +51,7 @@ struct Args {
     /// pre-extension assets encode emitters in 0..1 and render ~1000x too dim). See `aurora_bsn::lint`.
     #[arg(long)]
     emissive_nits: Option<f32>,
-    /// Re-bake `.cluster_mesh` files even if they already exist.
+    /// Re-bake `.aurora_mesh` files even if they already exist.
     #[arg(long)]
     replace: bool,
     /// RON file of per-material repairs for what the export did not carry: base-colour tints
@@ -66,6 +69,14 @@ struct Args {
     /// Blender object with `collide = 0` in its custom properties is left out.
     #[arg(long)]
     colliders: bool,
+    /// Uniform scale baked into the asset (vertices, node and clip translations), for a source
+    /// authored in other units: `0.01` lands a centimetre rig in metres.
+    #[arg(long, default_value_t = 1.0)]
+    scale: f32,
+    /// With `--hierarchy`: take the clips from this glb instead -- a meshless animation export of
+    /// the same rig (matching node names).
+    #[arg(long)]
+    anim: Option<PathBuf>,
 }
 
 /// `emissive_nits` is a plain `fn` pointer in `GltfConfig` (no captures), so a CLI-provided scale
@@ -82,7 +93,7 @@ fn main() {
     let stem = args
         .glb
         .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
+        .map(|s| s.to_string_lossy().to_lowercase())
         .unwrap_or_else(|| "prop".to_string());
     let scene_name = args.scene_name.unwrap_or(stem);
     let asset_prefix = args.asset_prefix.unwrap_or_else(|| {
@@ -121,6 +132,8 @@ fn main() {
         textures: args.textures,
         colliders: args.colliders,
         group_depth: args.group_depth,
+        scale: args.scale,
+        anim: args.anim,
     };
 
     if args.per_group {

@@ -1,11 +1,11 @@
 # aurora_files
 
-Offline importers that bake source scenes (OBJ/MTL, glTF, SpeedTree) into `.cluster_mesh`
+Offline importers that bake source scenes (OBJ/MTL, glTF, SpeedTree) into `.aurora_mesh`
 assets + `.bsn` scenes for [aurora](https://github.com/slyedoc/aurora) (crate `bevy_aurora`,
 bevy branch `slyedoc/bevy@aurora`), plus the `bsn` viewer that renders them there. `assets/` and
 `raw/` are generated / downloaded and stay out of git.
 
-Meshes are written as a flat single-LOD cluster set (`aurora_cluster_mesh::ClusterMeshData::from_mesh_flat`);
+Meshes are written as a flat single-LOD cluster set (`aurora_mesh::AuroraMesh::clustered`);
 the format is unchanged, so files baked by the old engine load too — `scripts/migrate_bsn_to_aurora.py`
 rewrites their `.bsn` vocabulary (type paths + f32 transforms) in place. Opacity micromaps and the
 `.animclip` transcoder were dropped with the old engine.
@@ -105,16 +105,12 @@ cargo run --release -p zeroday_import -- \
   raw/ZeroDay_v1/_glb/measure_one.glb assets/zeroday MeasureOne
 ```
 
-Optional checks: `python3 scripts/glb_json.py <file.glb>` (inspect a glb), plus the generic
-headless `.bsn` load (no GPU) and a clip round-trip:
+Optional checks: `python3 scripts/glb_json.py <file.glb>` (inspect a glb), and the viewer, whose
+log reports `instances=<resolved>/<total>` once the scene is in the TLAS:
 
 ```sh
-cargo run --release -p prop_import --bin load_test -- "$PWD/assets" zeroday/MeasureOne.bsn
-cargo run --release -p prop_import --bin clip_check -- assets/zeroday/MeasureOne.animclip DynamicCamera2
+cargo run --release -p bsn -- zeroday/MeasureOne.bsn
 ```
-
-Use `prop_import`'s `load_test`, not `zeroday_import`'s — the generic one registers the animation
-component, so it actually loads an animated `.bsn` instead of silently reporting 0 for everything.
 
 Render in zero (solari_files is just the asset factory — copy the output over, then run the example):
 
@@ -157,20 +153,15 @@ Stage B — glb → `assets/hoverboard/{hoverboard.bsn, meshes/}` (`textures/` s
 
 ```sh
 cargo run --release -p prop_import -- raw/hoverboard/hoverboard.glb assets/hoverboard --scene-name hoverboard
-cargo run --release -p solari_view -- assets/hoverboard/hoverboard.bsn
+cargo run --release -p bsn -- hoverboard/hoverboard.bsn
 ```
 
-Headless check (no GPU) — asserts the factors survive the round trip and that nothing pulled in a
-texture handle. Note the absolute asset root; a relative one resolves against the crate dir:
-
-```sh
-cargo run --release -p prop_import --bin load_test -- "$PWD/assets" hoverboard/hoverboard.bsn
-```
+Check it in the viewer (`cargo run --release -p bsn -- hoverboard/hoverboard.bsn`).
 
 This asset is why `gltf.rs` now emits the scalar factors it used to defer. `base_color` is a `Color`
 ENUM, so it needs a tuple-variant literal — `Color::LinearRgba(LinearRgba { .. })` — where the other
 fields are plain structs; that was the reason it was deferred. A wrong type path there bakes
-cleanly and fails only at load, which is what `load_test` guards.
+cleanly and fails only at load, so open the result in the viewer after a bake.
 
 **Emissive is authored in NITS on export, not in the .blend's numbers.** The Cycles values are
 scene-relative (tuned against tens-of-watts area lights and a -0.1 view exposure); Solari is
@@ -209,7 +200,7 @@ blender -b --python scripts/asset_to_glb.py -- \
 
 cargo run --release -p prop_import -- raw/phalanx/phalanx.glb assets/ships/phalanx \
   --scene-name PhalanxCorvette --asset-prefix ships/phalanx
-cargo run --release -p solari_view -- 'assets/ships/*/*.bsn'
+cargo run --release -p bsn -- 'ships/*/*.bsn'
 ```
 
 | ship | length | meshes | materials |
@@ -230,7 +221,7 @@ Known gap: Praetor's `Turret1` mesh resolves to no texture set — its name carr
 two turret sets exist, so it stays a flat colour rather than guess. The run warns.
 
 Not done: the ships SHARE engine and turret models (12 of 48 texture names are common), but each
-bake emits its own `.cluster_mesh`, so the geometry is duplicated rather than instanced. Baking the
+bake emits its own `.aurora_mesh`, so the geometry is duplicated rather than instanced. Baking the
 parts once as a kit (`--per-group`) and referencing them would let the ships share a BLAS.
 
 
@@ -252,11 +243,14 @@ blender -b /mnt/code/p/assets/mech/mech.blend --python scripts/asset_to_glb.py -
 # meshless anim glb (joints only) + bake + validate
 blender -b --python /mnt/code/p/assets/mech/build/anim_cli.py -- raw/mech/mech_anim.glb
 cargo run --release -p prop_import -- raw/mech/mech.glb assets/mech \
-  --scene-name DRV4_Drover --anim raw/mech/mech_anim.glb
-cargo run --release -p prop_import --bin load_test -- "$PWD/assets" mech/DRV4_Drover.bsn
-cp -r assets/mech /mnt/code/p/zero/assets/
-cd /mnt/code/p/zero && cargo run --release --example mech
+  --hierarchy --scene-name drv4_drover --anim raw/mech/mech_anim.glb
+cargo run --release -p bsn -- mech/drv4_drover.bsn
 ```
+
+`anim_cli.py` exports one glTF animation PER BONE (Blender's action-per-object layout), so the
+bake currently writes one single-target clip per bone (`pelvis.animclip`, `knee_l.animclip`, ...)
+rather than one walk cycle. Re-export with the actions merged into one before relying on it.
+zero no longer ships the mech.
 
 | | |
 |---|---|
@@ -296,11 +290,9 @@ needs `AnimationTargetId`/`AnimationPlayer`/`AnimationGraph` plus `Name`/`Childr
 `AnimationPlugin` now registers the loader and the wiring system. Apps get it for free from
 `DefaultPlugins`; there is no plugin to add.
 
-That move is also what makes `load_test` honest. While the type lived in zero, solari_files could
-not register it, `DynamicBsnLoader` hard-errored on the unknown type, and the entire scene failed
-to load reporting 0 for every count — which reads exactly like a broken bake. `zeroday_import
---bin load_test` had been doing that silently since it was written; it now reports 8642 named
-entities and 7293/7293 cluster meshes. Note `register_asset_reflect::<AnimationClip>()` is what
+While the type lived in zero, aurora_files could not register it, `DynamicBsnLoader`
+hard-errored on the unknown type, and the entire scene failed to load reporting 0 for every
+count — which reads exactly like a broken bake. Note `register_asset_reflect::<AnimationClip>()` is what
 lets the `.bsn`'s bare path literal coerce into a `Handle<AnimationClip>`; with only `init_asset`
 the loader reports `type mismatch`.
 
@@ -331,7 +323,7 @@ cp -r assets/hex /mnt/code/p/zero/assets/
 cd /mnt/code/p/zero && cargo run --release -- -s hex --nav-debug
 ```
 
-`--colliders` writes a `.collider` beside every `.cluster_mesh`, cached by `(mesh, prim)` like
+`--colliders` writes a `.collider` beside every `.aurora_mesh`, cached by `(mesh, prim)` like
 the render mesh — the wall panel 270 nodes share bakes ONE collider file. A Blender object with
 `collide = 0` in its custom properties is left out (water, ceilings, light fixtures). Last bake:
 53 meshes, 44 colliders, 270 of 333 mesh entities collide; zero bakes 4 nav islands over it in
@@ -352,7 +344,7 @@ mannequin that rig was authored for. Drop the download under `raw/ual/` so the g
 holds the FBX pair, which nothing here reads).
 
 ```sh
-# the body: skinned glb -> .cluster_mesh + .bsn
+# the body: skinned glb -> .aurora_mesh + .bsn
 cargo run --release -p prop_import -- raw/ual/Unreal-Godot/UAL1_Standard.glb assets/ual \
   --scene-name Mannequin --hierarchy
 # the clips, retargeted onto a rig of your choice (its .bsn), plus .skn.ron / .anim.ron sidecars
@@ -424,25 +416,25 @@ use this same rig and naming, so they drop into the same two commands.
 Run from the repo root, passing a tab-completed path (add `--features dlss` for DLSS):
 
 ```sh
-cargo run --release -p solari_view -- assets/lunarbase/KB3D_LNB_Bench_A.bsn
+cargo run --release -p bsn -- lunarbase/KB3D_LNB_Bench_A.bsn
 ```
 
 Pass a glob to load several scenes at once — each match becomes a row in the bottom-left picker;
 click a row or press `[`/`]` to switch the live scene:
 
 ```sh
-cargo run --release -p solari_view -- 'assets/lunarbase/KB3D_LNB_BldgLG*'
+cargo run --release -p bsn -- 'lunarbase/KB3D_LNB_BldgLG*'
 ```
 
 Quote the glob so the viewer expands it (an unquoted glob the shell already expanded works too). With
 many matches the picker can run taller than the window; `[`/`]` still cycle through every scene even
 when a row is clipped off-screen.
 
-Or install the `solari_view` binary and run it from here:
+Or install the `bsn` binary and run it from here:
 
 ```sh
-cargo install --path crates/viewer
-solari_view assets/lunarbase/KB3D_LNB_Bench_A.bsn
+cargo install --path crates/bsn
+bsn lunarbase/KB3D_LNB_Bench_A.bsn
 ```
 
 
@@ -467,4 +459,43 @@ test its working
 
 ```bash
 echo "$VULKAN_SDK"   # should now read .../1.4.350.1/x86_64
+```
+
+## playground
+
+bevy_ahoy's playground map (CC0, see `raw/playground/license.md`), the level zero's `ahoy` state
+walks a character controller around. The generic importer covers it; `--colliders` bakes the
+`.collider` each mesh names, which zero turns into static trimesh colliders.
+
+```sh
+cargo run --release -p prop_import -- raw/playground/playground.glb assets/playground \
+  --scene-name playground --colliders
+cp -r assets/playground /mnt/code/p/zero/assets/
+```
+
+## sim
+
+zero's orientation-construct set pieces, generated by zero's `tools/blender/sim_set.py` (it
+writes the glbs into `raw/sim/`). One bake per piece, each into its own folder because mesh
+names are numbered per glb; `--hierarchy` keeps the node names zero looks up (`DoorPanelL/R`,
+`ConsoleScreen`).
+
+```sh
+for p in console core door gangway pad platform; do
+  cargo run --release -p prop_import -- raw/sim/$p.glb assets/sim/$p \
+    --hierarchy --scene-name $p --asset-prefix sim/$p --colliders
+done
+rsync -a assets/sim/ /mnt/code/p/zero/assets/sim/
+```
+
+## fox
+
+bevy's animated fox (`raw/fox/Fox.glb`), for aurora's `skinning` example. A `--hierarchy` bake
+writes the source's animations with it -- `<clip>.animclip` + `<clip>.anim.ron` per clip and
+`fox.skn.ron` for bevy_animation_graph -- keyed by the node names it writes. The source is in
+centimetres; `--scale 0.01` bakes it in metres.
+
+```sh
+cargo run --release -p prop_import -- raw/fox/Fox.glb assets/fox --hierarchy --scale 0.01
+rsync -a --delete assets/fox/ /mnt/code/p/aurora/assets/fox/
 ```

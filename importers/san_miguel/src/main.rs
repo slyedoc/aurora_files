@@ -11,7 +11,7 @@ use aurora_bsn::{bake_scene, SceneConfig, SubmeshFilter, SubmeshInfo};
 const DEFAULT_CUTOUT_TEX: &str = "FL11pet3";
 
 #[derive(Parser)]
-#[command(about = "Bake San Miguel OBJ → .cluster_mesh + .bsn")]
+#[command(about = "Bake San Miguel OBJ → .aurora_mesh + .bsn")]
 struct Args {
     /// Source `.obj` (its `.mtl` and textures resolve relative to it).
     obj: PathBuf,
@@ -27,7 +27,7 @@ struct Args {
     /// `Cutout.bsn`. Optional value is the diffuse texture stem to match (default `FL11pet3`).
     #[arg(long, num_args = 0..=1, default_missing_value = DEFAULT_CUTOUT_TEX)]
     cutout_only: Option<String>,
-    /// Re-bake `.cluster_mesh` files even if they already exist (no more `rm -rf meshes`).
+    /// Re-bake `.aurora_mesh` files even if they already exist (no more `rm -rf meshes`).
     #[arg(long)]
     replace: bool,
 }

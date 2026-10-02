@@ -1,7 +1,7 @@
 //! `bevy_city` — bevy's procedural Kenney city, ray traced on aurora.
 //!
 //! A port of `examples/large_scenes/bevy_city` (the fork): the same block layout, density noise,
-//! seeds and car simulation, with every prop a single merged `.cluster_mesh` instance carrying an
+//! seeds and car simulation, with every prop a single merged `.aurora_mesh` instance carrying an
 //! `AuroraMaterial` (kit colormap / variation / flat colour). No LODs, no visibility ranges, no
 //! loading screen: the acceleration structure is the culling structure, and meshes stream in.
 //!
@@ -107,7 +107,7 @@ fn main() {
         filter: util::LOG_FILTER.into(),
         ..default()
     }));
-    app.add_plugins((DevShaderPlugin, DevUIPlugin, FreeCameraPlugin::default()));
+    app.add_plugins((DevUIPlugin, FreeCameraPlugin::default()));
     app.insert_resource(args.clone());
     app.add_systems(Startup, (setup, load_assets, spawn).chain());
     app.add_systems(Update, simulate_cars);

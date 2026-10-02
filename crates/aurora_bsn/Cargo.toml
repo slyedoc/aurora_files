@@ -1,4 +1,4 @@
-# Core of the importer pipeline: OBJ/MTL or glTF -> `.cluster_mesh` assets + a `.bsn` scene for
+# Core of the importer pipeline: OBJ/MTL or glTF -> `.aurora_mesh` assets + a `.bsn` scene for
 # aurora. The per-asset importer binaries are thin wrappers over `bake_scene` / `bake_gltf_*`.
 [package]
 name = "aurora_bsn"
@@ -18,7 +18,7 @@ cc = { version = "1", optional = true }
 
 [dependencies]
 bevy.workspace = true
-aurora_cluster_mesh.workspace = true
+aurora_mesh.workspace = true
 tobj = "4"
 image = { version = "0.25.2", default-features = false, features = ["png", "jpeg", "tga"] }
 # glTF import path (Bistro). Same crate + extension set bevy_gltf uses, so materials/extensions
@@ -36,7 +36,11 @@ gltf = { version = "1.4.0", default-features = false, features = [
   "KHR_materials_emissive_strength",
   # Bistro.glb lists this in extensionsRequired; the lights themselves are not imported.
   "KHR_lights_punctual",
+  # fantasy_city and ZeroDay list it in extensionsRequired; without it the parse is refused.
+  "KHR_texture_transform",
 ] }
 serde_json = "1.0.151"
 # `Fixups` is read from a per-kit RON file by the importers.
 serde = { version = "1", features = ["derive"] }
+# The bevy_animation_graph sidecars (`.skn.ron`, `.anim.ron`) a hierarchy bake writes.
+ron = "0.10"

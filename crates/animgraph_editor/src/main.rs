@@ -280,7 +280,6 @@ fn main() {
                 }),
                 ..default()
             }),
-        DevShaderPlugin,
         // aurora's UI pass owns the draw params every bevy_ui node extracts through; without
         // it every UI system fails validation with "Resource does not exist". It also brings
         // FeathersPlugins and FeathersInspectorPlugins (guarded), so this app adds neither —
@@ -387,7 +386,7 @@ fn setup_ui(
     mut commands: Commands,
     assets: Res<AssetServer>,
     args: Res<Args>,
-    mut meshes: ResMut<Assets<Mesh>>,
+    mut meshes: ResMut<Assets<AuroraMesh>>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<AuroraMaterial>>,
 ) {
@@ -406,7 +405,9 @@ fn setup_ui(
     // nothing for the feet to meet and no contact shadow to read the pose against.
     commands.spawn((
         Name::new("floor"),
-        Mesh3d(meshes.add(util::grid::floor_mesh(util::grid::FLOOR_SIZE))),
+        AuroraMesh3d(meshes.add(AuroraMesh::from_shape(util::grid::floor_mesh(
+            util::grid::FLOOR_SIZE,
+        )))),
         AuroraMaterial3d(materials.add(AuroraMaterial {
             base_color_texture: Some(images.add(util::grid::grid_texture())),
             perceptual_roughness: 0.85,

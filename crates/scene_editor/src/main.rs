@@ -86,7 +86,6 @@ fn main() {
             filter: util::LOG_FILTER.into(),
             ..default()
         }),
-        DevShaderPlugin,
         DevUIPlugin,
         FreeCameraPlugin::default(),
     ));
@@ -147,7 +146,7 @@ struct PaletteDirty(bool);
 fn setup(
     mut commands: Commands,
     assets: Res<AssetServer>,
-    mut meshes: ResMut<Assets<Mesh>>,
+    mut meshes: ResMut<Assets<AuroraMesh>>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<AuroraMaterial>>,
 ) {
@@ -177,7 +176,9 @@ fn setup(
     // floor into a ruler, which is most of what a prop preview is for.
     commands.spawn((
         Name::new("floor"),
-        Mesh3d(meshes.add(util::grid::floor_mesh(util::grid::FLOOR_SIZE))),
+        AuroraMesh3d(meshes.add(AuroraMesh::from_shape(util::grid::floor_mesh(
+            util::grid::FLOOR_SIZE,
+        )))),
         AuroraMaterial3d(materials.add(AuroraMaterial {
             base_color_texture: Some(images.add(util::grid::grid_texture())),
             perceptual_roughness: 0.85,

@@ -1,4 +1,4 @@
-//! Kenney kit importer: `raw/kenney/<kit>/*.glb` → `assets/kenney/<kit>/meshes/<name>.cluster_mesh`
+//! Kenney kit importer: `raw/kenney/<kit>/*.glb` → `assets/kenney/<kit>/meshes/<name>.aurora_mesh`
 //! plus `assets/kenney/<kit>/textures/*.png`.
 //!
 //! Each glb's node tree is flattened and every primitive merged into one mesh in the prop's own
@@ -16,7 +16,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use aurora_cluster_mesh::{ClusterMeshData, write_cluster_mesh_sync};
+use aurora_mesh::{AuroraMesh, write_aurora_mesh};
 use bevy::{
     asset::RenderAssetUsages,
     math::{Mat4, Vec2, Vec3},
@@ -33,7 +33,7 @@ const KITS: [&str; 4] = [
 
 #[derive(Parser)]
 #[command(
-    about = "Bake the Kenney kits (raw/kenney) into merged .cluster_mesh props (assets/kenney)"
+    about = "Bake the Kenney kits (raw/kenney) into merged .aurora_mesh props (assets/kenney)"
 )]
 struct Args {
     /// Source directory holding the kits (see scripts/fetch_kenney.sh).
@@ -70,15 +70,15 @@ fn main() {
         glbs.sort();
         for glb in glbs {
             let stem = glb.file_stem().unwrap().to_string_lossy().to_string();
-            let out = meshes_dir.join(format!("{stem}.cluster_mesh"));
+            let out = meshes_dir.join(format!("{stem}.aurora_mesh"));
             if out.exists() && !args.replace {
                 skipped += 1;
                 continue;
             }
             match bake(&glb) {
                 Some(data) => {
-                    let w = BufWriter::new(File::create(&out).expect("create .cluster_mesh"));
-                    write_cluster_mesh_sync(&data, w).expect("write .cluster_mesh");
+                    let w = BufWriter::new(File::create(&out).expect("create .aurora_mesh"));
+                    write_aurora_mesh(&data, w).expect("write .aurora_mesh");
                     baked += 1;
                 }
                 None => eprintln!("{}: no triangles, skipped", glb.display()),
@@ -103,7 +103,7 @@ fn main() {
 }
 
 /// One merged, world-space (prop-frame) mesh for the glb's default scene.
-fn bake(glb: &Path) -> Option<ClusterMeshData> {
+fn bake(glb: &Path) -> Option<AuroraMesh> {
     let (document, buffers, _images) = gltf::import(glb).expect("import glb");
     let scene = document
         .default_scene()
@@ -168,5 +168,5 @@ fn bake(glb: &Path) -> Option<ClusterMeshData> {
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
     .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
     .with_inserted_indices(Indices::U32(indices));
-    Some(ClusterMeshData::from_mesh_flat(&mesh).expect("cluster mesh"))
+    Some(AuroraMesh::clustered(&mesh).expect("cluster mesh"))
 }

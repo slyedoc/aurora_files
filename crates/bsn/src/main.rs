@@ -8,9 +8,14 @@
 //! `assets/` folder (so the installed binary works from any repo), else this workspace. Scene
 //! paths resolve against that root, which is also what the `.bsn`'s own mesh/texture strings
 //! assume. `--timeout` auto-exits (always on under CLAUDECODE). F2 toggles aurora's dev panel,
-//! F1 the world inspector, Space toggles accumulation.
+//! F1 the world inspector, Space toggles accumulation. A scene baked with clips (`.animclip`
+//! beside its `.bsn`) plays the first on loop; N steps to the next.
 
 use bevy::{
+    animation::{
+        AnimationPlayer,
+        graph::{AnimationGraph, AnimationGraphHandle, AnimationNodeIndex},
+    },
     camera_controller::free_camera::{FreeCamera, FreeCameraPlugin},
     prelude::*,
     scene::ScenePatchInstance,
@@ -107,7 +112,6 @@ fn main() {
             .set(DlssPlugin {
                 preset: args.dlss_preset,
             }),
-        DevShaderPlugin,
         DevUIPlugin,
         FreeCameraPlugin::default(),
         HoverParkPlugin,
@@ -116,7 +120,7 @@ fn main() {
     app.add_timeout_exit(args.timeout, 60.0);
     app.insert_resource(args.clone());
     app.add_systems(Startup, setup);
-    app.add_systems(Update, cycle_sky);
+    app.add_systems(Update, (cycle_sky, next_clip));
     app.run();
 }
 
@@ -217,10 +221,55 @@ fn normalize(raw: &str) -> Option<String> {
     Some(raw.strip_prefix("assets/").unwrap_or(raw).to_string())
 }
 
+/// A scene root's clips, the `.animclip`s baked beside its `.bsn`, and the one playing.
+#[derive(Component)]
+struct SceneClips {
+    clips: Vec<(String, AnimationNodeIndex)>,
+    playing: usize,
+}
+
+/// The `.animclip`s in the folder of `scene` (asset-relative), sorted, as asset paths.
+fn clips_beside(scene: &str) -> Vec<String> {
+    let root = std::path::PathBuf::from(std::env::var_os("BEVY_ASSET_ROOT").expect("set in main"))
+        .join("assets");
+    let dir = std::path::Path::new(scene).parent().unwrap_or(std::path::Path::new(""));
+    let Ok(entries) = std::fs::read_dir(root.join(dir)) else {
+        return Vec::new();
+    };
+    let mut clips: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.ends_with(".animclip")
+                .then(|| dir.join(&name).to_string_lossy().into_owned())
+        })
+        .collect();
+    clips.sort();
+    clips
+}
+
+/// N: every animated scene steps to its next clip.
+fn next_clip(
+    input: Res<ButtonInput<KeyCode>>,
+    mut scenes: Query<(&mut SceneClips, &mut AnimationPlayer)>,
+) {
+    if !input.just_pressed(KeyCode::KeyN) {
+        return;
+    }
+    for (mut clips, mut player) in &mut scenes {
+        clips.playing = (clips.playing + 1) % clips.clips.len();
+        let (name, node) = &clips.clips[clips.playing];
+        player.stop_all();
+        player.play(*node).repeat();
+        info!("bsn: playing {name}");
+    }
+}
+
 fn setup(
     mut commands: Commands,
     args: Res<Args>,
     asset_server: Res<AssetServer>,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
     mut windows: Query<&mut Window>,
 ) {
     let cycle = SkyCycle::discover(args.sky.as_deref());
@@ -243,12 +292,29 @@ fn setup(
     let cols = (scenes.len() as f32).sqrt().ceil().max(1.0) as usize;
     for (i, scene) in scenes.iter().enumerate() {
         let (col, row) = (i % cols, i / cols);
-        commands.spawn((
+        let mut root = commands.spawn((
             Name::new(scene.clone()),
             Transform::from_xyz(col as f32 * args.spacing, 0.0, row as f32 * args.spacing),
             Visibility::Visible,
             ScenePatchInstance(asset_server.load(scene)),
         ));
+        let paths = clips_beside(scene);
+        if !paths.is_empty() {
+            let mut graph = AnimationGraph::new();
+            let clips: Vec<(String, AnimationNodeIndex)> = paths
+                .iter()
+                .map(|p| (p.clone(), graph.add_clip(asset_server.load(p.clone()), 1.0, graph.root)))
+                .collect();
+            let mut player = AnimationPlayer::default();
+            player.play(clips[0].1).repeat();
+            info!("bsn: {scene}: {} clips, playing {} (N for next)", clips.len(), clips[0].0);
+            root.insert((
+                AnimationTargetsByName,
+                player,
+                AnimationGraphHandle(graphs.add(graph)),
+                SceneClips { clips, playing: 0 },
+            ));
+        }
     }
 
     commands.spawn((

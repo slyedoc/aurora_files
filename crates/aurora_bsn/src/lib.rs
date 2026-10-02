@@ -1,7 +1,7 @@
-//! Offline importer core: OBJ/MTL → `.cluster_mesh` assets + a `.bsn` scene for aurora.
+//! Offline importer core: OBJ/MTL → `.aurora_mesh` assets + a `.bsn` scene for aurora.
 //!
-//! Sidesteps glTF: each OBJ submesh is baked to a `.cluster_mesh` (a flat single-LOD cluster set,
-//! see `aurora_cluster_mesh`) and the scene is emitted as Bevy Scene Notation referencing those
+//! Sidesteps glTF: each OBJ submesh is baked to a `.aurora_mesh` (a flat single-LOD cluster set,
+//! see `aurora_mesh`) and the scene is emitted as Bevy Scene Notation referencing those
 //! meshes plus inline `StandardMaterial`s (which, unlike glTF, can carry a displacement/depth
 //! texture). Per-asset importer binaries fill a
 //! [`SceneConfig`] and call [`bake_scene`]; everything reusable lives in the submodules.
@@ -11,8 +11,9 @@ use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-use aurora_cluster_mesh::{ClusterMeshData, write_cluster_mesh_sync};
+use aurora_mesh::{AuroraMesh, write_aurora_mesh};
 
+pub mod anim;
 pub mod bsn;
 pub mod dedup;
 pub mod discovery;
@@ -57,7 +58,7 @@ pub struct SceneConfig {
     /// colonnade) instead of baking each submesh's geometry separately. Confirmed copies are placed
     /// by a recovered `Transform`; see the dedup pass in [`bake_scene`].
     pub dedup: bool,
-    /// Re-bake `.cluster_mesh` files even when they already exist (overwrite). When `false`, an
+    /// Re-bake `.aurora_mesh` files even when they already exist (overwrite). When `false`, an
     /// existing mesh file is left as-is and only the `.bsn` is re-emitted.
     pub replace: bool,
 }
@@ -65,7 +66,7 @@ pub struct SceneConfig {
 type V3 = dedup::V3;
 
 /// Bake the scene described by `cfg`: copy + normalize textures, bake each submesh's
-/// `.cluster_mesh`, and write the `.bsn`.
+/// `.aurora_mesh`, and write the `.bsn`.
 pub fn bake_scene(cfg: &SceneConfig) {
     let meshes_dir = cfg.out_dir.join("meshes");
     fs::create_dir_all(&meshes_dir).expect("create meshes dir");
@@ -218,14 +219,14 @@ pub fn bake_scene(cfg: &SceneConfig) {
             continue;
         };
         let mesh_file = meshes_dir.join(format!(
-            "{}_{i}.cluster_mesh",
+            "{}_{i}.aurora_mesh",
             discovery::sanitize(&models[i].name)
         ));
         if mesh_file.exists() && !cfg.replace {
             continue; // re-runs only re-emit the `.bsn` (use `replace` to overwrite)
         }
         let m = mesh::build_mesh(&models[i].mesh, centroid);
-        match ClusterMeshData::from_mesh_flat(&m) {
+        match AuroraMesh::clustered(&m) {
             Ok(mut cm) => {
                 // Alpha-cutout owners get a baked opacity micromap (the RT cores then resolve
                 // known opaque/transparent micro-regions without the any-hit shader), against
@@ -245,8 +246,8 @@ pub fn bake_scene(cfg: &SceneConfig) {
                         println!("  OMM baked {omm_baked} (latest: {omms} omms, {bytes} B)");
                     }
                 }
-                let w = BufWriter::new(File::create(&mesh_file).expect("create .cluster_mesh"));
-                write_cluster_mesh_sync(&cm, w).expect("write .cluster_mesh");
+                let w = BufWriter::new(File::create(&mesh_file).expect("create .aurora_mesh"));
+                write_aurora_mesh(&cm, w).expect("write .aurora_mesh");
                 baked += 1;
                 if baked % 50 == 0 {
                     println!("  baked {baked}");

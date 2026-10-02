@@ -477,20 +477,29 @@ dependencies = [
 name = "aurora_bsn"
 version = "0.1.0"
 dependencies = [
- "aurora_cluster_mesh",
+ "aurora_mesh",
  "bevy",
  "cc",
  "gltf",
  "image",
+ "ron 0.10.1",
  "serde",
  "serde_json",
  "tobj",
 ]
 
 [[package]]
-name = "aurora_cluster_mesh"
+name = "aurora_material"
 version = "0.1.0"
 dependencies = [
+ "bevy",
+]
+
+[[package]]
+name = "aurora_mesh"
+version = "0.1.0"
+dependencies = [
+ "aurora_material",
  "bevy",
  "bytemuck",
  "lz4_flex",
@@ -558,7 +567,6 @@ dependencies = [
  "bevy_derive",
  "bevy_ecs",
  "bevy_math",
- "bevy_mesh",
  "bevy_platform",
  "bevy_reflect",
  "bevy_time",
@@ -757,12 +765,12 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "ash-window",
- "aurora_cluster_mesh",
+ "aurora_material",
+ "aurora_mesh",
  "bevy",
  "bytemuck",
  "crossbeam",
  "glam",
- "gltf",
  "gpu-allocator",
  "half",
  "log",
@@ -1159,7 +1167,6 @@ version = "0.20.0-dev"
 dependencies = [
  "async-lock",
  "base64 0.23.1",
- "bevy_animation",
  "bevy_app",
  "bevy_asset",
  "bevy_camera",
@@ -3085,6 +3092,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "g1_import"
+version = "0.1.0"
+dependencies = [
+ "aurora_bsn",
+ "bevy",
+ "clap",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3741,7 +3759,7 @@ dependencies = [
 name = "kenney_import"
 version = "0.1.0"
 dependencies = [
- "aurora_cluster_mesh",
+ "aurora_mesh",
  "bevy",
  "clap",
  "gltf",
@@ -7312,7 +7330,7 @@ name = "wow_import"
 version = "0.1.0"
 dependencies = [
  "aurora_bsn",
- "aurora_cluster_mesh",
+ "aurora_mesh",
  "bevy",
  "clap",
  "image",
@@ -7559,11 +7577,11 @@ dependencies = [
 ]
 
 [[patch.unused]]
-name = "bevy_enhanced_input"
-version = "0.26.0"
-source = "git+https://github.com/slyedoc/bevy_enhanced_input?branch=aurora#120b9dfe3e19a6ce4f4cb4c1265565838151e240"
-
-[[patch.unused]]
 name = "avian3d"
 version = "0.8.0-dev"
 source = "git+https://github.com/slyedoc/avian?branch=aurora#d1071c079fec99e042fb407d3679cffe7903cff7"
+
+[[patch.unused]]
+name = "bevy_enhanced_input"
+version = "0.26.0"
+source = "git+https://github.com/slyedoc/bevy_enhanced_input?branch=aurora#120b9dfe3e19a6ce4f4cb4c1265565838151e240"

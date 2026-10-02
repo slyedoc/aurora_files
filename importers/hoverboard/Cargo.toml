@@ -1,4 +1,4 @@
-# Hoverboard importer: bake the procedurally-authored ZR-09 hoverboard glb → `.cluster_mesh` +
+# Hoverboard importer: bake the procedurally-authored ZR-09 hoverboard glb → `.aurora_mesh` +
 # `.bsn`. TEXTURE-FREE — the source materials are procedural (Noise/Voronoi/Pointiness), and rather
 # than bake them to maps the exporter flattens each to the scalar factors `StandardSolariMaterial`
 # already carries, so the ray tracer shades the whole prop with no sampler reads.

@@ -3,7 +3,7 @@
 //! Bakes one opacity micro-map from an alpha texture + a mesh's UVs/indices.
 //! The returned [`OmmBake`] holds VK-ready arrays (owned Rust copies) that map
 //! directly to a `VkMicromapEXT` build + a per-triangle OMM index buffer; they
-//! ship in the `.cluster_mesh` v3 slices and aurora attaches them to the mesh's
+//! ship in the `.aurora_mesh` v3 slices and aurora attaches them to the mesh's
 //! BLAS (`bevy_aurora::omm`).
 
 use std::os::raw::c_int;

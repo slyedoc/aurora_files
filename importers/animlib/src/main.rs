@@ -34,7 +34,8 @@ use glam::{Quat, Vec3};
 struct Args {
     /// Source skinned glb with named animations (UAL1_Standard.glb, a Mixamo export, ...).
     source: PathBuf,
-    /// Target rig: a baked person `.bsn` (bake_person output, identity bind).
+    /// Target rig: a baked person `.bsn` (bake_person output, identity bind). A rig's OWN clips
+    /// need no retarget: `prop_import --hierarchy` writes them with the bake.
     rig: PathBuf,
     /// Output directory; one `<clip>.animclip` per clip.
     out: PathBuf,
@@ -267,6 +268,7 @@ impl Curve {
 struct NodeTracks {
     translation: Option<Curve>,
     rotation: Option<Curve>,
+    scale: Option<Curve>,
 }
 
 struct Clip {
@@ -287,7 +289,11 @@ fn load_source(path: &Path) -> Result<(Vec<SourceNode>, Vec<Clip>), String> {
         .map(|n| {
             let (t, r, _s) = n.transform().decomposed();
             SourceNode {
-                name: n.name().unwrap_or("").to_string(),
+                // The hierarchy bake's `Name` for an unnamed node, so --native finds it in the rig.
+                name: n
+                    .name()
+                    .map(|n| n.replace('"', "'"))
+                    .unwrap_or_else(|| format!("node{}", n.index())),
                 parent: None,
                 rest_t: Vec3::from(t),
                 rest_r: Quat::from_array(r),
@@ -319,6 +325,10 @@ fn load_source(path: &Path) -> Result<(Vec<SourceNode>, Vec<Clip>), String> {
                 Some(gltf::animation::util::ReadOutputs::Rotations(rot)) => {
                     let values = rot.into_f32().collect();
                     entry.rotation = Some(Curve { times, values });
+                }
+                Some(gltf::animation::util::ReadOutputs::Scales(it)) => {
+                    let values = it.map(|v| [v[0], v[1], v[2], 0.0]).collect();
+                    entry.scale = Some(Curve { times, values });
                 }
                 _ => {}
             }
@@ -413,6 +423,7 @@ struct Target {
     times: Vec<f32>,
     rotations: Vec<Quat>,
     translations: Option<Vec<Vec3>>,
+    scales: Option<Vec<Vec3>>,
 }
 
 fn write_animclip(path: &Path, targets: &[Target]) -> Result<(), String> {
@@ -427,7 +438,9 @@ fn write_animclip(path: &Path, targets: &[Target]) -> Result<(), String> {
             put(&(part.len() as u16).to_le_bytes())?;
             put(part.as_bytes())?;
         }
-        let mask = 2u8 | if t.translations.is_some() { 1 } else { 0 };
+        let mask = 2u8
+            | if t.translations.is_some() { 1 } else { 0 }
+            | if t.scales.is_some() { 4 } else { 0 };
         put(&[mask])?;
         if let Some(tr) = &t.translations {
             put(&(t.times.len() as u32).to_le_bytes())?;
@@ -447,6 +460,17 @@ fn write_animclip(path: &Path, targets: &[Target]) -> Result<(), String> {
         for q in &t.rotations {
             for x in q.to_array() {
                 put(&x.to_le_bytes())?;
+            }
+        }
+        if let Some(sc) = &t.scales {
+            put(&(t.times.len() as u32).to_le_bytes())?;
+            for &x in &t.times {
+                put(&x.to_le_bytes())?;
+            }
+            for v in sc {
+                for x in v.to_array() {
+                    put(&x.to_le_bytes())?;
+                }
             }
         }
     }
@@ -530,7 +554,7 @@ fn write_ron<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), String> 
 /// The rig's bone tree as a `.skn.ron` beside its `.bsn`: bevy_animation_graph needs rest poses
 /// in both local and character space, and on this branch it reads them baked rather than
 /// walking a glTF scene at load time.
-fn write_skeleton(rig: &TargetRig, rig_path: &Path) -> Result<PathBuf, String> {
+fn write_skeleton(rig: &TargetRig, rig_path: &Path, root: Vec<String>) -> Result<PathBuf, String> {
     let bones: Vec<graph_assets::BakedBone> = (0..rig.bones.len())
         .map(|b| graph_assets::BakedBone {
             path: rig.path(b),
@@ -539,10 +563,7 @@ fn write_skeleton(rig: &TargetRig, rig_path: &Path) -> Result<PathBuf, String> {
         })
         .collect();
     let serial = graph_assets::SkeletonSerial {
-        source: graph_assets::SkeletonSource::Baked {
-            root: vec!["Armature".to_string()],
-            bones,
-        },
+        source: graph_assets::SkeletonSource::Baked { root, bones },
     };
     let out = rig_path.with_extension("skn.ron");
     write_ron(&out, &serial)?;
@@ -766,7 +787,7 @@ fn main() {
         height_scale
     );
 
-    let skeleton = write_skeleton(&rig, &args.rig).unwrap_or_else(|e| {
+    let skeleton = write_skeleton(&rig, &args.rig, vec!["Armature".to_string()]).unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(1)
     });
@@ -824,6 +845,7 @@ fn main() {
                 times: times.clone(),
                 rotations,
                 translations: (m.dst == pelvis_dst).then(|| pelvis_t.clone()),
+                scales: None,
             });
         }
         let out = args.out.join(format!("{}.animclip", clip.name));

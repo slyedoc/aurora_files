@@ -1,4 +1,4 @@
-# Zero-Day importer: bake a Zero-Day set's geometry glb → .cluster_mesh + a HIERARCHY-preserving
+# Zero-Day importer: bake a Zero-Day set's geometry glb → .aurora_mesh + a HIERARCHY-preserving
 # .bsn (first animated asset), and stage the meshless anim glb the runtime plays.
 #
 #   cargo run --release -p zeroday_import -- <geometry.glb> <out_dir> [asset_prefix] [--anim <glb>]

@@ -1,5 +1,5 @@
 //! Emit the Bevy Scene Notation (`.bsn`): per-submesh entities (a `Transform`, the baked mesh as
-//! `Mesh3d("….cluster_mesh")`, and an inline `AuroraMaterial` in `RaytracingMaterial3d`)
+//! `AuroraMesh3d("….aurora_mesh")`, and an inline `AuroraMaterial` in `AuroraMaterial3d`)
 //! wrapped in the scene envelope. Type paths are what aurora's `.bsn` loader resolves.
 
 use std::fmt::Write as _;
@@ -26,7 +26,7 @@ pub fn scene_with_root(scene_name: &str, root_components: &str, entities: &str) 
 }
 
 /// Append one submesh's `.bsn` entity (comma-terminated): a `Transform` placing the local-space
-/// geometry at its world `translation`, the baked `Mesh3d`, and an inline `RaytracingMaterial3d`.
+/// geometry at its world `translation`, the baked `AuroraMesh3d`, and an inline `AuroraMaterial3d`.
 #[allow(clippy::too_many_arguments)]
 pub fn write_entity(
     out: &mut String,
@@ -72,7 +72,7 @@ pub fn write_entity(
     let _ = write!(
         out,
         "    bevy_transform::components::transform::Transform {{ {transform} }}\n    \
-         bevy_mesh::components::Mesh3d(\"{asset_prefix}/meshes/{mesh_stem}.cluster_mesh\")\n    \
+         bevy_aurora::mesh::AuroraMesh3d(\"{asset_prefix}/meshes/{mesh_stem}.aurora_mesh\")\n    \
          bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {{{}}}),\n\n",
         material_fields(asset_prefix, material, is_cutmask, displacement_maps),
     );
@@ -160,8 +160,8 @@ pub fn write_entity_trs(
          translation: glam::Vec3 {{ x: {}, y: {}, z: {} }}, \
          rotation: glam::Quat {{ x: {}, y: {}, z: {}, w: {} }}, \
          scale: glam::Vec3 {{ x: {}, y: {}, z: {} }} }}\n    \
-         bevy_mesh::components::Mesh3d(\"{asset_prefix}/meshes/{mesh_stem}.cluster_mesh\")\n    \
-         bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {{{material_fields}}}),\n",
+         bevy_aurora::mesh::AuroraMesh3d(\"{asset_prefix}/meshes/{mesh_stem}.aurora_mesh\")\n    \
+         bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {{{material_fields}}})",
         f(tx),
         f(ty),
         f(tz),
@@ -173,13 +173,15 @@ pub fn write_entity_trs(
         f(sy),
         f(sz),
     );
+    // Same entity: in `.bsn` a comma ENDS an entity, so it goes after the last component. A
+    // comma after the material split the collision onto a sibling with no transform.
     if let Some(stem) = collider {
         let _ = write!(
             out,
-            "    bevy_aurora::collision::CollisionMesh(\"{asset_prefix}/meshes/{stem}.collider\"),\n"
+            "\n    bevy_aurora::collision::CollisionMesh(\"{asset_prefix}/meshes/{stem}.collider\")"
         );
     }
-    out.push('\n');
+    out.push_str(",\n\n");
 }
 
 /// Format an f32 as a `.bsn` float literal: fixed-point (never scientific — the lexer rejects

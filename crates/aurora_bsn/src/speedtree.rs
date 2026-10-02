@@ -10,7 +10,7 @@ use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-use aurora_cluster_mesh::{ClusterMeshData, write_cluster_mesh_sync};
+use aurora_mesh::{AuroraMesh, write_aurora_mesh};
 use bevy::math::Mat4;
 
 use crate::gltf::build_primitive_mesh;
@@ -24,7 +24,7 @@ pub struct SpeedTreeConfig {
     pub out_dir: PathBuf,
     /// Asset-server-relative prefix the `.bsn` uses to reference meshes/textures.
     pub asset_prefix: String,
-    /// Re-bake `.cluster_mesh` files even when they already exist.
+    /// Re-bake `.aurora_mesh` files even when they already exist.
     pub replace: bool,
     /// Uniform scale applied to every tree (SpeedTree FBX come in at author units).
     pub scale: f32,
@@ -130,10 +130,10 @@ fn bake_clump(tree: &str, ctx: &Tree, cfg: &SpeedTreeConfig) {
     let mut emitted = 0;
     for (i, src) in ctx.clump_sources.iter().enumerate() {
         let stem = format!("{tree}_clump{k}_p{i}");
-        let file = ctx.meshes_dir.join(format!("{stem}.cluster_mesh"));
+        let file = ctx.meshes_dir.join(format!("{stem}.aurora_mesh"));
         if cfg.replace || !file.exists() {
             let merged = merge_placements(&src.mesh, &placements);
-            let mut cm = match ClusterMeshData::from_mesh_flat(&merged) {
+            let mut cm = match AuroraMesh::clustered(&merged) {
                 Ok(cm) => cm,
                 Err(err) => {
                     eprintln!("  clump bake failed {stem}: {err:?}");
@@ -151,8 +151,8 @@ fn bake_clump(tree: &str, ctx: &Tree, cfg: &SpeedTreeConfig) {
                     &crate::mesh::OmmOptions::from_env(),
                 );
             }
-            let w = BufWriter::new(File::create(&file).expect("create .cluster_mesh"));
-            write_cluster_mesh_sync(&cm, w).expect("write .cluster_mesh");
+            let w = BufWriter::new(File::create(&file).expect("create .aurora_mesh"));
+            write_aurora_mesh(&cm, w).expect("write .aurora_mesh");
         }
         bsn::write_entity_trs(
             &mut entities,
@@ -306,7 +306,7 @@ struct Tree<'a> {
 
 /// Accumulate the world transform and emit one entity per triangle primitive.
 /// The FULL world transform (incl. the source's cm→m node scale) is baked
-/// into the `.cluster_mesh` vertices — assets land at REAL-LIFE METERS with
+/// into the `.aurora_mesh` vertices — assets land at REAL-LIFE METERS with
 /// identity `.bsn` transforms, so no consumer ever needs a unit factor.
 fn walk(node: &gltf::Node, parent: Mat4, ctx: &mut Tree) {
     let world = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
@@ -355,7 +355,7 @@ fn walk(node: &gltf::Node, parent: Mat4, ctx: &mut Tree) {
     }
 }
 
-/// Bake one primitive to `<tree>_m<mi>p<pi>[_wN].cluster_mesh`, attaching an
+/// Bake one primitive to `<tree>_m<mi>p<pi>[_wN].aurora_mesh`, attaching an
 /// OMM when `cut`. `world` is baked into the vertices (real-life meters).
 fn bake_primitive(
     mesh: &gltf::Mesh,
@@ -377,9 +377,10 @@ fn bake_primitive(
     } else {
         base
     };
-    let file = ctx.meshes_dir.join(format!("{stem}.cluster_mesh"));
+    let file = ctx.meshes_dir.join(format!("{stem}.aurora_mesh"));
 
-    let mut bevy_mesh = build_primitive_mesh(prim, ctx.buffers)?;
+    // SpeedTree applies its own --scale through `world` below.
+    let mut bevy_mesh = build_primitive_mesh(prim, ctx.buffers, 1.0)?;
     bake_world_into_mesh(&mut bevy_mesh, world);
     if ctx.cfg.clump > 1 {
         let fields = material_fields(&prim.material(), cut, ctx);
@@ -394,7 +395,7 @@ fn bake_primitive(
         return Some(stem); // re-runs only re-emit the `.bsn`
     }
 
-    let mut cm = match ClusterMeshData::from_mesh_flat(&bevy_mesh) {
+    let mut cm = match AuroraMesh::clustered(&bevy_mesh) {
         Ok(cm) => cm,
         Err(err) => {
             eprintln!("  bake failed {stem}: {err:?}");
@@ -404,14 +405,14 @@ fn bake_primitive(
     if cut {
         attach_cutout_omm(&mut cm, &prim.material(), ctx);
     }
-    let w = BufWriter::new(File::create(&file).expect("create .cluster_mesh"));
-    write_cluster_mesh_sync(&cm, w).expect("write .cluster_mesh");
+    let w = BufWriter::new(File::create(&file).expect("create .aurora_mesh"));
+    write_aurora_mesh(&cm, w).expect("write .aurora_mesh");
     Some(stem)
 }
 
 /// Bake the cutout's opacity micromap from its base-colour image (the tree-prefixed extracted
 /// PNG) and attach it to `cm`.
-fn attach_cutout_omm(cm: &mut ClusterMeshData, material: &gltf::Material, ctx: &Tree) {
+fn attach_cutout_omm(cm: &mut AuroraMesh, material: &gltf::Material, ctx: &Tree) {
     if let Some(file) = base_color_image(material).and_then(|i| ctx.image_files.get(&i))
         && let Ok(img) = image::open(ctx.textures_dir.join(file))
     {

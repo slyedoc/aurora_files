@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use aurora_cluster_mesh::ClusterMeshData;
+use aurora_mesh::AuroraMesh;
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
 use image::RgbaImage;
@@ -81,7 +81,7 @@ pub fn build_mesh(m: &tobj::Mesh, center: V3) -> Mesh {
 // ---- Opacity micromaps ---------------------------------------------------------------------
 //
 // Alpha-cutout meshes get a baked opacity micromap (NVIDIA OMM SDK CPU baker, `omm.rs`) stored
-// in the `.cluster_mesh` v3 slices; aurora attaches it to the mesh's BLAS so the RT cores resolve
+// in the `.aurora_mesh` v3 slices; aurora attaches it to the mesh's BLAS so the RT cores resolve
 // known opaque / transparent micro-regions without the any-hit shader.
 
 /// Default cap on OMM subdivision (`OMM_SUBDIV` overrides). The baker picks per-triangle from
@@ -143,7 +143,7 @@ fn env_u32(name: &str, default: u32) -> u32 {
 /// mesh has no UVs, or the bake produced nothing useful.
 #[cfg(feature = "omm")]
 pub fn attach_omm(
-    cm: &mut ClusterMeshData,
+    cm: &mut AuroraMesh,
     obj_dir: &Path,
     material: &tobj::Material,
     options: &OmmOptions,
@@ -155,7 +155,7 @@ pub fn attach_omm(
 
 #[cfg(not(feature = "omm"))]
 pub fn attach_omm(
-    _cm: &mut ClusterMeshData,
+    _cm: &mut AuroraMesh,
     _obj_dir: &Path,
     _material: &tobj::Material,
     _options: &OmmOptions,
@@ -168,13 +168,13 @@ pub fn attach_omm(
 /// `label` only tags the despeckle log line.
 #[cfg(feature = "omm")]
 pub fn attach_omm_rgba(
-    cm: &mut ClusterMeshData,
+    cm: &mut AuroraMesh,
     rgba: &RgbaImage,
     cutoff: f32,
     label: &str,
     options: &OmmOptions,
 ) -> Option<(usize, usize)> {
-    use aurora_cluster_mesh::{OmmDesc, OmmUsage};
+    use aurora_mesh::{OmmDesc, OmmUsage};
 
     let subdiv = options.max_subdiv;
     let erode_px = options.erode_px;
@@ -278,7 +278,7 @@ pub fn attach_omm_rgba(
 
 #[cfg(not(feature = "omm"))]
 pub fn attach_omm_rgba(
-    _cm: &mut ClusterMeshData,
+    _cm: &mut AuroraMesh,
     _rgba: &RgbaImage,
     _cutoff: f32,
     _label: &str,

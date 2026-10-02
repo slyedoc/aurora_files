@@ -1,4 +1,4 @@
-//! Lunarbase importer: bake the KitBash3D Lunarbase glTF to `.cluster_mesh` + **one `.bsn` per
+//! Lunarbase importer: bake the KitBash3D Lunarbase glTF to `.aurora_mesh` + **one `.bsn` per
 //! building**. Lunarbase is a kit: 78 top-level `KB3D_LNB_*_grp` nodes, each a self-contained
 //! building or prop. Unlike Bistro (one flat scene), this emits a separate `.bsn` per group,
 //! centered at its own origin, so each piece is a reusable prop you compose with `bsn!`. Meshes +
@@ -19,7 +19,7 @@ use clap::Parser;
 use aurora_bsn::{bake_gltf_per_group, GltfConfig};
 
 #[derive(Parser)]
-#[command(about = "Bake Lunarbase glTF/GLB → .cluster_mesh + one .bsn per building")]
+#[command(about = "Bake Lunarbase glTF/GLB → .aurora_mesh + one .bsn per building")]
 struct Args {
     /// Source `.glb`/`.gltf` (self-contained GLB, or `.gltf` with sibling `.bin`/textures).
     gltf: PathBuf,
@@ -28,7 +28,7 @@ struct Args {
     /// Asset-server-relative prefix the `.bsn` uses to reference meshes/textures.
     #[arg(default_value = "lunarbase")]
     asset_prefix: String,
-    /// Re-bake `.cluster_mesh` files even if they already exist (no more `rm -rf meshes`).
+    /// Re-bake `.aurora_mesh` files even if they already exist (no more `rm -rf meshes`).
     #[arg(long)]
     replace: bool,
 }
@@ -45,6 +45,7 @@ fn main() {
         replace: args.replace,
         root_components: String::new(),
         emissive_nits: None,
+        ..Default::default()
     };
     bake_gltf_per_group(&cfg);
 }

@@ -19,7 +19,7 @@ use clap::Parser;
 use aurora_bsn::{bake_gltf_hierarchy, GltfConfig};
 
 #[derive(Parser)]
-#[command(about = "Bake a Zero-Day geometry glb → .cluster_mesh + hierarchy .bsn")]
+#[command(about = "Bake a Zero-Day geometry glb → .aurora_mesh + hierarchy .bsn")]
 struct Args {
     /// Source geometry `.glb` (from `scripts/zeroday_to_glb.py`, animations stripped).
     gltf: PathBuf,
@@ -31,7 +31,7 @@ struct Args {
     /// Asset-server-relative prefix the `.bsn` uses to reference meshes/textures.
     #[arg(long, default_value = "zeroday")]
     asset_prefix: String,
-    /// Re-bake `.cluster_mesh` files even if they already exist.
+    /// Re-bake `.aurora_mesh` files even if they already exist.
     #[arg(long)]
     replace: bool,
 }
@@ -49,6 +49,7 @@ fn main() {
         replace: args.replace,
         root_components,
         emissive_nits: None,
+        ..Default::default()
     };
     bake_gltf_hierarchy(&cfg);
 

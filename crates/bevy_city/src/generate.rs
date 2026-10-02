@@ -1,12 +1,15 @@
 //! The block generator, as upstream: a grid of crossroads, each block's density from simplex
 //! noise (forest / suburban / commercial / skyscrapers), roads with lanes of cars.
 //!
-//! Every prop is one entity: parent `Transform` + child `Mesh3d` for buildings, trees and cars
+//! Every prop is one entity: parent `Transform` + child `AuroraMesh3d` for buildings, trees and cars
 //! (the same two-level shape upstream uses, so the hierarchy is exercised), a single mesh
 //! entity for roads, fences, paths and ground tiles.
 
 use bevy::prelude::*;
-use bevy_aurora::material::AuroraMaterial3d;
+use bevy_aurora::{
+    material::AuroraMaterial3d,
+    mesh::{AuroraMesh, AuroraMesh3d},
+};
 use noise::{NoiseFn, OpenSimplex};
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 
@@ -68,7 +71,7 @@ pub fn spawn_city(
 
                     let ground_tile_scale = Vec3::new(4.5, 1.0, 3.0);
                     commands.spawn((
-                        Mesh3d(assets.ground_tile.clone()),
+                        AuroraMesh3d(assets.ground_tile.clone()),
                         AuroraMaterial3d(if density < low_density {
                             assets.grass_material.clone()
                         } else {
@@ -97,12 +100,12 @@ pub fn spawn_city(
 
 fn spawn_prop(
     commands: &mut ChildSpawnerCommands,
-    mesh: &Handle<Mesh>,
+    mesh: &Handle<AuroraMesh>,
     material: &Handle<bevy_aurora::material::AuroraMaterial>,
     transform: Transform,
 ) {
     commands.spawn((
-        Mesh3d(mesh.clone()),
+        AuroraMesh3d(mesh.clone()),
         AuroraMaterial3d(material.clone()),
         transform,
     ));
@@ -111,7 +114,7 @@ fn spawn_prop(
 /// Parent transform + child mesh, as upstream spawns buildings, trees and cars.
 fn spawn_two_level(
     commands: &mut ChildSpawnerCommands,
-    parts: (Mesh3d, AuroraMaterial3d),
+    parts: (AuroraMesh3d, AuroraMaterial3d),
     transform: Transform,
 ) {
     commands
@@ -131,13 +134,13 @@ fn spawn_building<R: RngExt>(
 fn spawn_tree(
     commands: &mut ChildSpawnerCommands,
     assets: &CityAssets,
-    mesh: &Handle<Mesh>,
+    mesh: &Handle<AuroraMesh>,
     transform: Transform,
 ) {
     spawn_two_level(
         commands,
         (
-            Mesh3d(mesh.clone()),
+            AuroraMesh3d(mesh.clone()),
             AuroraMaterial3d(assets.suburban_material.clone()),
         ),
         transform,

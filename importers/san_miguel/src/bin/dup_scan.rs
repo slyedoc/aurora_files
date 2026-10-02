@@ -3,7 +3,7 @@
 //!
 //! Pass 1 — TOPOLOGY buckets by `(vertex count, triangle count, diffuse texture)`. Rotation /
 //! scale / translation don't change topology, so copy-rotated furniture (the chairs/place-settings
-//! around a table) lands in the same bucket even though the baked `.cluster_mesh` bytes differ.
+//! around a table) lands in the same bucket even though the baked `.aurora_mesh` bytes differ.
 //! That's an UPPER BOUND: a shared signature is necessary but not sufficient (coincidental
 //! collisions, esp. untextured props).
 //!

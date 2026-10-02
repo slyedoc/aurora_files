@@ -26,7 +26,7 @@ struct Args {
     /// Uniform scale applied to every tree (SpeedTree FBX author units → metres).
     #[arg(long, default_value_t = 1.0)]
     scale: f32,
-    /// Re-bake `.cluster_mesh` files even if they already exist.
+    /// Re-bake `.aurora_mesh` files even if they already exist.
     #[arg(long)]
     replace: bool,
 

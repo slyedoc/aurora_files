@@ -1,11 +1,9 @@
 # `.bsn` importer workspace: the `aurora_bsn` library + per-asset importer binaries and a viewer.
-# Converts source OBJ/MTL or glTF into `.cluster_mesh` assets and a `.bsn` scene, sidestepping
+# Converts source OBJ/MTL or glTF into `.aurora_mesh` assets and a `.bsn` scene, sidestepping
 # glTF's lack of displacement/depth maps; the viewer renders the result on aurora
 # (https://github.com/slyedoc/aurora, crate `bevy_aurora`).
 #
-# PARKED (excluded): `furnace` / `grader` / `xtask` render on the old wgpu solari stack;
-# `g1` needs the `.animclip` transcoder from the old engine's bevy branch; `bake_person` /
-# `dressing_room` need make_human, which still path-depends on the old engine.
+# PARKED (excluded): `grader` / `xtask` render on the old wgpu solari stack.
 [workspace]
 resolver = "3"
 members = [
@@ -24,17 +22,14 @@ members = [
   "importers/speedtree",
   "importers/wow",
   "importers/zeroday",
+  "importers/g1",
   "importers/animlib",
   "crates/animgraph_editor",
   "crates/scene_editor",
 ]
 exclude = [
-  "crates/furnace",
   "crates/grader",
   "crates/xtask",
-  "importers/g1",
-  "importers/bake_person",
-  "importers/dressing_room",
 ]
 
 [workspace.dependencies]
@@ -62,8 +57,8 @@ bevy = { path = "../../f/bevy", default-features = false, features = [
   "ktx2",
   "zstd_rust",
 ] }
-# The `.cluster_mesh` wire format + flat bake, without the renderer (importers).
-aurora_cluster_mesh = { git = "https://github.com/slyedoc/aurora.git", branch = "main" }
+# The `.aurora_mesh` wire format + flat bake, without the renderer (importers).
+aurora_mesh = { git = "https://github.com/slyedoc/aurora.git", branch = "main" }
 # The engine itself (viewer only).
 bevy_aurora = { git = "https://github.com/slyedoc/aurora.git", branch = "main" }
 # CLI parsing for the importer binaries.
@@ -71,9 +66,9 @@ clap = { version = "4", features = ["derive"] }
 
 [patch."https://github.com/slyedoc/aurora"]
 bevy_aurora = { path = "../aurora" }
-# The cluster-mesh format crate too: the skinned bake (UAL) needed `from_mesh_flat` to carry
+# The cluster-mesh format crate too: the skinned bake (UAL) needed `clustered` to carry
 # JOINT_INDEX / JOINT_WEIGHT, which `to_mesh` already read back.
-aurora_cluster_mesh = { path = "../aurora/crates/aurora_cluster_mesh" }
+aurora_mesh = { path = "../aurora/crates/aurora_mesh" }
 
 # make_human's manifest reaches bevy/avian/enhanced_input by their upstream
 # URLs (same convention as zero); redirect them onto the one stacked graph.

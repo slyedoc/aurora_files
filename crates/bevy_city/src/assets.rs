@@ -1,47 +1,50 @@
-//! The city's props: merged `.cluster_mesh` handles (see `importers/kenney`) and the materials
+//! The city's props: merged `.aurora_mesh` handles (see `importers/kenney`) and the materials
 //! the upstream example builds in code — kit colormaps and their variations, flat grass and
 //! tree colours.
 
 use bevy::prelude::*;
-use bevy_aurora::material::{AuroraMaterial, AuroraMaterial3d};
+use bevy_aurora::{
+    material::{AuroraMaterial, AuroraMaterial3d},
+    mesh::{AuroraMesh, AuroraMesh3d},
+};
 use rand::RngExt;
 
 #[derive(Resource)]
 pub struct CityAssets {
-    pub cars: Vec<Handle<Mesh>>,
+    pub cars: Vec<Handle<AuroraMesh>>,
     pub car_material: Handle<AuroraMaterial>,
-    pub crossroad: Handle<Mesh>,
-    pub road_straight: Handle<Mesh>,
+    pub crossroad: Handle<AuroraMesh>,
+    pub road_straight: Handle<AuroraMesh>,
     pub road_material: Handle<AuroraMaterial>,
     pub high_density: Buildings,
     pub medium_density: Buildings,
     pub low_density: Buildings,
-    pub ground_tile: Handle<Mesh>,
+    pub ground_tile: Handle<AuroraMesh>,
     pub grass_material: Handle<AuroraMaterial>,
-    pub tree_small: Handle<Mesh>,
-    pub tree_large: Handle<Mesh>,
-    pub path_stones_long: Handle<Mesh>,
-    pub fence: Handle<Mesh>,
+    pub tree_small: Handle<AuroraMesh>,
+    pub tree_large: Handle<AuroraMesh>,
+    pub path_stones_long: Handle<AuroraMesh>,
+    pub fence: Handle<AuroraMesh>,
     pub suburban_material: Handle<AuroraMaterial>,
 }
 
 pub struct Buildings {
-    meshes: Vec<Handle<Mesh>>,
+    meshes: Vec<Handle<AuroraMesh>>,
     materials: Vec<Handle<AuroraMaterial>>,
 }
 
 impl Buildings {
-    pub fn random<R: RngExt>(&self, rng: &mut R) -> (Mesh3d, AuroraMaterial3d) {
+    pub fn random<R: RngExt>(&self, rng: &mut R) -> (AuroraMesh3d, AuroraMaterial3d) {
         let mesh = self.meshes[rng.random_range(0..self.meshes.len())].clone();
         let material = self.materials[rng.random_range(0..self.materials.len())].clone();
-        (Mesh3d(mesh), AuroraMaterial3d(material))
+        (AuroraMesh3d(mesh), AuroraMaterial3d(material))
     }
 }
 
 impl CityAssets {
-    pub fn random_car<R: RngExt>(&self, rng: &mut R) -> (Mesh3d, AuroraMaterial3d) {
+    pub fn random_car<R: RngExt>(&self, rng: &mut R) -> (AuroraMesh3d, AuroraMaterial3d) {
         let mesh = self.cars[rng.random_range(0..self.cars.len())].clone();
-        (Mesh3d(mesh), AuroraMaterial3d(self.car_material.clone()))
+        (AuroraMesh3d(mesh), AuroraMaterial3d(self.car_material.clone()))
     }
 }
 
@@ -50,8 +53,8 @@ pub fn load_assets(
     asset_server: Res<AssetServer>,
     mut materials: ResMut<Assets<AuroraMaterial>>,
 ) {
-    let mesh = |kit: &str, name: &str| -> Handle<Mesh> {
-        asset_server.load(format!("kenney/{kit}/meshes/{name}.cluster_mesh"))
+    let mesh = |kit: &str, name: &str| -> Handle<AuroraMesh> {
+        asset_server.load(format!("kenney/{kit}/meshes/{name}.aurora_mesh"))
     };
     let mut textured = |kit: &str, texture: &str| -> Handle<AuroraMaterial> {
         materials.add(AuroraMaterial {

@@ -1,5 +1,5 @@
 # WoW zone importer: wow.export OBJ dumps (per-ADT terrain + placement CSVs + model OBJs)
-# → one `.bsn` per ADT tile with shared `.cluster_mesh` meshes/textures.
+# → one `.bsn` per ADT tile with shared `.aurora_mesh` meshes/textures.
 #
 #   cargo run --release -p wow_import -- --tiles-x 31..33 --tiles-y 47..49
 [package]
@@ -10,7 +10,7 @@ publish = false
 
 [dependencies]
 aurora_bsn = { path = "../../crates/aurora_bsn" }
-aurora_cluster_mesh.workspace = true
+aurora_mesh.workspace = true
 clap.workspace = true
 bevy.workspace = true
 tobj = "4"

@@ -1,4 +1,4 @@
-//! Namaqualand Boulder importer: bake the Poly Haven scanned-boulder glTF to `.cluster_mesh` + a
+//! Namaqualand Boulder importer: bake the Poly Haven scanned-boulder glTF to `.aurora_mesh` + a
 //! `.bsn`. A single high-detail prop — geometry + base-color/normal/ARM textures are imported; the
 //! relief is baked into the mesh, so there is no displacement/depth map for the tessellation pass.
 //!
@@ -11,7 +11,7 @@ use clap::Parser;
 use aurora_bsn::{bake_gltf_scene, GltfConfig};
 
 #[derive(Parser)]
-#[command(about = "Bake Namaqualand Boulder glTF → .cluster_mesh + .bsn")]
+#[command(about = "Bake Namaqualand Boulder glTF → .aurora_mesh + .bsn")]
 struct Args {
     /// Source `.gltf` (with sibling `.bin`/textures), or a self-contained `.glb`.
     gltf: PathBuf,
@@ -20,7 +20,7 @@ struct Args {
     /// Asset-server-relative prefix the `.bsn` uses to reference meshes/textures.
     #[arg(default_value = "namaqualand_boulder")]
     asset_prefix: String,
-    /// Re-bake `.cluster_mesh` files even if they already exist (no more `rm -rf meshes`).
+    /// Re-bake `.aurora_mesh` files even if they already exist (no more `rm -rf meshes`).
     #[arg(long)]
     replace: bool,
 }
@@ -37,6 +37,7 @@ fn main() {
         replace: args.replace,
         root_components: String::new(),
         emissive_nits: None,
+        ..Default::default()
     };
     bake_gltf_scene(&cfg);
 }

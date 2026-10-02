@@ -1,4 +1,4 @@
-//! Bistro importer: bake the Amazon Lumberyard Bistro glTF to `.cluster_mesh` + a `.bsn`.
+//! Bistro importer: bake the Amazon Lumberyard Bistro glTF to `.aurora_mesh` + a `.bsn`.
 //!
 //! Uses the PNG-textured `Bistro.glb`. Geometry + textures + alpha-mode + glass transmission are
 //! imported; OMM baking and scalar/colour material factors are TODO (see `aurora_bsn::gltf`).
@@ -11,7 +11,7 @@ use clap::Parser;
 use aurora_bsn::{bake_gltf_scene, GltfConfig};
 
 #[derive(Parser)]
-#[command(about = "Bake Bistro glTF/GLB → .cluster_mesh + .bsn")]
+#[command(about = "Bake Bistro glTF/GLB → .aurora_mesh + .bsn")]
 struct Args {
     /// Source `.glb`/`.gltf` (self-contained GLB, or `.gltf` with sibling `.bin`/textures).
     gltf: PathBuf,
@@ -20,7 +20,7 @@ struct Args {
     /// Asset-server-relative prefix the `.bsn` uses to reference meshes/textures.
     #[arg(default_value = "bistro")]
     asset_prefix: String,
-    /// Re-bake `.cluster_mesh` files even if they already exist (no more `rm -rf meshes`).
+    /// Re-bake `.aurora_mesh` files even if they already exist (no more `rm -rf meshes`).
     #[arg(long)]
     replace: bool,
 }
@@ -52,6 +52,7 @@ fn main() {
         replace: args.replace,
         root_components: String::new(),
         emissive_nits: Some(emissive_nits_default),
+        ..Default::default()
     };
     bake_gltf_scene(&cfg);
 }

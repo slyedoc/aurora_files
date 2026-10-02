@@ -9,7 +9,7 @@
 //!   world/wmo/…/<wmo>_ModelPlacementInformation.csv  interior doodads, local to the WMO
 //!
 //! Output:
-//!   assets/wow/meshes/*.cluster_mesh + textures/*   baked models (shared)
+//!   assets/wow/meshes/*.aurora_mesh + textures/*   baked models (shared)
 //!   assets/wow/meshes/*.collider                     one collision mesh per model that has one
 //!   assets/wow/<map>_X_Y.bsn                        doodad/WMO entities, TILE-LOCAL coords
 //!   assets/wow/map/<map>_X_Y_height.png             129² 16-bit height grid (min/max in json)
@@ -82,7 +82,7 @@ use std::path::{Path, PathBuf};
 use aurora_bsn::bsn::{material_fields, scene, write_entity_trs};
 use aurora_bsn::discovery::{copy_textures, material_is_cutmask, sanitize};
 use aurora_bsn::mesh::{OmmOptions, attach_omm, build_mesh, submesh_centroid};
-use aurora_cluster_mesh::{ClusterMeshData, write_cluster_mesh_sync};
+use aurora_mesh::{AuroraMesh, write_aurora_mesh};
 use bevy::math::{EulerRot, Quat, Vec3};
 use clap::Parser;
 
@@ -479,7 +479,6 @@ fn main() {
                     p.rotation.to_array(),
                     [p.scale, p.scale, p.scale],
                     None,
-                    None,
                 );
                 instanced += 1;
                 if let Some((color, lumens, radius)) = sub.glow_light {
@@ -745,7 +744,7 @@ fn write_plant_entity(
          translation: glam::Vec3 {{ x: {}, y: {}, z: {} }}, \
          rotation: glam::Quat {{ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }}, \
          scale: glam::Vec3 {{ x: 1.0, y: 1.0, z: 1.0 }} }}\n    \
-         bevy_mesh::components::Mesh3d(\"{asset_prefix}/meshes/{}.cluster_mesh\")\n{wind}    \
+         bevy_aurora::mesh::AuroraMesh3d(\"{asset_prefix}/meshes/{}.aurora_mesh\")\n{wind}    \
          bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {{{}}}),\n\n",
         fmt_f(c.x),
         fmt_f(c.y),
@@ -1055,10 +1054,10 @@ fn bake_model(
         let mesh_file = args
             .out_dir
             .join("meshes")
-            .join(format!("{mesh_stem}.cluster_mesh"));
+            .join(format!("{mesh_stem}.aurora_mesh"));
         if args.replace || !mesh_file.exists() {
             let mesh = build_mesh(&m.mesh, centroid);
-            let mut cm = match ClusterMeshData::from_mesh_flat(&mesh) {
+            let mut cm = match AuroraMesh::clustered(&mesh) {
                 Ok(cm) => cm,
                 Err(err) => {
                     eprintln!("  {mesh_stem}: bake failed: {err:?}");
@@ -1069,8 +1068,8 @@ fn bake_model(
             if is_cutmask && let Some(mat) = material {
                 let _ = attach_omm(&mut cm, obj_dir, mat, omm);
             }
-            let w = BufWriter::new(File::create(&mesh_file).expect("create .cluster_mesh"));
-            write_cluster_mesh_sync(&cm, w).expect("write .cluster_mesh");
+            let w = BufWriter::new(File::create(&mesh_file).expect("create .aurora_mesh"));
+            write_aurora_mesh(&cm, w).expect("write .aurora_mesh");
         }
 
         let mut glow_light = None;

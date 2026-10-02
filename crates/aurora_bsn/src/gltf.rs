@@ -1,5 +1,5 @@
 //! glTF import path (Bistro): parse a `.glb`/`.gltf` with the `gltf` crate, walk the node
-//! hierarchy for world transforms, bake each unique primitive `Mesh → .cluster_mesh`, extract the
+//! hierarchy for world transforms, bake each unique primitive `Mesh → .aurora_mesh`, extract the
 //! embedded textures, and write a `.bsn` — the glTF analogue of [`crate::bake_scene`].
 //!
 //! Milestone: geometry + base-color/normal/metallic-roughness textures + alpha-mode + glass
@@ -14,7 +14,7 @@ use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-use aurora_cluster_mesh::{ClusterMeshData, write_cluster_mesh_sync};
+use aurora_mesh::{AuroraMesh, write_aurora_mesh};
 use bevy::asset::RenderAssetUsages;
 use bevy::math::{Mat4, Vec3};
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
@@ -49,7 +49,7 @@ pub struct GltfConfig {
     pub asset_prefix: String,
     /// `.bsn` scene name and output filename stem.
     pub scene_name: String,
-    /// Re-bake `.cluster_mesh` files even when they already exist (overwrite).
+    /// Re-bake `.aurora_mesh` files even when they already exist (overwrite).
     pub replace: bool,
     /// Extra component patch lines emitted on the scene ROOT entity (before its `Children`). Used by
     /// [`bake_gltf_hierarchy`] to stamp e.g. an animation marker on the root. Empty for none.
@@ -75,6 +75,12 @@ pub struct GltfConfig {
     /// wants `2`, or every category bakes as one immovable blob. Only the author knows which level
     /// is a thing you would pick up and place, so it is a knob rather than a guess.
     pub group_depth: usize,
+    /// Uniform scale baked into the asset: vertices, node translations, clip translations. For
+    /// a source authored in other units (`0.01` for centimetres), so it lands in metres.
+    pub scale: f32,
+    /// With a hierarchy bake: take the clips from this glb instead of the source -- a meshless
+    /// animation export of the same rig, whose node names match.
+    pub anim: Option<PathBuf>,
 }
 
 impl Default for GltfConfig {
@@ -91,12 +97,14 @@ impl Default for GltfConfig {
             textures: None,
             colliders: false,
             group_depth: 1,
+            scale: 1.0,
+            anim: None,
         }
     }
 }
 
 /// Bake the scene described by `cfg`: extract textures, bake each unique primitive's
-/// `.cluster_mesh`, and write the `.bsn`.
+/// `.aurora_mesh`, and write the `.bsn`.
 pub fn bake_gltf_scene(cfg: &GltfConfig) {
     let meshes_dir = cfg.out_dir.join("meshes");
     let textures_dir = cfg.out_dir.join("textures");
@@ -135,6 +143,7 @@ pub fn bake_gltf_scene(cfg: &GltfConfig) {
 
     let mut ctx = Ctx {
         buffers: &buffers,
+        scale: cfg.scale,
         image_files: &image_files,
         meshes_dir: &meshes_dir,
         textures_dir: &textures_dir,
@@ -186,7 +195,7 @@ pub fn bake_gltf_scene(cfg: &GltfConfig) {
 
 /// Bake the glTF as **one `.bsn` per top-level scene node** PLUS a flat master layout scene — for a
 /// KitBash-style kit where each root group is a self-contained building/prop. Textures are extracted
-/// and `.cluster_mesh` files baked once into shared `meshes/`/`textures/` (deduplicated across groups
+/// and `.aurora_mesh` files baked once into shared `meshes/`/`textures/` (deduplicated across groups
 /// by mesh+primitive index, so pieces sharing geometry bake once). Each group's `.bsn` is centered at
 /// its **own origin** — the root group's layout transform is dropped — so every building is a
 /// reusable prop you place yourself. A combined `<scene_name>.bsn` is also written: the whole set
@@ -228,6 +237,7 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
 
     let mut ctx = Ctx {
         buffers: &buffers,
+        scale: cfg.scale,
         image_files: &image_files,
         meshes_dir: &meshes_dir,
         textures_dir: &textures_dir,
@@ -487,6 +497,8 @@ impl Ctx<'_> {
 
 struct Ctx<'a> {
     buffers: &'a [gltf::buffer::Data],
+    /// [`GltfConfig::scale`].
+    scale: f32,
     image_files: &'a HashMap<usize, String>,
     meshes_dir: &'a Path,
     textures_dir: &'a Path,
@@ -496,7 +508,7 @@ struct Ctx<'a> {
     fixups: &'a Fixups,
     colliders: bool,
     /// `(mesh index, primitive index) → owner stem`, so shared meshes bake once and instance nodes
-    /// reuse the baked `.cluster_mesh`. `None` marks a primitive whose bake failed (entities skipped).
+    /// reuse the baked `.aurora_mesh`. `None` marks a primitive whose bake failed (entities skipped).
     baked: HashMap<(usize, usize), Option<String>>,
     entities: String,
     emitted: usize,
@@ -547,7 +559,7 @@ impl Ctx<'_> {
                 if i & 2 == 0 { lo.y } else { hi.y },
                 if i & 4 == 0 { lo.z } else { hi.z },
             );
-            let point = world.transform_point3(corner);
+            let point = world.transform_point3(corner) * self.scale;
             self.bounds = Some(match self.bounds {
                 None => (point, point),
                 Some((lo, hi)) => (lo.min(point), hi.max(point)),
@@ -564,6 +576,7 @@ fn walk(node: &gltf::Node, parent: Mat4, ctx: &mut Ctx) {
 
     if let Some(mesh) = node.mesh() {
         let (scale, rotation, translation) = world.to_scale_rotation_translation();
+        let translation = translation * ctx.scale;
         for prim in mesh.primitives() {
             if prim.mode() != gltf::mesh::Mode::Triangles {
                 continue;
@@ -620,7 +633,7 @@ fn walk(node: &gltf::Node, parent: Mat4, ctx: &mut Ctx) {
 /// Bake the glTF **preserving the node hierarchy** — the animation-capable analogue of
 /// [`bake_gltf_scene`]. Instead of flattening every primitive to a world transform, this emits a
 /// nested `Children[]` tree: each node is one entity carrying its `Name` + LOCAL `Transform` (and,
-/// if it has geometry, `Mesh3d` + inline `RaytracingMaterial3d`). Keeping the tree + the Names
+/// if it has geometry, `AuroraMesh3d` + inline `AuroraMaterial3d`). Keeping the tree + the Names
 /// is what lets a runtime `AnimationPlayer` bind clips to nodes by name-path (`AnimationTargetId`)
 /// and drive them — the GPU transform table propagates an animated parent to its mesh children.
 /// Meshes/textures bake into shared `meshes/`/`textures/`, deduped by (mesh, primitive) index.
@@ -661,6 +674,7 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
 
     let mut ctx = Ctx {
         buffers: &buffers,
+        scale: cfg.scale,
         image_files: &image_files,
         meshes_dir: &meshes_dir,
         textures_dir: &textures_dir,
@@ -694,6 +708,34 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
     let bsn = bsn::scene_with_root(&cfg.scene_name, &cfg.root_components, &root_children);
     let bsn_path = cfg.out_dir.join(format!("{}.bsn", cfg.scene_name));
     fs::write(&bsn_path, bsn).expect("write .bsn");
+    // The node names just written are what the clips key on, so they bake in the same pass.
+    match &cfg.anim {
+        None => {
+            crate::anim::bake_clips(
+                doc,
+                &buffers,
+                &cfg.out_dir,
+                &cfg.asset_prefix,
+                &cfg.scene_name,
+                cfg.scale,
+            );
+        }
+        Some(anim_path) => {
+            let bytes = fs::read(anim_path).expect("read anim glb");
+            let anim = gltf::Gltf::from_slice(&bytes).expect("parse anim glb");
+            let anim_doc: &gltf::Document = &anim;
+            let anim_buffers = gltf::import_buffers(anim_doc, anim_path.parent(), anim.blob.clone())
+                .expect("import anim buffers");
+            crate::anim::bake_clips(
+                anim_doc,
+                &anim_buffers,
+                &cfg.out_dir,
+                &cfg.asset_prefix,
+                &cfg.scene_name,
+                cfg.scale,
+            );
+        }
+    }
 
     ctx.report_repairs();
     println!(
@@ -812,7 +854,7 @@ fn ensure_collider(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> 
     let file = ctx.meshes_dir.join(format!("{stem}.collider"));
     let result = if file.exists() && !ctx.replace {
         Some(stem)
-    } else if build_primitive_mesh(prim, ctx.buffers)
+    } else if build_primitive_mesh(prim, ctx.buffers, ctx.scale)
         .and_then(|m| write_collider(&m, &file))
         .is_some()
     {
@@ -828,13 +870,11 @@ fn ensure_collider(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> 
 fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
     let pad = "    ".repeat(depth);
     let (t, r, s) = node.transform().decomposed();
+    let t = t.map(|x| x * ctx.scale);
 
     // Name — MUST match the anim glb's node name (same Blender export) so the runtime's
-    // `AnimationTargetId::from_names` resolves this entity. Unnamed nodes fall back to `node<idx>`.
-    let name = node
-        .name()
-        .map(|n| n.replace('"', "'"))
-        .unwrap_or_else(|| format!("node{}", node.index()));
+    // `AnimationTargetId::from_names` resolves this entity.
+    let name = node_name(node);
 
     // Triangle primitives of this node's mesh (baked once, cached by (mesh, prim) index).
     let mut prims: Vec<String> = Vec::new();
@@ -921,7 +961,7 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
     if let Some(stem) = prims.first() {
         let _ = write!(
             out,
-            "{pad}bevy_mesh::components::Mesh3d(\"{}/meshes/{stem}.cluster_mesh\")\n\
+            "{pad}bevy_aurora::mesh::AuroraMesh3d(\"{}/meshes/{stem}.aurora_mesh\")\n\
              {pad}bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {{{mat_fields}}})\n",
             ctx.asset_prefix,
         );
@@ -983,7 +1023,7 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
             kids,
             "{cpad}bevy_ecs::name::Name(\"{name}#{i}\")\n\
              {cpad}bevy_transform::components::transform::Transform {{ translation: glam::Vec3 {{ x: 0.0, y: 0.0, z: 0.0 }}, rotation: glam::Quat {{ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }}, scale: glam::Vec3 {{ x: 1.0, y: 1.0, z: 1.0 }} }}\n\
-             {cpad}bevy_mesh::components::Mesh3d(\"{}/meshes/{stem}.cluster_mesh\")\n\
+             {cpad}bevy_aurora::mesh::AuroraMesh3d(\"{}/meshes/{stem}.aurora_mesh\")\n\
              {cpad}bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {{{mat}}})\n\
              {col}{skin}{cpad},\n",
             ctx.asset_prefix,
@@ -999,18 +1039,18 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
     let _ = write!(out, "{pad},\n");
 }
 
-/// Bake one primitive into a `.cluster_mesh` (skipping the bake if the file already exists from a
+/// Bake one primitive into a `.aurora_mesh` (skipping the bake if the file already exists from a
 /// prior run). Returns the owner stem, or `None` if the mesh has no positions or the bake fails.
 fn bake_primitive(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> Option<String> {
     let stem = format!("mesh{}_{}", mesh.index(), prim.index());
-    let mesh_file = ctx.meshes_dir.join(format!("{stem}.cluster_mesh"));
+    let mesh_file = ctx.meshes_dir.join(format!("{stem}.aurora_mesh"));
     if mesh_file.exists() && !ctx.replace {
         ctx.baked_count += 1;
         return Some(stem); // re-runs only re-emit the `.bsn` (use `replace` to overwrite)
     }
 
-    let bevy_mesh = build_primitive_mesh(prim, ctx.buffers)?;
-    match ClusterMeshData::from_mesh_flat(&bevy_mesh) {
+    let bevy_mesh = build_primitive_mesh(prim, ctx.buffers, ctx.scale)?;
+    match AuroraMesh::clustered(&bevy_mesh) {
         Ok(mut cm) => {
             // Alpha-cutout primitives get a baked opacity micromap against their base-colour
             // alpha (the material's own cutoff).
@@ -1027,8 +1067,8 @@ fn bake_primitive(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> O
                     &mesh::OmmOptions::from_env(),
                 );
             }
-            let w = BufWriter::new(File::create(&mesh_file).expect("create .cluster_mesh"));
-            write_cluster_mesh_sync(&cm, w).expect("write .cluster_mesh");
+            let w = BufWriter::new(File::create(&mesh_file).expect("create .aurora_mesh"));
+            write_aurora_mesh(&cm, w).expect("write .aurora_mesh");
             ctx.baked_count += 1;
             if ctx.baked_count % 200 == 0 {
                 println!("  baked {}", ctx.baked_count);
@@ -1043,7 +1083,7 @@ fn bake_primitive(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> O
     }
 }
 
-/// Bake a single `.glb`'s first triangle primitive into a `.cluster_mesh` at `out_file` — the stem
+/// Bake a single `.glb`'s first triangle primitive into a `.aurora_mesh` at `out_file` — the stem
 /// is caller-controlled (unlike [`bake_gltf_scene`]'s `meshN_M`), so an articulated rig can name one
 /// file per link. Skips if `out_file` exists unless `replace`. `Ok(true)` baked, `Ok(false)` skipped.
 pub fn bake_glb_primitive(glb_path: &Path, out_file: &Path, replace: bool) -> Result<bool, String> {
@@ -1060,26 +1100,30 @@ pub fn bake_glb_primitive(glb_path: &Path, out_file: &Path, replace: bool) -> Re
         .flat_map(|m| m.primitives())
         .find(|p| p.mode() == gltf::mesh::Mode::Triangles)
         .ok_or_else(|| "no triangle primitive".to_string())?;
-    let mesh = build_primitive_mesh(&prim, &buffers).ok_or_else(|| "empty mesh".to_string())?;
-    let cm = ClusterMeshData::from_mesh_flat(&mesh).map_err(|e| format!("cluster bake: {e:?}"))?;
+    let mesh = build_primitive_mesh(&prim, &buffers, 1.0).ok_or_else(|| "empty mesh".to_string())?;
+    let cm = AuroraMesh::clustered(&mesh).map_err(|e| format!("cluster bake: {e:?}"))?;
     if let Some(parent) = out_file.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
     }
     let w = BufWriter::new(File::create(out_file).map_err(|e| format!("create: {e}"))?);
-    write_cluster_mesh_sync(&cm, w).map_err(|e| format!("write cluster: {e:?}"))?;
+    write_aurora_mesh(&cm, w).map_err(|e| format!("write cluster: {e:?}"))?;
     Ok(true)
 }
 
 /// Build a bevy [`Mesh`] from a glTF primitive (positions in node-local space; the node's world
 /// `Transform` places it). Loads only what the glTF carries — missing normals / UVs /
-/// tangents default downstream in `ClusterMeshData::from_mesh_flat`, so bare CAD/URDF
+/// tangents default downstream in `AuroraMesh::clustered`, so bare CAD/URDF
 /// primitives (POSITION only) still bake.
 pub(crate) fn build_primitive_mesh(
     prim: &gltf::Primitive,
     buffers: &[gltf::buffer::Data],
+    scale: f32,
 ) -> Option<Mesh> {
     let reader = prim.reader(|b| buffers.get(b.index()).map(|d| d.0.as_slice()));
-    let positions: Vec<[f32; 3]> = reader.read_positions()?.collect();
+    let positions: Vec<[f32; 3]> = reader
+        .read_positions()?
+        .map(|p| [p[0] * scale, p[1] * scale, p[2] * scale])
+        .collect();
     if positions.is_empty() {
         return None;
     }
@@ -1451,4 +1495,12 @@ fn percent_decode(s: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The `Name` a hierarchy bake gives `node`, and the name `.animclip` targets are keyed by:
+/// the glTF name with `"` made `'`, or `node<index>` for an unnamed node.
+pub fn node_name(node: &gltf::Node) -> String {
+    node.name()
+        .map(|n| n.replace('"', "'"))
+        .unwrap_or_else(|| format!("node{}", node.index()))
 }
