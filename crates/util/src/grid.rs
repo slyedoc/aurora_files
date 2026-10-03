@@ -11,7 +11,7 @@
 use bevy::{
     asset::RenderAssetUsages,
     image::Image,
-    math::primitives::Plane3d,
+    shape::Plane3d,
     mesh::{Mesh, MeshBuilder, Meshable, VertexAttributeValues},
 };
 use wgpu_types::{Extent3d, TextureDimension, TextureFormat};

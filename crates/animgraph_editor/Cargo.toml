@@ -32,7 +32,7 @@ bevy = { workspace = true, features = [
     "debug",
 ] }
 bevy_aurora = { workspace = true, features = ["dev"] }
-bevy_animation_graph = { path = "../../../../f/bevy_animation_graph/crates/bevy_animation_graph" }
+bevy_animation_graph = { git = "https://github.com/slyedoc/bevy_animation_graph", branch = "aurora" }
 # Saving a graph back to its `.ron`: `AnimationGraphSerializer` is a plain `Serialize`.
 ron = "0.10"
 # `NodeId` is a Uuid newtype whose field is `pub(crate)`; `From<Uuid>` is the way in, which is

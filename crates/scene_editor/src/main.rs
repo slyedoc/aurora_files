@@ -203,60 +203,56 @@ fn setup(
             height: Val::Percent(100.0),
             flex_direction: FlexDirection::Row,
         }
-        Children [(
-            Name::new("palette")
-            Node {
-                // Proportional with a floor and a ceiling: a tiling window manager hands
-                // this app whatever column it likes.
-                width: Val::Percent(26.0),
-                min_width: Val::Px(320.0),
-                max_width: Val::Px(460.0),
-                height: Val::Percent(100.0),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(6.0),
-                // Top padding clears aurora's dev panel, an overlay pinned to the top-left
-                // that would otherwise sit on the first rows.
-                padding: {UiRect::new(Val::Px(8.0), Val::Px(8.0), Val::Px(160.0), Val::Px(8.0))},
-            }
-            // Props render BEHIND the ui from R1 on, so a pane with no background would
-            // read as text floating over them.
-            BackgroundColor({Color::srgba(0.06, 0.06, 0.07, 0.94)})
-            Children [
-                (
-                    PaletteHeader
-                    Text::new("scanning...")
-                    ThemedText
-                    TextLayout { linebreak: {bevy::text::LineBreak::NoWrap} }
-                ),
-                (
-                    @FeathersTextInputContainer
-                    // The container's own scene sets `flex_grow: 1`, which is right in the ROW
-                    // it was designed for (a label, a spacer, then the field taking the rest)
-                    // and wrong here: in a column, growing means growing TALL, so the search
-                    // box swallows whatever the list leaves behind and balloons when the
-                    // results are few. Its height already comes from the widget.
-                    Node { flex_grow: 0.0, flex_shrink: 0.0 }
-                    Children [(
-                        @FeathersTextInput { @max_characters: 40usize, }
-                        PaletteSearch
-                        on(search_changed)
-                    )]
-                ),
-                (
-                    Name::new("body")
-                    PaletteBody
-                    Node {
-                        flex_grow: 1.0,
-                        flex_direction: FlexDirection::Column,
-                        // A flex item will not shrink below its own content unless told it may,
-                        // and 297 rows of content is taller than any window. Without this the
-                        // body grows to fit them and the list runs off the bottom of the page
-                        // instead of scrolling inside the pane.
-                        min_height: Val::Px(0.0),
-                    }
-                ),
-            ]
-        )]
+        Children [
+        Name::new("palette")
+        Node {
+            // Proportional with a floor and a ceiling: a tiling window manager hands
+            // this app whatever column it likes.
+            width: Val::Percent(26.0),
+            min_width: Val::Px(320.0),
+            max_width: Val::Px(460.0),
+            height: Val::Percent(100.0),
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(6.0),
+            // Top padding clears aurora's dev panel, an overlay pinned to the top-left
+            // that would otherwise sit on the first rows.
+            padding: {UiRect::new(Val::Px(8.0), Val::Px(8.0), Val::Px(160.0), Val::Px(8.0))},
+        }
+        // Props render BEHIND the ui from R1 on, so a pane with no background would
+        // read as text floating over them.
+        BackgroundColor({Color::srgba(0.06, 0.06, 0.07, 0.94)})
+        Children [
+                PaletteHeader
+                Text::new("scanning...")
+                ThemedText
+                TextLayout { linebreak: {bevy::text::LineBreak::NoWrap} }
+            --
+                @FeathersTextInputContainer
+                // The container's own scene sets `flex_grow: 1`, which is right in the ROW
+                // it was designed for (a label, a spacer, then the field taking the rest)
+                // and wrong here: in a column, growing means growing TALL, so the search
+                // box swallows whatever the list leaves behind and balloons when the
+                // results are few. Its height already comes from the widget.
+                Node { flex_grow: 0.0, flex_shrink: 0.0 }
+                Children [
+                    @FeathersTextInput { @max_characters: 40usize, }
+                    PaletteSearch
+                    on(search_changed)
+                ]
+            --
+                Name::new("body")
+                PaletteBody
+                Node {
+                    flex_grow: 1.0,
+                    flex_direction: FlexDirection::Column,
+                    // A flex item will not shrink below its own content unless told it may,
+                    // and 297 rows of content is taller than any window. Without this the
+                    // body grows to fit them and the list runs off the bottom of the page
+                    // instead of scrolling inside the pane.
+                    min_height: Val::Px(0.0),
+                }
+        ]
+        ]
     });
 }
 
@@ -593,28 +589,25 @@ fn row(label: String, trailing: String, prop: kit::KitProp) -> impl Scene {
         @FeathersListRow
         PropRow { prop: {prop}, }
         Children [
-            (
-                Node {
-                    // Takes the slack and yields it: `min_width: 0` is what lets a flex item
-                    // shrink below its content, which is what makes the clip land here.
-                    flex_grow: 1.0,
-                    flex_shrink: 1.0,
-                    min_width: Val::Px(0.0),
-                    overflow: {Overflow::clip_x()},
-                }
-                Children [(
-                    Text::new(label)
-                    ThemedText
-                    TextLayout { linebreak: {bevy::text::LineBreak::NoWrap} }
-                )]
-            ),
-            (
-                Text::new(trailing)
-                TextColor({Color::srgb(0.50, 0.52, 0.56)})
+            Node {
+                // Takes the slack and yields it: `min_width: 0` is what lets a flex item
+                // shrink below its content, which is what makes the clip land here.
+                flex_grow: 1.0,
+                flex_shrink: 1.0,
+                min_width: Val::Px(0.0),
+                overflow: {Overflow::clip_x()},
+            }
+            Children [
+                Text::new(label)
                 ThemedText
-                InheritableFont { font_size: {bevy::text::FontSize::Px(12.0)} }
                 TextLayout { linebreak: {bevy::text::LineBreak::NoWrap} }
-            ),
+            ]
+            --
+            Text::new(trailing)
+            TextColor({Color::srgb(0.50, 0.52, 0.56)})
+            ThemedText
+            InheritableFont { font_size: {bevy::text::FontSize::Px(12.0)} }
+            TextLayout { linebreak: {bevy::text::LineBreak::NoWrap} }
         ]
     }
 }

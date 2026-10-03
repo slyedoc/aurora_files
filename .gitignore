@@ -20,3 +20,4 @@ log.txt
 
 # compiled Aftermath dump decoder (build from decode.c)
 scripts/aftermath/decode
+.cargo/local.toml

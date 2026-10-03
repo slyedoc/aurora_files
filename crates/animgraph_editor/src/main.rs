@@ -12,21 +12,20 @@
 use bevy::{
     animation::{AnimatedBy, AnimationTargetId},
     feathers::{
-        controls::{FeathersSliderProps, slider_bundle},
+        controls::FeathersSlider,
         dark_theme::create_dark_theme,
         theme::{ThemedText, UiTheme},
     },
     feathers_inspector::{BuildAssetInspector, BuildCustomInspector, ReflectInspectorWidget},
     image::Image,
     input::mouse::MouseScrollUnit,
-    mesh::Mesh,
     prelude::*,
     reflect::{ReflectMut, ReflectRef, std_traits::ReflectDefault},
     ui::{
         AlignItems, BackgroundColor, ComputedNode, Display, FlexDirection, JustifyContent,
         Overflow, PositionType, UiRect, Val,
     },
-    ui_widgets::{SliderValue, ValueChange, observe, slider_self_update},
+    ui_widgets::{SliderValue, ValueChange, slider_self_update},
 };
 use bevy_animation_graph::{
     AnimationGraphPlugin,
@@ -234,7 +233,7 @@ struct Preview {
 }
 
 /// One generated slider's binding: which graph input it drives.
-#[derive(Component)]
+#[derive(Component, Clone, Default)]
 struct GraphInput(String);
 
 /// A handle kept alive while its asset is open, plus what to bind once it finishes loading.
@@ -1209,23 +1208,14 @@ fn arm_preview(
             ))
             .id();
         let observer_pin = pin.clone();
-        #[expect(
-            deprecated,
-            reason = "the BSN slider() builds a scene; these rows are spawned imperatively"
-        )]
+        let slider_pin = pin.clone();
         let slider = commands
-            .spawn((
-                // `SliderValue` rides the bundle already, so it goes in as an INSERT below —
-                // passing it as an override duplicates the component and panics the spawn.
-                slider_bundle(
-                    FeathersSliderProps { min: 0.0, max },
-                    GraphInput(pin.clone()),
-                ),
-                // Feathers sliders are INERT without this: the thumb only moves because
-                // `slider_self_update` writes the new SliderValue back onto the entity.
-                observe(slider_self_update),
-            ))
-            .insert(SliderValue(value))
+            .spawn_scene(bsn! {
+                @FeathersSlider { @min: 0.0, @max: {max} }
+                SliderValue({value})
+                GraphInput({slider_pin.clone()})
+                on(slider_self_update)
+            })
             .observe(
                 move |change: On<ValueChange<f32>>,
                       mut players: Query<&mut AnimationGraphPlayer>,
