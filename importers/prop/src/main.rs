@@ -51,9 +51,9 @@ struct Args {
     /// pre-extension assets encode emitters in 0..1 and render ~1000x too dim). See `aurora_bsn::lint`.
     #[arg(long)]
     emissive_nits: Option<f32>,
-    /// Re-bake `.aurora_mesh` files even if they already exist.
+    /// Reuse meshes and files that already exist instead of re-baking them.
     #[arg(long)]
-    replace: bool,
+    keep: bool,
     /// RON file of per-material repairs for what the export did not carry: base-colour tints
     /// (LINEAR) and base-colour textures for materials whose reference was lost. See
     /// `kits/fantasy_city.fixups.ron`.
@@ -112,14 +112,13 @@ fn main() {
         eprintln!("--per-group cannot be combined with --hierarchy");
         std::process::exit(2);
     }
-    let root_components = String::new();
     let cfg = GltfConfig {
         gltf_path: args.glb,
         out_dir: args.out_dir,
         asset_prefix,
         scene_name,
-        replace: args.replace,
-        root_components,
+        replace: !args.keep,
+        root_components: Vec::new(),
         emissive_nits,
         fixups: args
             .fixups

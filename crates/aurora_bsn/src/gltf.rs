@@ -51,9 +51,9 @@ pub struct GltfConfig {
     pub scene_name: String,
     /// Re-bake `.aurora_mesh` files even when they already exist (overwrite).
     pub replace: bool,
-    /// Extra component patch lines emitted on the scene ROOT entity (before its `Children`). Used by
-    /// [`bake_gltf_hierarchy`] to stamp e.g. an animation marker on the root. Empty for none.
-    pub root_components: String,
+    /// Extra components on the scene ROOT entity (before its `Children`), e.g. an animation
+    /// marker, for [`bake_gltf_hierarchy`].
+    pub root_components: Vec<bsn::Value>,
     /// Per-scene fallback for emissive magnitude (nits), keyed on material name, used only when a
     /// material ships no `KHR_materials_emissive_strength`. `None` keeps the glTF value (×1).
     pub emissive_nits: Option<fn(&str) -> f32>,
@@ -90,8 +90,8 @@ impl Default for GltfConfig {
             out_dir: PathBuf::new(),
             asset_prefix: String::new(),
             scene_name: String::new(),
-            replace: false,
-            root_components: String::new(),
+            replace: true,
+            root_components: Vec::new(),
             emissive_nits: None,
             fixups: Fixups::default(),
             textures: None,
@@ -153,7 +153,7 @@ pub fn bake_gltf_scene(cfg: &GltfConfig) {
         fixups: &cfg.fixups,
         colliders: cfg.colliders,
         baked: HashMap::new(),
-        entities: String::new(),
+        entities: Vec::new(),
         emitted: 0,
         baked_count: 0,
         proxies: 0,
@@ -172,7 +172,7 @@ pub fn bake_gltf_scene(cfg: &GltfConfig) {
         walk(&node, Mat4::IDENTITY, &mut ctx);
     }
 
-    let bsn = bsn::scene(&cfg.scene_name, &ctx.entities);
+    let bsn = bsn::scene(&cfg.scene_name, Vec::new(), core::mem::take(&mut ctx.entities));
     let bsn_path = cfg.out_dir.join(format!("{}.bsn", cfg.scene_name));
     fs::write(&bsn_path, bsn).expect("write .bsn");
 
@@ -247,7 +247,7 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
         fixups: &cfg.fixups,
         colliders: cfg.colliders,
         baked: HashMap::new(),
-        entities: String::new(),
+        entities: Vec::new(),
         emitted: 0,
         baked_count: 0,
         proxies: 0,
@@ -307,7 +307,7 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
         }
 
         let stem = group_scene_name(node.name(), node.index(), &mut used_names);
-        let bsn = bsn::scene(&stem, &ctx.entities);
+        let bsn = bsn::scene(&stem, Vec::new(), core::mem::take(&mut ctx.entities));
         let bsn_path = cfg.out_dir.join(format!("{stem}.bsn"));
         fs::write(&bsn_path, bsn).expect("write .bsn");
         if let Some((lo, hi)) = ctx.bounds {
@@ -329,7 +329,7 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
         walk(&node, Mat4::IDENTITY, &mut ctx);
     }
     let master_entities = ctx.emitted - before_master;
-    let master = bsn::scene(&cfg.scene_name, &ctx.entities);
+    let master = bsn::scene(&cfg.scene_name, Vec::new(), core::mem::take(&mut ctx.entities));
     let master_path = cfg.out_dir.join(format!("{}.bsn", cfg.scene_name));
     fs::write(&master_path, master).expect("write master .bsn");
 
@@ -510,7 +510,7 @@ struct Ctx<'a> {
     /// `(mesh index, primitive index) → owner stem`, so shared meshes bake once and instance nodes
     /// reuse the baked `.aurora_mesh`. `None` marks a primitive whose bake failed (entities skipped).
     baked: HashMap<(usize, usize), Option<String>>,
-    entities: String,
+    entities: Vec<bsn::Entity>,
     emitted: usize,
     baked_count: usize,
     /// Nodes swapped for a `.bsn` reference (see [`bsn_proxy`]).
@@ -610,17 +610,16 @@ fn walk(node: &gltf::Node, parent: Mat4, ctx: &mut Ctx) {
             let collider = (ctx.colliders && collides(node))
                 .then(|| ensure_collider(&mesh, &prim, ctx))
                 .flatten();
-            bsn::write_entity_trs(
-                &mut ctx.entities,
+            ctx.entities.push(bsn::mesh_entity(
                 ctx.asset_prefix,
                 &stem,
-                &fields,
+                fields,
                 &name,
                 translation.to_array(),
                 rotation.to_array(),
                 scale.to_array(),
                 collider.as_deref(),
-            );
+            ));
             ctx.emitted += 1;
         }
     }
@@ -684,7 +683,7 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
         fixups: &cfg.fixups,
         colliders: cfg.colliders,
         baked: HashMap::new(),
-        entities: String::new(),
+        entities: Vec::new(),
         emitted: 0,
         baked_count: 0,
         proxies: 0,
@@ -700,12 +699,12 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
         .or_else(|| doc.scenes().next())
         .expect("gltf has no scene");
 
-    let mut root_children = String::new();
+    let mut root_children = Vec::new();
     for node in scene.nodes() {
-        emit_node(&node, &mut ctx, &mut root_children, 1);
+        emit_node(&node, &mut ctx, &mut root_children);
     }
 
-    let bsn = bsn::scene_with_root(&cfg.scene_name, &cfg.root_components, &root_children);
+    let bsn = bsn::scene(&cfg.scene_name, cfg.root_components.clone(), root_children);
     let bsn_path = cfg.out_dir.join(format!("{}.bsn", cfg.scene_name));
     fs::write(&bsn_path, bsn).expect("write .bsn");
     // The node names just written are what the clips key on, so they bake in the same pass.
@@ -867,8 +866,7 @@ fn ensure_collider(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> 
     result
 }
 
-fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
-    let pad = "    ".repeat(depth);
+fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut Vec<bsn::Entity>) {
     let (t, r, s) = node.transform().decomposed();
     let t = t.map(|x| x * ctx.scale);
 
@@ -896,42 +894,18 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
             }
         }
     }
-    let mat_fields = node
-        .mesh()
-        .and_then(|m| {
-            m.primitives()
-                .find(|p| p.mode() == gltf::mesh::Mode::Triangles)
-        })
-        .map(|p| material_fields(&p.material(), ctx))
-        .unwrap_or_default();
 
-    let _ = write!(out, "{pad}bevy_ecs::name::Name(\"{name}\")\n");
-    let _ = write!(
-        out,
-        "{pad}bevy_transform::components::transform::Transform {{ \
-         translation: glam::Vec3 {{ x: {}, y: {}, z: {} }}, \
-         rotation: glam::Quat {{ x: {}, y: {}, z: {}, w: {} }}, \
-         scale: glam::Vec3 {{ x: {}, y: {}, z: {} }} }}\n",
-        bsn::f(t[0]),
-        bsn::f(t[1]),
-        bsn::f(t[2]),
-        bsn::f(r[0]),
-        bsn::f(r[1]),
-        bsn::f(r[2]),
-        bsn::f(r[3]),
-        bsn::f(s[0]),
-        bsn::f(s[1]),
-        bsn::f(s[2]),
-    );
+    let mut entity = bsn::Entity {
+        components: vec![bsn::name(&name), bsn::transform(t, Some(r), Some(s))],
+        children: Vec::new(),
+    };
 
     // A proxy stands in for a separately baked scene: the name and transform above
     // are exactly what it needs, so emit the reference and stop -- its own geometry
     // is only a viewport stand-in and nothing of it is baked.
     if let Some(bsn_path) = bsn_proxy(node) {
-        let _ = write!(
-            out,
-            "{pad}bevy_scene::scene_patch::ScenePatchInstance(\"{bsn_path}\"),\n\n"
-        );
+        entity.components.push(bsn::scene_ref(&bsn_path));
+        out.push(entity);
         ctx.proxies += 1;
         return;
     }
@@ -943,100 +917,73 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut String, depth: usize) {
         skin.joints()
             .map(|j| {
                 j.name()
-                    .map(|n| n.replace('"', "'"))
+                    .map(str::to_string)
                     .unwrap_or_else(|| format!("node{}", j.index()))
             })
-            .map(|n| format!("\"{n}\""))
             .collect::<Vec<_>>()
-            .join(", ")
     });
 
-    // Collision, when the asset is baked with it and this node has not opted out. The
-    // component names the geometry only: `bevy_aurora::collision` has no physics engine, and a
-    // scene that named one could not be opened by anything that did not have it.
     let collide = ctx.colliders && collides(node);
+    let triangles = |i: usize| {
+        node.mesh().and_then(|m| {
+            m.primitives()
+                .filter(|p| p.mode() == gltf::mesh::Mode::Triangles)
+                .nth(i)
+                .map(|p| (m, p))
+        })
+    };
 
     // Single-primitive mesh: inline it on the node (the common case). Extra primitives drop to
     // identity-transform children below so this entity keeps the node's Name for animation.
     if let Some(stem) = prims.first() {
-        let _ = write!(
-            out,
-            "{pad}bevy_aurora::mesh::AuroraMesh3d(\"{}/meshes/{stem}.aurora_mesh\")\n\
-             {pad}bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {{{mat_fields}}})\n",
-            ctx.asset_prefix,
-        );
+        let fields = triangles(0)
+            .map(|(_, p)| material_fields(&p.material(), ctx))
+            .unwrap_or_default();
+        entity.components.push(bsn::mesh(ctx.asset_prefix, stem));
+        entity.components.push(bsn::material(fields));
         if collide
-            && let Some(mesh) = node.mesh()
-            && let Some(prim) = mesh
-                .primitives()
-                .find(|p| p.mode() == gltf::mesh::Mode::Triangles)
+            && let Some((mesh, prim)) = triangles(0)
             && let Some(col) = ensure_collider(&mesh, &prim, ctx)
         {
-            let _ = write!(
-                out,
-                "{pad}bevy_aurora::collision::CollisionMesh(\"{}/meshes/{col}.collider\")\n",
-                ctx.asset_prefix,
-            );
+            entity.components.push(bsn::collider(ctx.asset_prefix, &col));
         }
         if let Some(joints) = &skin_joints {
-            let _ = write!(
-                out,
-                "{pad}bevy_aurora::skinning::SkinJointsByName([{joints}])\n"
-            );
+            entity.components.push(bsn::skin_joints(joints.clone()));
         }
-        ctx.emitted += 1;
-    } else {
-        ctx.emitted += 1; // empty/camera anchor node (Name + Transform only)
     }
+    ctx.emitted += 1; // a mesh node, or an empty/camera anchor (Name + Transform only)
 
     // Nested children: extra primitives (index > 0) as identity entities, then the glTF child nodes.
-    let mut kids = String::new();
     for (i, stem) in prims.iter().enumerate().skip(1) {
-        let cpad = "    ".repeat(depth + 1);
-        let mat = node
-            .mesh()
-            .and_then(|m| m.primitives().nth(i))
-            .map(|p| material_fields(&p.material(), ctx))
+        let fields = triangles(i)
+            .map(|(_, p)| material_fields(&p.material(), ctx))
             .unwrap_or_default();
+        let mut components = vec![
+            bsn::name(&format!("{name}#{i}")),
+            bsn::transform([0.0; 3], Some([0.0, 0.0, 0.0, 1.0]), Some([1.0; 3])),
+            bsn::mesh(ctx.asset_prefix, stem),
+            bsn::material(fields),
+        ];
+        if collide
+            && let Some((mesh, prim)) = triangles(i)
+            && let Some(col) = ensure_collider(&mesh, &prim, ctx)
+        {
+            components.push(bsn::collider(ctx.asset_prefix, &col));
+        }
         // Extra primitives of a skinned mesh share the node's skin.
-        let skin = match &skin_joints {
-            Some(joints) => {
-                format!("{cpad}bevy_aurora::skinning::SkinJointsByName([{joints}])\n")
-            }
-            None => String::new(),
-        };
-        let col = match collide {
-            true => node
-                .mesh()
-                .and_then(|m| m.primitives().nth(i).map(|p| (m, p)))
-                .and_then(|(m, p)| ensure_collider(&m, &p, ctx))
-                .map(|col| {
-                    format!(
-                        "{cpad}bevy_aurora::collision::CollisionMesh(\"{}/meshes/{col}.collider\")\n",
-                        ctx.asset_prefix,
-                    )
-                })
-                .unwrap_or_default(),
-            false => String::new(),
-        };
-        let _ = write!(
-            kids,
-            "{cpad}bevy_ecs::name::Name(\"{name}#{i}\")\n\
-             {cpad}bevy_transform::components::transform::Transform {{ translation: glam::Vec3 {{ x: 0.0, y: 0.0, z: 0.0 }}, rotation: glam::Quat {{ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }}, scale: glam::Vec3 {{ x: 1.0, y: 1.0, z: 1.0 }} }}\n\
-             {cpad}bevy_aurora::mesh::AuroraMesh3d(\"{}/meshes/{stem}.aurora_mesh\")\n\
-             {cpad}bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {{{mat}}})\n\
-             {col}{skin}{cpad},\n",
-            ctx.asset_prefix,
-        );
+        if let Some(joints) = &skin_joints {
+            components.push(bsn::skin_joints(joints.clone()));
+        }
+        entity.children.push(bsn::Entity {
+            components,
+            children: Vec::new(),
+        });
         ctx.emitted += 1;
     }
     for child in node.children() {
-        emit_node(&child, ctx, &mut kids, depth + 1);
+        emit_node(&child, ctx, &mut entity.children);
     }
-    if !kids.is_empty() {
-        let _ = write!(out, "{pad}bevy_ecs::hierarchy::Children [\n{kids}{pad}]\n");
-    }
-    let _ = write!(out, "{pad},\n");
+    out.push(entity);
 }
 
 /// Bake one primitive into a `.aurora_mesh` (skipping the bake if the file already exists from a
@@ -1233,8 +1180,8 @@ pub(crate) fn lint_materials(
 
 /// Inline `AuroraMaterial` field list for a glTF material: the scalar/colour factors, textures (by
 /// extracted file path), alpha-mode, and glass transmission/IOR.
-fn material_fields(material: &gltf::Material, ctx: &Ctx) -> String {
-    let mut fields = String::new();
+fn material_fields(material: &gltf::Material, ctx: &Ctx) -> Vec<(&'static str, bsn::Value)> {
+    let mut fields = Vec::new();
 
     let pbr = material.pbr_metallic_roughness();
 
@@ -1260,15 +1207,7 @@ fn material_fields(material: &gltf::Material, ctx: &Ctx) -> String {
         bc = [1.0, 1.0, 1.0, 1.0];
     }
     if bc[0] != 1.0 || bc[1] != 1.0 || bc[2] != 1.0 || bc[3] != 1.0 {
-        let _ = write!(
-            fields,
-            " base_color: bevy_color::color::Color::LinearRgba(bevy_color::linear_rgba::LinearRgba \
-             {{ red: {}, green: {}, blue: {}, alpha: {} }}),",
-            bsn::f(bc[0]),
-            bsn::f(bc[1]),
-            bsn::f(bc[2]),
-            bsn::f(bc[3]),
-        );
+        fields.push(("base_color", bsn::color_linear(bc)));
     }
     // glTF's metallicFactor defaults to 1.0 and is meant to scale a metallic-roughness texture.
     // aurora samples a white fallback where the texture is missing, so a bare factor would make
@@ -1279,34 +1218,33 @@ fn material_fields(material: &gltf::Material, ctx: &Ctx) -> String {
         0.0
     };
     if metallic != 0.0 {
-        let _ = write!(fields, " metallic: {},", bsn::f(metallic));
+        fields.push(("metallic", bsn::Value::Float(metallic)));
     }
     let roughness = pbr.roughness_factor();
     if roughness != 0.5 {
-        let _ = write!(fields, " perceptual_roughness: {},", bsn::f(roughness));
+        fields.push(("perceptual_roughness", bsn::Value::Float(roughness)));
     }
     if let Some(ior) = material.ior() {
         // Only meaningful for transmissive surfaces, but harmless and cheap to carry.
         if ior != 1.5 {
-            let _ = write!(fields, " ior: {},", bsn::f(ior));
+            fields.push(("ior", bsn::Value::Float(ior)));
         }
     }
 
     if let Some(file) = ctx.base_color_file(material) {
-        let _ = write!(
-            fields,
-            " base_color_texture: \"{}/textures/{file}\",",
-            ctx.asset_prefix
-        );
+        fields.push((
+            "base_color_texture",
+            bsn::Value::Str(format!("{}/textures/{file}", ctx.asset_prefix)),
+        ));
     }
     if let Some(info) = pbr.metallic_roughness_texture() {
         if let Some(p) = tex_file(info.texture(), ctx) {
-            let _ = write!(fields, " metallic_roughness_texture: \"{p}\",");
+            fields.push(("metallic_roughness_texture", bsn::Value::Str(p)));
         }
     }
     if let Some(nt) = material.normal_texture() {
         if let Some(p) = tex_file(nt.texture(), ctx) {
-            let _ = write!(fields, " normal_map_texture: \"{p}\",");
+            fields.push(("normal_map_texture", bsn::Value::Str(p)));
         }
     }
 
@@ -1318,26 +1256,16 @@ fn material_fields(material: &gltf::Material, ctx: &Ctx) -> String {
         .and_then(|info| tex_file(info.texture(), ctx));
     let radiance = emissive_radiance(material, ctx.emissive_nits, emissive_tex.is_some());
     if let Some([r, g, b]) = radiance {
-        let _ = write!(
-            fields,
-            " emissive: bevy_color::linear_rgba::LinearRgba {{ red: {}, green: {}, blue: {}, alpha: 1.0 }},",
-            bsn::f(r),
-            bsn::f(g),
-            bsn::f(b),
-        );
+        fields.push(("emissive", bsn::linear_rgba([r, g, b, 1.0])));
         if let Some(p) = emissive_tex {
-            let _ = write!(fields, " emissive_texture: \"{p}\",");
+            fields.push(("emissive_texture", bsn::Value::Str(p)));
         }
     }
 
     // Alpha cutout (foliage, fences): emit `AlphaMode::Mask` so the ray tracer any-hit-tests it.
     // Via `alpha_cutout`, so a material the exporter wrongly called opaque still gets its cutout.
     if let Some(cutoff) = ctx.alpha_cutout(material) {
-        let _ = write!(
-            fields,
-            " alpha_mode: bevy_aurora::material::AlphaMode::Mask({}),",
-            bsn::f(cutoff)
-        );
+        fields.push(("alpha_mode", bsn::alpha_mask(cutoff)));
     }
 
     // Glass/liquids: KHR_materials_transmission → specular transmission + IOR (refraction owns it).
@@ -1345,12 +1273,9 @@ fn material_fields(material: &gltf::Material, ctx: &Ctx) -> String {
         let factor = t.transmission_factor();
         if factor > 0.0 {
             let ior = material.ior().unwrap_or(1.5);
-            let _ = write!(
-                fields,
-                " specular_transmission: {}, ior: {},",
-                bsn::f(factor),
-                bsn::f(ior)
-            );
+            fields.retain(|(name, _)| *name != "ior");
+            fields.push(("specular_transmission", bsn::Value::Float(factor)));
+            fields.push(("ior", bsn::Value::Float(ior)));
         }
     }
 

@@ -20,9 +20,9 @@ struct Args {
     /// Asset-server-relative prefix the `.bsn` uses to reference meshes/textures.
     #[arg(default_value = "bistro")]
     asset_prefix: String,
-    /// Re-bake `.aurora_mesh` files even if they already exist (no more `rm -rf meshes`).
+    /// Reuse meshes and files that already exist instead of re-baking them.
     #[arg(long)]
-    replace: bool,
+    keep: bool,
 }
 
 /// Bistro emitters ship no `KHR_materials_emissive_strength`; assign physical nits by material name
@@ -49,8 +49,7 @@ fn main() {
         asset_prefix: args.asset_prefix,
         // Lowercase so the output is `bistro.bsn` (the path the bevy bistro example loads).
         scene_name: "bistro".to_string(),
-        replace: args.replace,
-        root_components: String::new(),
+        replace: !args.keep,
         emissive_nits: Some(emissive_nits_default),
         ..Default::default()
     };

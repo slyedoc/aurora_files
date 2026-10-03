@@ -5,7 +5,6 @@
 //! RT cores never invoke the any-hit on the millions of leaf micro-triangles.
 
 use std::collections::{HashMap, HashSet};
-use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -97,7 +96,7 @@ fn bake_tree(
         cutmask: &cutmask,
         cfg,
         baked: HashMap::new(),
-        entities: String::new(),
+        entities: Vec::new(),
         emitted: 0,
         aabb: None,
         clump_sources: Vec::new(),
@@ -112,7 +111,7 @@ fn bake_tree(
         walk(&node, root, &mut ctx);
     }
 
-    let bsn = bsn::scene(stem, &ctx.entities);
+    let bsn = bsn::scene(stem, Vec::new(), core::mem::take(&mut ctx.entities));
     fs::write(cfg.out_dir.join(format!("{stem}.bsn")), bsn).expect("write .bsn");
     let height = ctx.aabb.map(|(mn, mx)| mx[1] - mn[1]).unwrap_or(0.0);
     println!("  {stem}: {} entities, ~{height:.2}m tall", ctx.emitted,);
@@ -126,7 +125,7 @@ fn bake_tree(
 fn bake_clump(tree: &str, ctx: &Tree, cfg: &SpeedTreeConfig) {
     let k = cfg.clump;
     let placements = clump_placements(tree, k, cfg.clump_radius);
-    let mut entities = String::new();
+    let mut entities = Vec::new();
     let mut emitted = 0;
     for (i, src) in ctx.clump_sources.iter().enumerate() {
         let stem = format!("{tree}_clump{k}_p{i}");
@@ -154,21 +153,20 @@ fn bake_clump(tree: &str, ctx: &Tree, cfg: &SpeedTreeConfig) {
             let w = BufWriter::new(File::create(&file).expect("create .aurora_mesh"));
             write_aurora_mesh(&cm, w).expect("write .aurora_mesh");
         }
-        bsn::write_entity_trs(
-            &mut entities,
+        entities.push(bsn::mesh_entity(
             &cfg.asset_prefix,
             &stem,
-            &src.fields,
+            src.fields.clone(),
             &src.name,
             [0.0; 3],
             [0.0, 0.0, 0.0, 1.0],
             [1.0; 3],
             None,
-        );
+        ));
         emitted += 1;
     }
     let name = format!("{tree}_clump{k}");
-    let bsn = bsn::scene(&name, &entities);
+    let bsn = bsn::scene(&name, Vec::new(), entities);
     fs::write(cfg.out_dir.join(format!("{name}.bsn")), bsn).expect("write clump .bsn");
     println!("  {name}: {emitted} entities ({k} trees merged)");
 }
@@ -280,7 +278,7 @@ fn merge_placements(src: &bevy::mesh::Mesh, placements: &[Mat4]) -> bevy::mesh::
 /// A primitive captured for clump merging: the world-baked mesh + everything
 /// needed to re-emit its material entity and OMM.
 struct ClumpSource {
-    fields: String,
+    fields: Vec<(&'static str, bsn::Value)>,
     name: String,
     mesh: bevy::mesh::Mesh,
     /// Base-colour image index of a classified cutout: the merged clump re-bakes its OMM.
@@ -298,7 +296,7 @@ struct Tree<'a> {
     /// `(mesh, prim, world) → owner stem` — identical instances bake once;
     /// distinct transforms bake distinct meshes (world is in the vertices).
     baked: HashMap<(usize, usize, [u32; 16]), Option<String>>,
-    entities: String,
+    entities: Vec<bsn::Entity>,
     emitted: usize,
     aabb: Option<([f32; 3], [f32; 3])>,
     clump_sources: Vec<ClumpSource>,
@@ -336,17 +334,17 @@ fn walk(node: &gltf::Node, parent: Mat4, ctx: &mut Tree) {
             let Some(stem) = stem else { continue };
             let fields = material_fields(&prim.material(), cut, ctx);
             let name = format!("{}.{}", ctx.stem, prim.material().name().unwrap_or("part"));
-            bsn::write_entity_trs(
-                &mut ctx.entities,
+            let entity = bsn::mesh_entity(
                 &ctx.cfg.asset_prefix,
                 &stem,
-                &fields,
+                fields,
                 &name,
                 [0.0; 3],
                 [0.0, 0.0, 0.0, 1.0],
                 [1.0; 3],
                 None,
             );
+            ctx.entities.push(entity);
             ctx.emitted += 1;
         }
     }
@@ -427,32 +425,26 @@ fn attach_cutout_omm(cm: &mut AuroraMesh, material: &gltf::Material, ctx: &Tree)
 }
 
 /// Inline `AuroraMaterial` fields: base-color + normal textures and `Mask` for classified cutouts.
-fn material_fields(material: &gltf::Material, cut: bool, ctx: &Tree) -> String {
-    let mut f = String::new();
+fn material_fields(material: &gltf::Material, cut: bool, ctx: &Tree) -> Vec<(&'static str, bsn::Value)> {
+    let mut f = Vec::new();
     if let Some(p) = base_color_image(material).and_then(|i| ctx.image_files.get(&i)) {
-        let _ = write!(
-            f,
-            " base_color_texture: \"{}/textures/{p}\",",
-            ctx.cfg.asset_prefix
-        );
+        f.push((
+            "base_color_texture",
+            bsn::Value::Str(format!("{}/textures/{p}", ctx.cfg.asset_prefix)),
+        ));
     }
     if let Some(p) = material
         .normal_texture()
         .map(|t| t.texture().source().index())
         .and_then(|i| ctx.image_files.get(&i))
     {
-        let _ = write!(
-            f,
-            " normal_map_texture: \"{}/textures/{p}\",",
-            ctx.cfg.asset_prefix
-        );
+        f.push((
+            "normal_map_texture",
+            bsn::Value::Str(format!("{}/textures/{p}", ctx.cfg.asset_prefix)),
+        ));
     }
     if cut {
-        let _ = write!(
-            f,
-            " alpha_mode: bevy_aurora::material::AlphaMode::Mask({}),",
-            bsn::f(img::MASK_CUTOFF)
-        );
+        f.push(("alpha_mode", bsn::alpha_mask(img::MASK_CUTOFF)));
     }
     f
 }

@@ -26,9 +26,9 @@ struct Args {
     /// Uniform scale applied to every tree (SpeedTree FBX author units → metres).
     #[arg(long, default_value_t = 1.0)]
     scale: f32,
-    /// Re-bake `.aurora_mesh` files even if they already exist.
+    /// Reuse meshes and files that already exist instead of re-baking them.
     #[arg(long)]
-    replace: bool,
+    keep: bool,
 
     /// Also bake `<Tree>_clump<K>.bsn`: K trees merged into one BLAS per material.
     #[arg(long, default_value_t = 0)]
@@ -45,7 +45,7 @@ fn main() {
         glb_dir: args.glb_dir,
         out_dir: args.out_dir,
         asset_prefix: args.asset_prefix,
-        replace: args.replace,
+        replace: !args.keep,
         scale: args.scale,
         clump: args.clump,
         clump_radius: args.clump_radius,

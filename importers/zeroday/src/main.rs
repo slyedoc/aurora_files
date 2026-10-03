@@ -31,23 +31,19 @@ struct Args {
     /// Asset-server-relative prefix the `.bsn` uses to reference meshes/textures.
     #[arg(long, default_value = "zeroday")]
     asset_prefix: String,
-    /// Re-bake `.aurora_mesh` files even if they already exist.
+    /// Reuse meshes and files that already exist instead of re-baking them.
     #[arg(long)]
-    replace: bool,
+    keep: bool,
 }
 
 fn main() {
     let args = Args::parse();
-    // No animation marker: the `.animclip` path lived in the old engine's bevy branch.
-    let root_components = String::new();
-
     let cfg = GltfConfig {
         gltf_path: args.gltf,
         out_dir: args.out_dir.clone(),
         asset_prefix: args.asset_prefix,
         scene_name: args.scene_name.clone(),
-        replace: args.replace,
-        root_components,
+        replace: !args.keep,
         emissive_nits: None,
         ..Default::default()
     };

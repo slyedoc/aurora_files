@@ -25,7 +25,7 @@ as a PNG-textured `.glb`/`.gltf`, then:
 cargo run --release -p bistro_import -- raw/Bistro/Bistro.glb assets/bistro bistro
 ```
 
-Baked meshes are cached; pass `--replace` to re-bake. San Miguel also has `--floor-only` and
+Every run re-bakes its meshes and files; pass `--keep` to reuse what already exists. San Miguel also has `--floor-only` and
 `--cutout-only` to emit a minimal single-object scene, and `--erode <px>` to tune the OMM cutout
 mask. Run an importer with `--help` for all options.
 
@@ -84,7 +84,7 @@ cargo run --release -p speedtree_import -- raw/SpeedTree_v2/_glb assets/speedtre
 
 Foliage is classified from the base-color alpha histogram (not the glTF alpha mode), so leaf/frond
 materials get `AlphaMode::Mask` + a 2-state OMM (100% known → zero any-hit on leaves) while bark/caps
-stay opaque. `--replace` re-bakes meshes, `--scale`/`--erode`/`--level` tune size/OMM. FBX author
+stay opaque. `--keep` reuses baked meshes, `--scale`/`--erode`/`--level` tune size/OMM. FBX author
 units are cm; the baked entities carry a 0.01 scale so trees land metric (White Oak ≈ 7.6 m).
 
 
@@ -317,7 +317,7 @@ baked with **collision**, so zero can put a navmesh over it.
 blender -b /mnt/code/p/assets/hex/hex_export.blend --python scripts/asset_to_glb.py -- \
   --out raw/hex/hex.glb --collection HEX --origin keep
 cargo run --release -p prop_import -- raw/hex/hex.glb assets/hex --hierarchy \
-  --scene-name hex --replace --colliders
+  --scene-name hex --colliders
 ./target/release/bsn assets/hex/hex.bsn --pos 0,3,42 --target 0,3,25     # at the door
 cp -r assets/hex /mnt/code/p/zero/assets/
 cd /mnt/code/p/zero && cargo run --release -- -s hex --nav-debug

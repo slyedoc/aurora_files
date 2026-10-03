@@ -27,9 +27,9 @@ struct Args {
     /// `Cutout.bsn`. Optional value is the diffuse texture stem to match (default `FL11pet3`).
     #[arg(long, num_args = 0..=1, default_missing_value = DEFAULT_CUTOUT_TEX)]
     cutout_only: Option<String>,
-    /// Re-bake `.aurora_mesh` files even if they already exist (no more `rm -rf meshes`).
+    /// Reuse meshes and files that already exist instead of re-baking them.
     #[arg(long)]
-    replace: bool,
+    keep: bool,
 }
 
 fn main() {
@@ -65,7 +65,7 @@ fn main() {
         submesh_filter,
         // Share geometry across the courtyard's repeated props (chairs, plates, colonnade).
         dedup: true,
-        replace: args.replace,
+        replace: !args.keep,
     };
     bake_scene(&cfg);
 }

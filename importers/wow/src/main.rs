@@ -79,7 +79,7 @@ use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-use aurora_bsn::bsn::{material_fields, scene, write_entity_trs};
+use aurora_bsn::bsn::{self, Entity, Value, material_fields, mesh_entity, scene};
 use aurora_bsn::discovery::{copy_textures, material_is_cutmask, sanitize};
 use aurora_bsn::mesh::{OmmOptions, attach_omm, build_mesh, submesh_centroid};
 use aurora_mesh::{AuroraMesh, write_aurora_mesh};
@@ -122,9 +122,9 @@ struct Args {
     /// Asset-server-relative prefix the `.bsn` uses to reference meshes/textures.
     #[arg(long, default_value = "wow")]
     asset_prefix: String,
-    /// Re-bake meshes and REWRITE map files even when they exist (discards in-game edits!).
+    /// Reuse meshes and files that already exist instead of re-baking them.
     #[arg(long)]
-    replace: bool,
+    keep: bool,
     /// The community listfile (`<file id>;<path>` per line): resolves GroundEffectDoodad
     /// model ids to plant model names.
     #[arg(long, default_value = "/home/slyedoc/code/p/core/assets/terrain/dbc/listfile.csv")]
@@ -258,7 +258,7 @@ fn emissive_fields(
     is_cutmask: bool,
     emissive: &Emissive,
     derived: &mut DerivedGlows,
-) -> Option<(String, bool, [f32; 3])> {
+) -> Option<(Vec<(&'static str, Value)>, bool, [f32; 3])> {
     let tex = material?.diffuse_texture.as_deref()?;
     let name = aurora_bsn::img::basename(tex);
     let stem = Path::new(name).file_stem()?.to_string_lossy().into_owned();
@@ -303,26 +303,18 @@ fn emissive_fields(
         (card, mean)
     };
 
-    let mut fields = String::new();
-    if card {
+    let mut fields = if card {
         // The card's core only: a black cutout that emits; the halo is the point light's.
-        let _ = write!(
-            fields,
-            " base_color_texture: \"{prefix}/textures/{card_name}\", \
-             alpha_mode: bevy_aurora::material::AlphaMode::Mask(0.5),"
-        );
+        vec![
+            ("base_color_texture", Value::Str(format!("{prefix}/textures/{card_name}"))),
+            ("alpha_mode", bsn::alpha_mask(0.5)),
+        ]
     } else {
-        fields.push_str(&material_fields(prefix, material, is_cutmask, &[]));
-    }
+        material_fields(prefix, material, is_cutmask, &[])
+    };
     let [r, g, b] = emissive.tint.map(|t| t * emissive.nits);
-    let _ = write!(
-        fields,
-        " emissive: bevy_color::linear_rgba::LinearRgba {{ red: {}, green: {}, blue: {}, alpha: 1.0 }}, \
-         emissive_texture: \"{prefix}/textures/{glow_name}\",",
-        fmt_f(r),
-        fmt_f(g),
-        fmt_f(b)
-    );
+    fields.push(("emissive", bsn::linear_rgba([r, g, b, 1.0])));
+    fields.push(("emissive_texture", Value::Str(format!("{prefix}/textures/{glow_name}"))));
     Some((fields, card, mean))
 }
 
@@ -365,7 +357,7 @@ struct WmoPlacement {
 /// One baked submesh of a model: everything a `.bsn` entity instance needs.
 struct BakedSubmesh {
     mesh_stem: String,
-    material_fields: String,
+    material_fields: Vec<(&'static str, Value)>,
     /// Local centroid the geometry was centered on (translation of an un-instanced entity).
     centroid: Vec3,
     /// A glow card's halo as a point light at the centroid: (linear colour, lumens at unit
@@ -453,7 +445,7 @@ fn main() {
     let mut palette = PaletteBuilder::default();
     let mut texture_effects: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
     for (&(ax, ay), placements) in &tile_placements {
-        let mut entities = String::new();
+        let mut entities = Vec::new();
         let mut instanced = 0usize;
         for p in placements {
             let Some(submeshes) = baked_models.get(&p.model) else {
@@ -464,38 +456,36 @@ fn main() {
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
             if let Some(stem) = colliders.get(&p.model) {
-                write_collider_entity(&mut entities, &args.asset_prefix, &name, stem, p);
+                entities.push(collider_entity(&args.asset_prefix, &name, stem, p));
             }
             for sub in submeshes {
                 // Instance transform composed with the submesh's local centroid offset.
                 let t = p.translation + p.rotation * (sub.centroid * p.scale);
-                write_entity_trs(
-                    &mut entities,
+                entities.push(mesh_entity(
                     &args.asset_prefix,
                     &sub.mesh_stem,
-                    &sub.material_fields,
+                    sub.material_fields.clone(),
                     &name,
                     t.to_array(),
                     p.rotation.to_array(),
                     [p.scale, p.scale, p.scale],
                     None,
-                );
+                ));
                 instanced += 1;
                 if let Some((color, lumens, radius)) = sub.glow_light {
-                    write_point_light(
-                        &mut entities,
+                    entities.push(point_light(
                         &format!("{name} glow"),
                         t.to_array(),
                         color,
                         lumens * p.scale * p.scale,
                         radius * p.scale,
-                    );
+                    ));
                 }
             }
         }
 
         let scene_name = format!("{}_{ax}_{ay}", args.map);
-        let bsn = scene(&scene_name, &entities);
+        let bsn = scene(&scene_name, Vec::new(), entities);
         let bsn_path = args.out_dir.join(format!("{scene_name}.bsn"));
         fs::write(&bsn_path, bsn).expect("write .bsn");
         println!(
@@ -659,16 +649,12 @@ fn emit_clutter(
                     continue;
                 }
                 let bsn_path = plants_dir.join(format!("{name}.bsn"));
-                if args.replace || !bsn_path.exists() {
-                    let mut entities = String::new();
-                    for sub in &submeshes {
-                        write_plant_entity(&mut entities, &args.asset_prefix, sub, &name, *animscale);
-                    }
-                    let bsn = format!(
-                        "// Ground-clutter plant, seeded by the wow importer. Edit freely (the\n\
-                         // material, the WindSway amplitude); never overwritten without --replace.\n\
-                         #{name}\nbevy_ecs::hierarchy::Children [\n{entities}]\n"
-                    );
+                if !args.keep || !bsn_path.exists() {
+                    let entities = submeshes
+                        .iter()
+                        .map(|sub| plant_entity(&args.asset_prefix, sub, &name, *animscale))
+                        .collect();
+                    let bsn = scene(&name, Vec::new(), entities);
                     fs::write(&bsn_path, bsn).expect("write plant .bsn");
                 }
                 baked.insert(name.clone(), format!("{}/plants/{name}.bsn", args.asset_prefix));
@@ -690,7 +676,7 @@ fn emit_clutter(
     }
 
     let ron_path = args.out_dir.join("clutter.ron");
-    if args.replace || !ron_path.exists() {
+    if !args.keep || !ron_path.exists() {
         let mut out = String::new();
         out.push_str(
             "// Ground clutter: splat palette texture -> the plants it grows and how many\n\
@@ -721,71 +707,41 @@ fn emit_clutter(
 /// A plant prefab part: the submesh at its centroid, the material, and -- for anything WoW
 /// animates (Animscale > 0) -- the wind deformer the clutter chunks inherit. Rocks get none.
 /// Edit the amplitude per plant here.
-fn write_plant_entity(
-    out: &mut String,
-    asset_prefix: &str,
-    sub: &BakedSubmesh,
-    name: &str,
-    animscale: f32,
-) {
-    let c = sub.centroid;
-    let wind = if animscale > 0.0 {
-        format!(
-            "    bevy_aurora::skinning::WindSway {{ amplitude: {} }}\n",
-            fmt_f(0.25 * animscale)
-        )
-    } else {
-        String::new()
-    };
-    let _ = write!(
-        out,
-        "    bevy_ecs::name::Name(\"{name}\")\n    \
-         bevy_transform::components::transform::Transform {{ \
-         translation: glam::Vec3 {{ x: {}, y: {}, z: {} }}, \
-         rotation: glam::Quat {{ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }}, \
-         scale: glam::Vec3 {{ x: 1.0, y: 1.0, z: 1.0 }} }}\n    \
-         bevy_aurora::mesh::AuroraMesh3d(\"{asset_prefix}/meshes/{}.aurora_mesh\")\n{wind}    \
-         bevy_aurora::material::AuroraMaterial3d(bevy_aurora::material::AuroraMaterial {{{}}}),\n\n",
-        fmt_f(c.x),
-        fmt_f(c.y),
-        fmt_f(c.z),
-        sub.mesh_stem,
-        sub.material_fields,
-    );
+fn plant_entity(asset_prefix: &str, sub: &BakedSubmesh, name: &str, animscale: f32) -> Entity {
+    let mut components = vec![
+        bsn::name(name),
+        bsn::transform(sub.centroid.to_array(), Some([0.0, 0.0, 0.0, 1.0]), Some([1.0; 3])),
+        bsn::mesh(asset_prefix, &sub.mesh_stem),
+    ];
+    if animscale > 0.0 {
+        components.push(Value::Struct(
+            "bevy_aurora::skinning::WindSway",
+            vec![("amplitude", Value::Float(0.25 * animscale))],
+        ));
+    }
+    components.push(bsn::material(sub.material_fields.clone()));
+    Entity {
+        components,
+        children: Vec::new(),
+    }
 }
 
 /// A point light entity: a glow card's halo as illumination.
-fn write_point_light(out: &mut String, name: &str, t: [f32; 3], color: [f32; 3], lumens: f32, radius: f32) {
-    let _ = write!(
-        out,
-        "    bevy_ecs::name::Name(\"{}\")\n    \
-         bevy_transform::components::transform::Transform {{ \
-         translation: glam::Vec3 {{ x: {}, y: {}, z: {} }}, \
-         rotation: glam::Quat {{ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }}, \
-         scale: glam::Vec3 {{ x: 1.0, y: 1.0, z: 1.0 }} }}\n    \
-         bevy_light::point_light::PointLight {{ \
-         color: bevy_color::color::Color::LinearRgba(bevy_color::linear_rgba::LinearRgba {{ red: {}, green: {}, blue: {}, alpha: 1.0 }}), \
-         intensity: {}, radius: {} }},\n\n",
-        name.replace('"', "'"),
-        fmt_f(t[0]),
-        fmt_f(t[1]),
-        fmt_f(t[2]),
-        fmt_f(color[0]),
-        fmt_f(color[1]),
-        fmt_f(color[2]),
-        fmt_f(lumens),
-        fmt_f(radius),
-    );
-}
-
-/// `.bsn` float literal: fixed point with a decimal point (the lexer rejects exponents).
-fn fmt_f(v: f32) -> String {
-    let s = format!("{v:.6}");
-    let s = s.trim_end_matches('0');
-    if s.ends_with('.') {
-        format!("{s}0")
-    } else {
-        s.to_string()
+fn point_light(name: &str, t: [f32; 3], [r, g, b]: [f32; 3], lumens: f32, radius: f32) -> Entity {
+    Entity {
+        components: vec![
+            bsn::name(name),
+            bsn::transform(t, Some([0.0, 0.0, 0.0, 1.0]), Some([1.0; 3])),
+            Value::Struct(
+                "bevy_light::point_light::PointLight",
+                vec![
+                    ("color", bsn::color_linear([r, g, b, 1.0])),
+                    ("intensity", Value::Float(lumens)),
+                    ("radius", Value::Float(radius)),
+                ],
+            ),
+        ],
+        children: Vec::new(),
     }
 }
 
@@ -833,7 +789,7 @@ impl PaletteBuilder {
         let dir = args.out_dir.join("map");
         for (name, src) in &self.entries {
             let dst = dir.join("tileset").join(name);
-            if !dst.exists() || args.replace {
+            if !dst.exists() || !args.keep {
                 if let Err(err) = fs::copy(src, &dst) {
                     eprintln!("palette: copy {} failed: {err}", src.display());
                 }
@@ -912,7 +868,7 @@ fn emit_tile_map(
     }
 
     let exists = height_path.exists() && alpha_path.exists() && layers_path.exists();
-    if exists && !args.replace {
+    if exists && !!args.keep {
         return;
     }
 
@@ -1055,7 +1011,7 @@ fn bake_model(
             .out_dir
             .join("meshes")
             .join(format!("{mesh_stem}.aurora_mesh"));
-        if args.replace || !mesh_file.exists() {
+        if !args.keep || !mesh_file.exists() {
             let mesh = build_mesh(&m.mesh, centroid);
             let mut cm = match AuroraMesh::clustered(&mesh) {
                 Ok(cm) => cm,
@@ -1189,7 +1145,7 @@ fn bake_collider(args: &Args, obj_path: &Path, rel: &str) -> Option<String> {
     if collision.indices.is_empty() {
         return None;
     }
-    if args.replace || !file.exists() {
+    if !args.keep || !file.exists() {
         collision.write(&file);
     }
     Some(stem)
@@ -1202,26 +1158,15 @@ fn bake_collider(args: &Args, obj_path: &Path, rel: &str) -> Option<String> {
 /// it into an avian `Collider` + `RigidBody::Static`. Naming avian here instead made the tile
 /// unopenable by anything without avian in its type registry, the plain `bsn` viewer included
 /// (`unknown type: avian3d::dynamics::rigid_body::RigidBody`, and the whole scene is refused).
-fn write_collider_entity(out: &mut String, prefix: &str, name: &str, stem: &str, p: &Placement) {
-    let (t, r) = (p.translation, p.rotation);
-    let _ = write!(
-        out,
-        "    bevy_ecs::name::Name(\"{} collider\")\n    \
-         bevy_transform::components::transform::Transform {{ \
-         translation: glam::Vec3 {{ x: {}, y: {}, z: {} }}, \
-         rotation: glam::Quat {{ x: {}, y: {}, z: {}, w: {} }}, \
-         scale: glam::Vec3 {{ x: {s}, y: {s}, z: {s} }} }}\n    \
-         bevy_aurora::collision::CollisionMesh(\"{prefix}/meshes/{stem}.collider\"),\n\n",
-        name.replace('"', "'"),
-        fmt_f(t.x),
-        fmt_f(t.y),
-        fmt_f(t.z),
-        fmt_f(r.x),
-        fmt_f(r.y),
-        fmt_f(r.z),
-        fmt_f(r.w),
-        s = fmt_f(p.scale),
-    );
+fn collider_entity(prefix: &str, name: &str, stem: &str, p: &Placement) -> Entity {
+    Entity {
+        components: vec![
+            bsn::name(&format!("{name} collider")),
+            bsn::transform(p.translation.to_array(), Some(p.rotation.to_array()), Some([p.scale; 3])),
+            bsn::collider(prefix, stem),
+        ],
+        children: Vec::new(),
+    }
 }
 
 // ---- placements ------------------------------------------------------------------------------

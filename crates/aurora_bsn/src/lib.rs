@@ -262,7 +262,7 @@ pub fn bake_scene(cfg: &SceneConfig) {
 
     // Pass 2 — one `.bsn` entity per submesh, referencing its owner's mesh, placed by its own
     // `Transform` (translation = centroid; rotation/scale from the Kabsch fit, for instances).
-    let mut entities = String::new();
+    let mut entities = Vec::new();
     let mut emitted = 0usize;
     for i in 0..models.len() {
         if !keep[i] {
@@ -279,8 +279,7 @@ pub fn bake_scene(cfg: &SceneConfig) {
             .material_id
             .is_some_and(|id| cutmask.get(id).copied().unwrap_or(false));
         let owner_stem = format!("{}_{o}", discovery::sanitize(&models[o].name));
-        bsn::write_entity(
-            &mut entities,
+        entities.push(bsn::obj_entity(
             &cfg.asset_prefix,
             &owner_stem,
             material,
@@ -289,11 +288,11 @@ pub fn bake_scene(cfg: &SceneConfig) {
             centroid,
             rot[i],
             scale[i],
-        );
+        ));
         emitted += 1;
     }
 
-    let bsn = bsn::scene(&cfg.scene_name, &entities);
+    let bsn = bsn::scene(&cfg.scene_name, Vec::new(), entities);
     let bsn_path = cfg.out_dir.join(format!("{}.bsn", cfg.scene_name));
     fs::write(&bsn_path, bsn).expect("write .bsn");
 

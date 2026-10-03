@@ -42,9 +42,9 @@ struct Args {
     /// Output asset directory.
     #[arg(long, default_value = "assets/kenney")]
     out: PathBuf,
-    /// Re-bake meshes that already exist.
+    /// Reuse meshes and files that already exist instead of re-baking them.
     #[arg(long)]
-    replace: bool,
+    keep: bool,
 }
 
 fn main() {
@@ -71,7 +71,7 @@ fn main() {
         for glb in glbs {
             let stem = glb.file_stem().unwrap().to_string_lossy().to_string();
             let out = meshes_dir.join(format!("{stem}.aurora_mesh"));
-            if out.exists() && !args.replace {
+            if out.exists() && !!args.keep {
                 skipped += 1;
                 continue;
             }

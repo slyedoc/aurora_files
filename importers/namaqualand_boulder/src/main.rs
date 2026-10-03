@@ -20,9 +20,9 @@ struct Args {
     /// Asset-server-relative prefix the `.bsn` uses to reference meshes/textures.
     #[arg(default_value = "namaqualand_boulder")]
     asset_prefix: String,
-    /// Re-bake `.aurora_mesh` files even if they already exist (no more `rm -rf meshes`).
+    /// Reuse meshes and files that already exist instead of re-baking them.
     #[arg(long)]
-    replace: bool,
+    keep: bool,
 }
 
 fn main() {
@@ -34,8 +34,7 @@ fn main() {
         asset_prefix: args.asset_prefix,
         // Lowercase so the output is `namaqualand_boulder.bsn`.
         scene_name: "namaqualand_boulder".to_string(),
-        replace: args.replace,
-        root_components: String::new(),
+        replace: !args.keep,
         emissive_nits: None,
         ..Default::default()
     };
