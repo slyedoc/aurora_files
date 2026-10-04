@@ -572,12 +572,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
-name = "base64"
-version = "0.23.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
-
-[[package]]
 name = "bevy"
 version = "0.20.0-dev"
 dependencies = [
@@ -817,6 +811,7 @@ dependencies = [
  "aurora_mesh",
  "avian3d",
  "bevy",
+ "bevy_animation_graph",
  "bytemuck",
  "crossbeam",
  "glam",
@@ -1268,40 +1263,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bevy_gltf"
-version = "0.20.0-dev"
-dependencies = [
- "async-lock",
- "base64 0.23.1",
- "bevy_app",
- "bevy_asset",
- "bevy_camera",
- "bevy_color",
- "bevy_curve",
- "bevy_ecs",
- "bevy_image",
- "bevy_light",
- "bevy_material",
- "bevy_math",
- "bevy_mesh",
- "bevy_platform",
- "bevy_reflect",
- "bevy_tasks",
- "bevy_transform",
- "bevy_world_serialization",
- "fixedbitset",
- "gltf",
- "itertools 0.14.0",
- "percent-encoding",
- "serde",
- "serde_json",
- "smallvec",
- "thiserror 2.0.20",
- "tracing",
- "wgpu-types",
-]
-
-[[package]]
 name = "bevy_heavy"
 version = "0.6.0-dev"
 source = "git+https://github.com/slyedoc/bevy_heavy?branch=bevy-main#f10eb452d0365834e105a42a845eb8a4f962f209"
@@ -1400,7 +1361,6 @@ dependencies = [
  "bevy_gilrs",
  "bevy_gizmos",
  "bevy_gizmos_render",
- "bevy_gltf",
  "bevy_image",
  "bevy_input",
  "bevy_input_focus",
@@ -1578,7 +1538,6 @@ dependencies = [
  "bevy_diagnostic",
  "bevy_ecs",
  "bevy_extract",
- "bevy_gltf",
  "bevy_image",
  "bevy_light",
  "bevy_log",
@@ -8067,3 +8026,7 @@ dependencies = [
 name = "bevy_enhanced_input"
 version = "0.26.0"
 source = "git+https://github.com/slyedoc/bevy_enhanced_input?branch=aurora#120b9dfe3e19a6ce4f4cb4c1265565838151e240"
+
+[[patch.unused]]
+name = "bevy_gltf"
+version = "0.20.0-dev"

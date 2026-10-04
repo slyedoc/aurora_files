@@ -28,7 +28,6 @@ use bevy::{
     ui_widgets::{SliderValue, ValueChange, slider_self_update},
 };
 use bevy_animation_graph::{
-    AnimationGraphPlugin,
     core::{
         animation_clip::{GraphClip, loader::GraphClipSerial},
         animation_graph::{
@@ -284,10 +283,9 @@ fn main() {
         // FeathersPlugins and FeathersInspectorPlugins (guarded), so this app adds neither —
         // and it keeps a theme the app inserted first, which is why that comes before.
         DevUIPlugin,
-        // AnimationGraphPlugin runs a deferred-gizmo system (debug bones) that needs
-        // GizmoConfigStore; the `bevy_gizmos` feature alone does not install it.
+        // The deferred-gizmo debug bones draw through GizmoConfigStore; the `bevy_gizmos`
+        // feature alone does not install it. AnimationGraphPlugin comes with aurora.
         bevy::gizmos::GizmoPlugin,
-        AnimationGraphPlugin::default(),
     ));
     app.add_screenshot(KeyCode::F12);
     app.add_timeout_exit(args.timeout, 60.0);
