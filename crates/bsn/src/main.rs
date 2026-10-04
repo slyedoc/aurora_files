@@ -21,6 +21,7 @@ use bevy::{
     scene::ScenePatchInstance,
 };
 use bevy_aurora::prelude::*;
+use bevy_aurora::world::MainPhysicsWorldEntity;
 use bevy_aurora::dlss::DlssPlugin;
 use clap::Parser;
 use util::park::HoverParkPlugin;
@@ -124,8 +125,12 @@ fn main() {
     app.run();
 }
 
-/// The skies `1` / `2` cycle through: `None` is the procedural sky, then each `.hdr` / `.exr`
-/// under `assets/sky/` as an asset path.
+/// The gradient sky's sun.
+#[derive(Component)]
+struct ViewerSun;
+
+/// The skies `1` / `2` cycle through: `None` is the gradient sky with a sun, then each `.hdr` /
+/// `.exr` under `assets/sky/` as an asset path.
 #[derive(Resource)]
 struct SkyCycle {
     entries: Vec<Option<String>>,
@@ -166,18 +171,43 @@ impl SkyCycle {
     }
 
     fn apply(&self, commands: &mut Commands, asset_server: &AssetServer, scale: f32) {
-        match self.current() {
-            None => commands.insert_resource(Sky::Procedural),
-            Some(path) => commands.insert_resource(Sky::Hdr {
+        let sky = match self.current() {
+            None => Sky::Gradient,
+            Some(path) => Sky::Hdr {
                 image: asset_server.load(path.to_string()),
                 scale,
-            }),
-        }
+            },
+        };
+        let gradient = matches!(sky, Sky::Gradient);
+        // The main world's sky; the gradient gets a sun (the HDR skies carry theirs).
+        commands.queue(move |world: &mut World| {
+            let main = world.resource::<MainPhysicsWorldEntity>().0;
+            world.entity_mut(main).insert(sky);
+            let suns: Vec<Entity> = world
+                .query_filtered::<Entity, With<ViewerSun>>()
+                .iter(world)
+                .collect();
+            for sun in suns {
+                world.despawn(sun);
+            }
+            if gradient {
+                world.spawn((
+                    Name::new("Sun"),
+                    ViewerSun,
+                    // Matches the camera's locked `AuroraExposure::SUNLIGHT`.
+                    DirectionalLight {
+                        illuminance: 100_000.0,
+                        ..default()
+                    },
+                    Transform::from_xyz(3.0, 8.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y),
+                ));
+            }
+        });
         info!(
             "sky {}/{}: {}",
             self.index + 1,
             self.entries.len(),
-            self.current().unwrap_or("procedural")
+            self.current().unwrap_or("gradient")
         );
     }
 }
