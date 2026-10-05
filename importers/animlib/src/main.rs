@@ -126,11 +126,17 @@ impl TargetRig {
             let trimmed = line.trim();
             if let Some(rest) = trimmed.strip_prefix("bevy_ecs::name::Name(\"") {
                 let name = rest.trim_end_matches("\")").to_string();
-                // The Transform follows the Name, on one line or as a `{ .. }` block.
+                // The Transform follows the Name, on one line or as a `{ .. }` block whose
+                // fields may wrap; read up to the next entity boundary.
                 let tf: String = lines[i + 1..]
                     .iter()
-                    .take(6)
-                    .take_while(|l| !l.trim().starts_with("bevy_ecs::hierarchy::Children"))
+                    .take_while(|l| {
+                        let l = l.trim();
+                        !(l.starts_with("bevy_ecs::hierarchy::Children")
+                            || l.starts_with("bevy_ecs::name::Name(")
+                            || l == "--"
+                            || l == "]")
+                    })
                     .copied()
                     .collect::<Vec<_>>()
                     .join(" ");
