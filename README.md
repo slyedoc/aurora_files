@@ -363,6 +363,21 @@ cd /mnt/code/p/zero && cargo run --release --example bodies   # beside a make_hu
 | clips | 43, 30 fps; v3.0 added root motion to every locomotion clip |
 | measured ground speed | walk 0.975 m/s, jog 5.357, sprint 8.250 (source rig) |
 
+**The whole library, with root motion.** UAL 2 (`raw/ual2/`: `Unreal-Godot/UAL2{,_RM}.glb`,
+134 clips, plus `Mannequin_F.glb`, the female body on the same 65-joint rig) bakes onto the same
+`Mannequin.bsn`. `--root-motion` keeps the travel: the source `root` joint's motion lands on
+the target's `Armature`, the skeleton root, which is where a `ClipNode` with `root_motion_mode`
+set extracts it by default; the pelvis is keyed relative to `root`, so its tracks are the
+in-place bake's exactly. A root-motion clip drifts on a node that leaves extraction off.
+
+```sh
+cargo run --release -p prop_import -- raw/ual2/Mannequin_F.glb assets/ual_f \
+  --scene-name Mannequin_F --hierarchy   # own folder: both bodies name their meshes mesh0_*
+for g in raw/ual/Unreal-Godot/UAL1_Standard_RM.glb raw/ual2/Unreal-Godot/UAL2_RM.glb; do
+  cargo run --release -p animlib_import -- $g assets/ual/Mannequin.bsn assets/anim/ual --root-motion
+done   # 176 clips (A_TPose is in both)
+```
+
 **Root motion is how a locomotion graph stops guessing.** The in-place library throws the
 travel away, but the `_RM` twin keeps it on the `root` joint, so `--measure` can report the
 ground speed each clip was authored at:

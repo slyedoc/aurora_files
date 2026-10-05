@@ -54,6 +54,12 @@ struct Args {
     /// how you can tell the two apart.
     #[arg(long)]
     measure: bool,
+
+    /// Keep the travel: the source's `root` joint moves the target's `Armature` (the skeleton
+    /// root, where bevy_animation_graph's `ClipNode` extracts root motion by default) and the
+    /// pelvis is keyed relative to `root`. Bake from a root-motion source (`*_RM.glb`).
+    #[arg(long)]
+    root_motion: bool,
 }
 
 /// Source joint name -> target bone name, tried FIRST; the caller falls back to the source name
@@ -105,8 +111,8 @@ struct TargetRig {
 }
 
 impl TargetRig {
-    /// The bake writes `Name("x")` then its `Transform { translation: ..., rotation: ... }` on
-    /// the next line, nesting with 4-space indentation; that is enough to rebuild the rest pose.
+    /// The bake writes `Name("x")` then its `Transform { translation: ..., rotation: ... }`,
+    /// nesting with 4-space indentation; that is enough to rebuild the rest pose.
     fn parse(path: &Path) -> Result<Self, String> {
         let text = fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
         let mut names = Vec::new();
@@ -120,7 +126,15 @@ impl TargetRig {
             let trimmed = line.trim();
             if let Some(rest) = trimmed.strip_prefix("bevy_ecs::name::Name(\"") {
                 let name = rest.trim_end_matches("\")").to_string();
-                let tf = lines.get(i + 1).copied().unwrap_or("");
+                // The Transform follows the Name, on one line or as a `{ .. }` block.
+                let tf: String = lines[i + 1..]
+                    .iter()
+                    .take(6)
+                    .take_while(|l| !l.trim().starts_with("bevy_ecs::hierarchy::Children"))
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let tf = tf.as_str();
                 let local_t = parse_translation(tf).unwrap_or(Vec3::ZERO);
                 let local_r = parse_rotation(tf).unwrap_or(Quat::IDENTITY);
                 while stack.last().is_some_and(|&(d, _)| d >= depth) {
@@ -778,6 +792,11 @@ fn main() {
     let pelvis_dst = *rig.index.get("pelvis").expect("target rig has no pelvis");
     let pelvis_src = *src_index.get("pelvis").expect("source has no pelvis");
     let height_scale = rig.bones[pelvis_dst].world_t.y / bind_pos[pelvis_src].y.max(1e-4);
+    let motion = args.root_motion.then(|| {
+        let root = *src_index.get("root").expect("--root-motion: the source has no `root` joint");
+        let armature = *rig.index.get("Armature").expect("--root-motion: the rig has no `Armature`");
+        (root, armature)
+    });
     eprintln!(
         "rig {}: {} bones mapped, pelvis height {:.3} vs source {:.3} (scale {:.3})",
         args.rig.display(),
@@ -808,6 +827,8 @@ fn main() {
         // Per frame: source world pose -> target world rotations -> target locals.
         let mut world_rot: Vec<Vec<Quat>> = vec![vec![Quat::IDENTITY; rig.bones.len()]; frames];
         let mut pelvis_t: Vec<Vec3> = Vec::with_capacity(frames);
+        let mut armature_t: Vec<Vec3> = Vec::with_capacity(frames);
+        let mut armature_r: Vec<Quat> = Vec::with_capacity(frames);
         for (k, &t) in times.iter().enumerate() {
             let (rot, pos) = source_world(&nodes, Some(&clip.tracks), t);
             for m in &maps {
@@ -822,13 +843,35 @@ fn main() {
                     * rig.bones[m.dst].world_r;
             }
             // The key is parent-LOCAL, so a world-space delta lands through the parent's rest.
-            let delta = yaw * (pos[pelvis_src] - bind_pos[pelvis_src]) * height_scale;
+            let delta = match motion {
+                Some((root, armature)) => {
+                    // The root's travel and turn, faced the target's way, move the Armature;
+                    // the pelvis keeps only what it does relative to the root.
+                    let turn = (yaw * rot[root] * bind_rot[root].inverse() * yaw.inverse()).normalize();
+                    armature_t.push(rig.bones[armature].local_t + yaw * (pos[root] - bind_pos[root]) * height_scale);
+                    armature_r.push(turn * rig.local_rot(armature));
+                    world_rot[k][armature] = turn * rig.bones[armature].world_r;
+                    let local = rot[root].inverse() * (pos[pelvis_src] - pos[root]);
+                    let bind_local = bind_rot[root].inverse() * (bind_pos[pelvis_src] - bind_pos[root]);
+                    yaw * bind_rot[root] * (local - bind_local) * height_scale
+                }
+                None => yaw * (pos[pelvis_src] - bind_pos[pelvis_src]) * height_scale,
+            };
             let parent_r = rig.bones[pelvis_dst]
                 .parent
                 .map_or(Quat::IDENTITY, |p| rig.bones[p].world_r);
             pelvis_t.push(rig.bones[pelvis_dst].local_t + parent_r.inverse() * delta);
         }
         let mut targets = Vec::new();
+        if let Some((_, armature)) = motion {
+            targets.push(Target {
+                path: rig.path(armature),
+                times: times.clone(),
+                rotations: armature_r.clone(),
+                translations: Some(armature_t.clone()),
+                scales: None,
+            });
+        }
         for m in &maps {
             if rig.names[m.dst] == "Root" || rig.names[m.dst] == "Armature" {
                 continue; // position authority is the runtime's (KCC / navmesh)
