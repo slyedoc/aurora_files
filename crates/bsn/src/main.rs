@@ -21,7 +21,7 @@ use bevy::{
     scene::ScenePatchInstance,
 };
 use bevy_aurora::prelude::*;
-use bevy_aurora::world::MainPhysicsWorldEntity;
+use bevy_aurora::environment::MainPhysicsEnvironmentEntity;
 use bevy_aurora::dlss::DlssPlugin;
 use clap::Parser;
 use util::park::HoverParkPlugin;
@@ -181,7 +181,7 @@ impl SkyCycle {
         let gradient = matches!(sky, Sky::Gradient);
         // The main world's sky; the gradient gets a sun (the HDR skies carry theirs).
         commands.queue(move |world: &mut World| {
-            let main = world.resource::<MainPhysicsWorldEntity>().0;
+            let main = world.resource::<MainPhysicsEnvironmentEntity>().0;
             world.entity_mut(main).insert(sky);
             let suns: Vec<Entity> = world
                 .query_filtered::<Entity, With<ViewerSun>>()
