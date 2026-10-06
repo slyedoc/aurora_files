@@ -8008,10 +8008,10 @@ dependencies = [
 ]
 
 [[patch.unused]]
+name = "bevy_gltf"
+version = "0.20.0-dev"
+
+[[patch.unused]]
 name = "bevy_enhanced_input"
 version = "0.26.0"
 source = "git+https://github.com/slyedoc/bevy_enhanced_input?branch=aurora#120b9dfe3e19a6ce4f4cb4c1265565838151e240"
-
-[[patch.unused]]
-name = "bevy_gltf"
-version = "0.20.0-dev"
