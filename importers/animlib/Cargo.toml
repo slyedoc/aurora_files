@@ -16,6 +16,8 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+# The rig is read with the real `.bsn` parser (a line-based reader once misread wrapped Transforms).
+bevy_bsn = { git = "https://github.com/bevyengine/bevy", branch = "main" }
 # `serde` here so the `.skn.ron` / `.anim.ron` sidecars are written by the same glam impls
 # bevy_animation_graph reads them back with, instead of hand-formatted RON.
 glam = { version = "0.33", features = ["serde"] }

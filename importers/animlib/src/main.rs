@@ -27,6 +27,7 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
+use bevy_bsn::{BsnDocument, BsnNodeId, BsnNodeKind, BsnPath, BsnValue, BsnValueId};
 use glam::{Quat, Vec3};
 
 #[derive(Parser)]
@@ -111,75 +112,58 @@ struct TargetRig {
 }
 
 impl TargetRig {
-    /// The bake writes `Name("x")` then its `Transform { translation: ..., rotation: ... }`,
-    /// nesting with 4-space indentation; that is enough to rebuild the rest pose.
+    /// The rig's named entities below the document root are its bones, each at its `Transform`.
     fn parse(path: &Path) -> Result<Self, String> {
         let text = fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-        let mut names = Vec::new();
-        let mut bones: Vec<TargetBone> = Vec::new();
-        let mut stack: Vec<(usize, usize)> = Vec::new(); // (depth, bone)
-        let lines: Vec<&str> = text.lines().collect();
-        let mut i = 0;
-        while i < lines.len() {
-            let line = lines[i];
-            let depth = line.len() - line.trim_start().len();
-            let trimmed = line.trim();
-            if let Some(rest) = trimmed.strip_prefix("bevy_ecs::name::Name(\"") {
-                let name = rest.trim_end_matches("\")").to_string();
-                // The Transform follows the Name, on one line or as a `{ .. }` block whose
-                // fields may wrap; read up to the next entity boundary.
-                let tf: String = lines[i + 1..]
-                    .iter()
-                    .take_while(|l| {
-                        let l = l.trim();
-                        !(l.starts_with("bevy_ecs::hierarchy::Children")
-                            || l.starts_with("bevy_ecs::name::Name(")
-                            || l == "--"
-                            || l == "]")
-                    })
-                    .copied()
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let tf = tf.as_str();
-                let local_t = parse_translation(tf).unwrap_or(Vec3::ZERO);
-                let local_r = parse_rotation(tf).unwrap_or(Quat::IDENTITY);
-                while stack.last().is_some_and(|&(d, _)| d >= depth) {
-                    stack.pop();
-                }
-                let parent = stack.last().map(|&(_, b)| b);
-                let (world_t, world_r) = match parent {
-                    Some(p) => (
-                        bones[p].world_t + bones[p].world_r * local_t,
-                        bones[p].world_r * local_r,
-                    ),
-                    None => (local_t, local_r),
-                };
-                let idx = bones.len();
-                bones.push(TargetBone {
-                    parent,
-                    local_t,
-                    world_t,
-                    world_r,
-                    children: Vec::new(),
-                });
-                if let Some(p) = parent {
-                    bones[p].children.push(idx);
-                }
-                names.push(name);
-                stack.push((depth, idx));
+        let doc = BsnDocument::parse(&text).map_err(|e| format!("{}: {e:?}", path.display()))?;
+        let mut rig = Self {
+            names: Vec::new(),
+            bones: Vec::new(),
+            index: HashMap::new(),
+        };
+        // Bone paths start below the root (`#Mannequin` is the prefab, `Armature` the first bone).
+        for &root in &doc.roots {
+            for child in entity_children(&doc, root) {
+                rig.add(&doc, child, None);
             }
-            i += 1;
         }
-        let index = names
+        rig.index = rig
+            .names
             .iter()
             .enumerate()
             .map(|(i, n)| (n.clone(), i))
             .collect();
-        Ok(Self {
-            names,
-            bones,
-            index,
-        })
+        Ok(rig)
+    }
+
+    fn add(&mut self, doc: &BsnDocument, node: BsnNodeId, parent: Option<usize>) {
+        let mut next = parent;
+        if let Some(name) = entity_name(doc, node) {
+            let (local_t, local_r) = entity_transform(doc, node);
+            let (world_t, world_r) = match parent {
+                Some(p) => (
+                    self.bones[p].world_t + self.bones[p].world_r * local_t,
+                    self.bones[p].world_r * local_r,
+                ),
+                None => (local_t, local_r),
+            };
+            let idx = self.bones.len();
+            self.bones.push(TargetBone {
+                parent,
+                local_t,
+                world_t,
+                world_r,
+                children: Vec::new(),
+            });
+            if let Some(p) = parent {
+                self.bones[p].children.push(idx);
+            }
+            self.names.push(name);
+            next = Some(idx);
+        }
+        for child in entity_children(doc, node) {
+            self.add(doc, child, next);
+        }
     }
 
     /// Rest rotation relative to the parent (what a `.bsn` bone line carries).
@@ -216,33 +200,87 @@ impl TargetRig {
     }
 }
 
-fn parse_translation(line: &str) -> Option<Vec3> {
-    let i = line.find("translation: glam::Vec3 {")?;
-    let rest = &line[i..];
-    let num = |key: &str| -> Option<f32> {
-        let j = rest.find(key)? + key.len();
-        let tail = &rest[j..];
-        let end = tail.find(|c: char| c == ',' || c == '}')?;
-        tail[..end].trim().parse().ok()
+fn entity_children(doc: &BsnDocument, node: BsnNodeId) -> Vec<BsnNodeId> {
+    let Some(BsnNodeKind::Entity { relations, .. }) = doc.node(node).map(|n| &n.kind) else {
+        return Vec::new();
     };
-    Some(Vec3::new(num("x:")?, num("y:")?, num("z:")?))
+    relations
+        .iter()
+        .filter_map(|&r| match doc.node(r).map(|n| &n.kind) {
+            Some(BsnNodeKind::Relation { target_symbol, entities }) if target_symbol.last_ident() == "Children" => {
+                Some(entities.clone())
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect()
 }
 
-fn parse_rotation(line: &str) -> Option<Quat> {
-    let i = line.find("rotation: glam::Quat {")?;
-    let rest = &line[i..];
-    let num = |key: &str| -> Option<f32> {
-        let j = rest.find(key)? + key.len();
-        let tail = &rest[j..];
-        let end = tail.find(|c: char| c == ',' || c == '}')?;
-        tail[..end].trim().parse().ok()
+fn patches(doc: &BsnDocument, node: BsnNodeId) -> impl Iterator<Item = (&BsnPath, &BsnValue)> {
+    let ids = match doc.node(node).map(|n| &n.kind) {
+        Some(BsnNodeKind::Entity { patches, .. }) => patches.clone(),
+        _ => Vec::new(),
     };
-    Some(Quat::from_xyzw(
-        num("x:")?,
-        num("y:")?,
-        num("z:")?,
-        num("w:")?,
-    ))
+    ids.into_iter().filter_map(move |id| match doc.node(id).map(|n| &n.kind) {
+        Some(BsnNodeKind::Patch { symbol, value, .. }) => Some((symbol, &doc.value(*value)?.value)),
+        _ => None,
+    })
+}
+
+/// `#name`, or a `Name("…")` patch.
+fn entity_name(doc: &BsnDocument, node: BsnNodeId) -> Option<String> {
+    if let Some(BsnNodeKind::Entity { name: Some(name), .. }) = doc.node(node).map(|n| &n.kind) {
+        return Some(name.clone());
+    }
+    patches(doc, node).find_map(|(symbol, value)| match value {
+        BsnValue::NamedTuple(_, items) if symbol.last_ident() == "Name" => match items
+            .first()
+            .and_then(|&i| doc.value(i))
+            .map(|v| &v.value)
+        {
+            Some(BsnValue::String(name)) => Some(name.clone()),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+/// The `Transform` patch's translation and rotation; identity where absent.
+fn entity_transform(doc: &BsnDocument, node: BsnNodeId) -> (Vec3, Quat) {
+    let mut t = Vec3::ZERO;
+    let mut r = Quat::IDENTITY;
+    for (symbol, value) in patches(doc, node) {
+        let BsnValue::Struct(_, fields) = value else {
+            continue;
+        };
+        if symbol.last_ident() != "Transform" {
+            continue;
+        }
+        for (field, id) in fields {
+            let nums = struct_floats(doc, *id);
+            let get = |k: &str, d: f32| nums.iter().find(|(n, _)| n == k).map_or(d, |(_, v)| *v);
+            match field.as_str() {
+                "translation" => t = Vec3::new(get("x", 0.0), get("y", 0.0), get("z", 0.0)),
+                "rotation" => r = Quat::from_xyzw(get("x", 0.0), get("y", 0.0), get("z", 0.0), get("w", 1.0)),
+                _ => {}
+            }
+        }
+    }
+    (t, r)
+}
+
+fn struct_floats(doc: &BsnDocument, id: BsnValueId) -> Vec<(String, f32)> {
+    let Some(BsnValue::Struct(_, fields)) = doc.value(id).map(|v| &v.value) else {
+        return Vec::new();
+    };
+    fields
+        .iter()
+        .filter_map(|(name, id)| match doc.value(*id).map(|v| &v.value) {
+            Some(BsnValue::Float(f)) => Some((name.clone(), *f as f32)),
+            Some(BsnValue::Int(i)) => Some((name.clone(), *i as f32)),
+            _ => None,
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------- source (glb)

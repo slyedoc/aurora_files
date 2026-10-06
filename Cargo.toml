@@ -70,6 +70,7 @@ bevy_a11y = { git = "https://github.com/slyedoc/bevy", branch = "aurora" }
 bevy_animation = { git = "https://github.com/slyedoc/bevy", branch = "aurora" }
 bevy_app = { git = "https://github.com/slyedoc/bevy", branch = "aurora" }
 bevy_asset = { git = "https://github.com/slyedoc/bevy", branch = "aurora" }
+bevy_bsn = { git = "https://github.com/slyedoc/bevy", branch = "aurora" }
 bevy_camera = { git = "https://github.com/slyedoc/bevy", branch = "aurora" }
 bevy_color = { git = "https://github.com/slyedoc/bevy", branch = "aurora" }
 bevy_derive = { git = "https://github.com/slyedoc/bevy", branch = "aurora" }
