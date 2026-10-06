@@ -44,3 +44,12 @@ serde_json = "1.0.151"
 serde = { version = "1", features = ["derive"] }
 # The bevy_animation_graph sidecars (`.skn.ron`, `.anim.ron`) a hierarchy bake writes.
 ron = "0.10"
+# Material textures -> block-compressed KTX2 (`ktx`): ISPC BCn encoders, zstd supercompression.
+anyhow = "1"
+intel_tex_2 = "0.5"
+rayon = "1"
+regex = "1"
+zstd = "0.13"
+
+[dev-dependencies]
+ktx2 = "0.5"

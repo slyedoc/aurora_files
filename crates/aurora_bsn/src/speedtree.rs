@@ -55,6 +55,7 @@ pub fn bake_speedtree(cfg: &SpeedTreeConfig) {
         let stem = crate::discovery::sanitize(glb.file_stem().unwrap().to_string_lossy().as_ref());
         bake_tree(&stem, glb, &meshes_dir, &textures_dir, cfg);
     }
+    crate::finish_textures(&cfg.out_dir, &cfg.asset_prefix);
 }
 
 /// Bake one tree glb: extract its textures, bake each primitive (+OMM on cutouts), write `<stem>.bsn`.

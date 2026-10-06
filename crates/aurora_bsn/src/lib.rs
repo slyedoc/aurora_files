@@ -19,6 +19,7 @@ pub mod dedup;
 pub mod discovery;
 pub mod gltf;
 pub mod img;
+pub mod ktx;
 pub mod lint;
 pub mod mesh;
 #[cfg(feature = "omm")]
@@ -301,6 +302,18 @@ pub fn bake_scene(cfg: &SceneConfig) {
         meshes_dir.display()
     );
     println!("wrote {emitted} entities -> {}", bsn_path.display());
+    finish_textures(&cfg.out_dir, &cfg.asset_prefix);
+}
+
+/// Bake the textures an importer's `.bsn` files name to block-compressed KTX2 and point the
+/// materials at them.
+pub fn finish_textures(out_dir: &std::path::Path, asset_prefix: &str) {
+    let report = ktx::bake_dir(out_dir, asset_prefix).expect("bake textures");
+    println!(
+        "textures: {} baked to ktx2, {} up to date",
+        report.baked.len(),
+        report.reused
+    );
 }
 
 /// Whether submesh `i` passes the config's filter (`true` when there is no filter). Builds the

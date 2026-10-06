@@ -5,6 +5,8 @@
 use std::path::Path;
 
 fn main() {
+    // intel_tex_2's ASTC object is C++ (ktx.rs links it either way).
+    println!("cargo:rustc-link-lib=dylib=stdc++");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_OMM");
     if std::env::var_os("CARGO_FEATURE_OMM").is_none() {
         return; // `--no-default-features`: no baker, no SDK needed.

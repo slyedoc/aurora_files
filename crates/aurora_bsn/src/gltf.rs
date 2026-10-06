@@ -191,6 +191,7 @@ pub fn bake_gltf_scene(cfg: &GltfConfig) {
         );
     }
     println!("wrote {} entities -> {}", ctx.emitted, bsn_path.display());
+    crate::finish_textures(&cfg.out_dir, &cfg.asset_prefix);
 }
 
 /// Bake the glTF as **one `.bsn` per top-level scene node** PLUS a flat master layout scene — for a
@@ -380,6 +381,7 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
         index_path.display(),
         cfg.out_dir.display()
     );
+    crate::finish_textures(&cfg.out_dir, &cfg.asset_prefix);
 }
 
 /// Scene name + filename stem for a top-level group node: the node name with a trailing `_grp`
@@ -763,6 +765,7 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
         ctx.emitted,
         bsn_path.display()
     );
+    crate::finish_textures(&cfg.out_dir, &cfg.asset_prefix);
 }
 
 /// Emit one node as a `.bsn` entity block (comma-terminated) at `depth`, recursing into children.
