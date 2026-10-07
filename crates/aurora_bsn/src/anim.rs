@@ -134,6 +134,48 @@ struct GraphClipSerial {
     event_tracks: HashMap<String, ()>,
 }
 
+/// A clip's file stem: lowercase, and wow.export's `Stand (ID 0 variation 1)` becomes
+/// `stand_v1` (`stand` for variation 0), so its 140-odd clips name files cleanly.
+pub fn clip_stem(name: &str) -> String {
+    let wow = name.strip_suffix(')').and_then(|s| s.split_once(" (ID ")).and_then(|(base, rest)| {
+        let variation: u32 = rest.split_once(" variation ")?.1.parse().ok()?;
+        Some(match variation {
+            0 => snake(base),
+            v => format!("{}_v{v}", snake(base)),
+        })
+    });
+    wow.unwrap_or_else(|| name.to_lowercase())
+}
+
+fn snake(camel: &str) -> String {
+    let mut out = String::new();
+    let mut prev_lower = false;
+    for c in camel.chars() {
+        if c.is_ascii_uppercase() && prev_lower {
+            out.push('_');
+        }
+        prev_lower = c.is_ascii_lowercase() || c.is_ascii_digit();
+        out.push(c.to_ascii_lowercase());
+    }
+    out
+}
+
+/// The `event_tracks: {...}` tail of a previous wrapper, when it authored any: a re-bake must not
+/// wipe events placed in the editor.
+fn authored_event_tracks(text: &str) -> Option<&str> {
+    let start = text.find("event_tracks:")?;
+    let body = text[start..].trim_end().strip_suffix(')')?.trim_end();
+    (!body.trim_end_matches(',').ends_with("{}")).then_some(body)
+}
+
+fn keep_event_tracks(path: &Path, tracks: &str) -> Result<(), String> {
+    let text = fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let start = text.find("event_tracks:").ok_or("no event_tracks field")?;
+    let end = text.rfind(')').ok_or("unterminated wrapper")?;
+    let kept = format!("{}{tracks}\n{}", &text[..start], &text[end..]);
+    fs::write(path, kept).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
 fn write_ron<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let cfg = ron::ser::PrettyConfig::new().struct_names(false);
     let text = ron::ser::to_string_pretty(value, cfg)
@@ -158,6 +200,7 @@ pub fn bake_clips(
     asset_prefix: &str,
     scene_name: &str,
     scale: f32,
+    yaw: f32,
 ) -> usize {
     if doc.animations().next().is_none() {
         return 0;
@@ -176,13 +219,20 @@ pub fn bake_clips(
         .nodes()
         .map(|n| {
             let root = n.index();
-            (n, Vec::new(), Mat4::IDENTITY, root)
+            (n, Vec::new(), Mat4::from_rotation_y(yaw.to_radians()), root)
         })
         .collect();
     while let Some((node, mut path, parent, root)) = stack.pop() {
         path.push(node_name(&node));
-        let local = scaled_local(&node, scale);
-        let character = parent * local;
+        // A root's yaw rides in as its parent; fold it into the local the clips leave unkeyed.
+        let local = match path.len() {
+            1 => parent * scaled_local(&node, scale),
+            _ => scaled_local(&node, scale),
+        };
+        let character = match path.len() {
+            1 => local,
+            _ => parent * local,
+        };
         bones.entry(root).or_default().push(BakedBone {
             path: path.clone(),
             local: GraphTransform::from_mat4(local),
@@ -226,7 +276,7 @@ pub fn bake_clips(
     for (i, anim) in doc.animations().enumerate() {
         let name = anim
             .name()
-            .map(str::to_lowercase)
+            .map(clip_stem)
             .unwrap_or_else(|| format!("clip{i}"));
         let mut targets: HashMap<usize, ClipTarget> = HashMap::new();
         for channel in anim.channels() {
@@ -267,8 +317,12 @@ pub fn bake_clips(
             skeleton: skeleton_asset.clone(),
             event_tracks: HashMap::new(),
         };
-        write_ron(&out_dir.join(format!("{name}.anim.ron")), &wrapper)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let wrapper_path = out_dir.join(format!("{name}.anim.ron"));
+        let previous = fs::read_to_string(&wrapper_path).ok();
+        write_ron(&wrapper_path, &wrapper).unwrap_or_else(|e| panic!("{e}"));
+        if let Some(tracks) = previous.as_deref().and_then(authored_event_tracks) {
+            keep_event_tracks(&wrapper_path, tracks).unwrap_or_else(|e| panic!("{e}"));
+        }
         println!("clip {name}: {} targets -> {}", targets.len(), clip.display());
         written += 1;
     }

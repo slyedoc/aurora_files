@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use aurora_mesh::{AuroraMesh, write_aurora_mesh};
 use bevy::asset::RenderAssetUsages;
-use bevy::math::{Mat4, Vec3};
+use bevy::math::{Mat4, Quat, Vec3};
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
 
 use crate::bsn;
@@ -81,6 +81,9 @@ pub struct GltfConfig {
     /// With a hierarchy bake: take the clips from this glb instead of the source -- a meshless
     /// animation export of the same rig, whose node names match.
     pub anim: Option<PathBuf>,
+    /// Yaw (degrees, about +Y) baked into the scene roots, for a source that faces another way:
+    /// `90` turns a +X-facing rig (wow.export) to Bevy's -Z forward.
+    pub yaw: f32,
 }
 
 impl Default for GltfConfig {
@@ -99,6 +102,7 @@ impl Default for GltfConfig {
             group_depth: 1,
             scale: 1.0,
             anim: None,
+            yaw: 0.0,
         }
     }
 }
@@ -142,6 +146,7 @@ pub fn bake_gltf_scene(cfg: &GltfConfig) {
     );
 
     let mut ctx = Ctx {
+        root_yaw: Quat::IDENTITY,
         buffers: &buffers,
         scale: cfg.scale,
         image_files: &image_files,
@@ -237,6 +242,7 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
     );
 
     let mut ctx = Ctx {
+        root_yaw: Quat::IDENTITY,
         buffers: &buffers,
         scale: cfg.scale,
         image_files: &image_files,
@@ -499,6 +505,8 @@ impl Ctx<'_> {
 
 struct Ctx<'a> {
     buffers: &'a [gltf::buffer::Data],
+    /// [`GltfConfig::yaw`] for the next scene root `emit_node` takes; children see identity.
+    root_yaw: Quat,
     /// [`GltfConfig::scale`].
     scale: f32,
     image_files: &'a HashMap<usize, String>,
@@ -674,6 +682,7 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
     );
 
     let mut ctx = Ctx {
+        root_yaw: Quat::IDENTITY,
         buffers: &buffers,
         scale: cfg.scale,
         image_files: &image_files,
@@ -702,7 +711,9 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
         .expect("gltf has no scene");
 
     let mut root_children = Vec::new();
+    let yaw = Quat::from_rotation_y(cfg.yaw.to_radians());
     for node in scene.nodes() {
+        ctx.root_yaw = yaw;
         emit_node(&node, &mut ctx, &mut root_children);
     }
 
@@ -719,6 +730,7 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
                 &cfg.asset_prefix,
                 &cfg.scene_name,
                 cfg.scale,
+                cfg.yaw,
             );
         }
         Some(anim_path) => {
@@ -734,6 +746,7 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
                 &cfg.asset_prefix,
                 &cfg.scene_name,
                 cfg.scale,
+                cfg.yaw,
             );
         }
     }
@@ -871,7 +884,9 @@ fn ensure_collider(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> 
 
 fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut Vec<bsn::Entity>) {
     let (t, r, s) = node.transform().decomposed();
-    let t = t.map(|x| x * ctx.scale);
+    let yaw = std::mem::replace(&mut ctx.root_yaw, Quat::IDENTITY);
+    let t = (yaw * Vec3::from(t) * ctx.scale).to_array();
+    let r = (yaw * Quat::from_array(r)).to_array();
 
     // Name — MUST match the anim glb's node name (same Blender export) so the runtime's
     // `AnimationTargetId::from_names` resolves this entity.

@@ -77,6 +77,9 @@ struct Args {
     /// the same rig (matching node names).
     #[arg(long)]
     anim: Option<PathBuf>,
+    /// Yaw in degrees baked into the scene roots: `90` turns a +X-facing source (wow.export) to -Z.
+    #[arg(long, default_value_t = 0.0)]
+    yaw: f32,
 }
 
 /// `emissive_nits` is a plain `fn` pointer in `GltfConfig` (no captures), so a CLI-provided scale
@@ -133,6 +136,7 @@ fn main() {
         group_depth: args.group_depth,
         scale: args.scale,
         anim: args.anim,
+        yaw: args.yaw,
     };
 
     if args.per_group {
