@@ -359,6 +359,10 @@ struct WmoPlacement {
 
 /// One baked submesh of a model: everything a `.bsn` entity instance needs.
 struct BakedSubmesh {
+    /// Whether the submesh is drawn: a glow card (WoW's camera-facing additive halo sprite)
+    /// is not, a ray tracer gets the halo from the card's light (`glow_light`); a fixed quad
+    /// of it reads as a flat glowing disc.
+    drawn: bool,
     mesh_stem: String,
     material_fields: Vec<(&'static str, Value)>,
     /// Local centroid the geometry was centered on (translation of an un-instanced entity).
@@ -465,6 +469,7 @@ fn main() {
         let mut parts: Vec<Entity> = submeshes
             .iter()
             .enumerate()
+            .filter(|(_, sub)| sub.drawn)
             .map(|(i, sub)| {
                 mesh_entity(
                     &args.asset_prefix,
@@ -1355,29 +1360,6 @@ fn bake_model(
         let is_cutmask =
             material.is_some_and(|mat| material_is_cutmask(obj_dir, mat, cutmask_cache));
 
-        let mesh_stem = format!("{path_stem}_{i}");
-        let mesh_file = args
-            .out_dir
-            .join("meshes")
-            .join(format!("{mesh_stem}.aurora_mesh"));
-        // The output dir starts empty, so an existing file was baked earlier this run.
-        if !mesh_file.exists() {
-            let mesh = build_mesh(&m.mesh, centroid);
-            let mut cm = match AuroraMesh::clustered(&mesh) {
-                Ok(cm) => cm,
-                Err(err) => {
-                    eprintln!("  {mesh_stem}: bake failed: {err:?}");
-                    continue;
-                }
-            };
-            // Alpha-cutout foliage gets a baked opacity micromap (resolved by the RT cores).
-            if is_cutmask && let Some(mat) = material {
-                let _ = attach_omm(&mut cm, obj_dir, mat, omm);
-            }
-            let w = BufWriter::new(File::create(&mesh_file).expect("create .aurora_mesh"));
-            write_aurora_mesh(&cm, w).expect("write .aurora_mesh");
-        }
-
         let mut glow_light = None;
         let fields = match &emissive {
             Some(e) => match emissive_fields(args, obj_dir, textures_dir, material, is_cutmask, e, derived) {
@@ -1405,7 +1387,32 @@ fn bake_model(
                 fields
             }
         };
+        let mesh_stem = format!("{path_stem}_{i}");
+        let mesh_file = args
+            .out_dir
+            .join("meshes")
+            .join(format!("{mesh_stem}.aurora_mesh"));
+        // The output dir starts empty, so an existing file was baked earlier this run. A glow
+        // card is not drawn (its halo is its light), so it has no mesh.
+        if glow_light.is_none() && !mesh_file.exists() {
+            let mesh = build_mesh(&m.mesh, centroid);
+            let mut cm = match AuroraMesh::clustered(&mesh) {
+                Ok(cm) => cm,
+                Err(err) => {
+                    eprintln!("  {mesh_stem}: bake failed: {err:?}");
+                    continue;
+                }
+            };
+            // Alpha-cutout foliage gets a baked opacity micromap (resolved by the RT cores).
+            if is_cutmask && let Some(mat) = material {
+                let _ = attach_omm(&mut cm, obj_dir, mat, omm);
+            }
+            let w = BufWriter::new(File::create(&mesh_file).expect("create .aurora_mesh"));
+            write_aurora_mesh(&cm, w).expect("write .aurora_mesh");
+        }
+
         out.push(BakedSubmesh {
+            drawn: glow_light.is_none(),
             material_fields: fields,
             mesh_stem,
             centroid: Vec3::new(centroid[0] as f32, centroid[1] as f32, centroid[2] as f32),

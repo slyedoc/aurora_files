@@ -2,7 +2,7 @@
 # Re-bake every asset aurora_files produces, from scratch: each importer cleans its own output
 # (prop_import its meshes/ and textures/) and bakes everything. Run from the repo root.
 #   scripts/bake_all.sh            all of it
-#   scripts/bake_all.sh hex wow    just those steps
+#   scripts/bake_all.sh wow fox    just those steps
 # Then mirror what zero uses (zero's docs/assets.md lists each dir).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -25,8 +25,6 @@ run namaqualand $bin/namaqualand_boulder_import \
   raw/namaqualand_boulder_02_8k/namaqualand_boulder_02_8k.gltf assets/namaqualand_boulder
 run g1 $bin/g1_import "$ZERO/assets" ai/motionbricks/g1
 
-run hex $bin/prop_import raw/hex/hex.glb assets/hex \
-  --hierarchy --scene-name hex --asset-prefix hex --colliders
 run playground $bin/prop_import raw/playground/playground.glb assets/playground \
   --scene-name playground --colliders
 for p in console core door gangway pad platform; do

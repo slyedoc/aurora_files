@@ -55,8 +55,7 @@ cargo run --release -p polyhaven -- --fetch --res 2k concrete_floor_02 sand_01
 ```
 
 One fetcher, deliberately. A per-asset script re-implements the API calls and hardcodes
-a table of material sizes, which drifts from the source; `assets/hex` reads this manifest
-instead.
+a table of material sizes, which drifts from the source.
 
 # Trees (SpeedTree, NVIDIA ORCA)
 
@@ -307,27 +306,11 @@ slide, so a large joint rotation stretches the pairing; cables are bound to one 
 across a bending joint. One clip only — no idle, turn or aim states.
 
 
-# Hex (authored) — the first WALKABLE asset
-
-A building rather than a prop: `p/assets/hex` builds it in Blender, and it is the first asset
-baked with **collision**, so zero can put a navmesh over it.
-
-```sh
-# the .blend is an OUTPUT; run.main(export=True) writes hex_export.blend with nits emissive
-blender -b /mnt/code/p/assets/hex/hex_export.blend --python scripts/asset_to_glb.py -- \
-  --out raw/hex/hex.glb --collection HEX --origin keep
-cargo run --release -p prop_import -- raw/hex/hex.glb assets/hex --hierarchy \
-  --scene-name hex --colliders
-./target/release/bsn assets/hex/hex.bsn --pos 0,3,42 --target 0,3,25     # at the door
-cp -r assets/hex /mnt/code/p/zero/assets/
-cd /mnt/code/p/zero && cargo run --release -- -s hex --nav-debug
-```
+# Collision (`prop_import --colliders`)
 
 `--colliders` writes a `.collider` beside every `.aurora_mesh`, cached by `(mesh, prim)` like
-the render mesh — the wall panel 270 nodes share bakes ONE collider file. A Blender object with
-`collide = 0` in its custom properties is left out (water, ceilings, light fixtures). Last bake:
-53 meshes, 44 colliders, 270 of 333 mesh entities collide; zero bakes 4 nav islands over it in
-about 120 ms.
+the render mesh, so a mesh shared by many nodes bakes ONE collider file. A Blender object with
+`collide = 0` in its custom properties is left out (water, ceilings, light fixtures).
 
 The component is `bevy_aurora::collision::CollisionMesh`, which carries GEOMETRY only. A `.bsn`
 that names a game's physics types is refused outright by every other reader — the WoW tiles
