@@ -11,7 +11,10 @@
 //! Output:
 //!   assets/wow/meshes/*.aurora_mesh + textures/*   baked models (shared)
 //!   assets/wow/meshes/*.collider                     one collision mesh per model that has one
-//!   assets/wow/<map>_X_Y.bsn                        doodad/WMO entities, TILE-LOCAL coords
+//!   assets/wow/models/<model>.bsn                    one scene per model: its submeshes and
+//!                                                    collision body, in model space
+//!   assets/wow/<map>_X_Y.bsn                        one instance of a model scene per doodad/WMO
+//!                                                    placement (+ glow lights), TILE-LOCAL coords
 //!   assets/wow/<map>_zone.bsn                       the Landscape: palette, one height + splat
 //!                                                    layer per ADT, a sculpt and a paint layer
 //!   assets/wow/map/<map>_X_Y_height.png             129² 16-bit height grid (range in the zone)
@@ -55,7 +58,7 @@
 //! The tracer's light table averages the emissive texture, so an emitter lights the scene
 //! by what it actually emits.
 //!
-//! Collision: every placement of a model with collision gets a second entity carrying
+//! Collision: a model with collision has a child in its scene carrying
 //! `bevy_aurora::collision::CollisionMesh`, which shares one built collider between all of the
 //! model's instances (zero turns it into an avian static body). An M2's comes from wow.export's `<model>.phys.obj` -- WoW's own
 //! collision mesh, so a tree is its trunk and bushes are walked through; a WMO's from its
@@ -84,7 +87,7 @@ use aurora_bsn::bsn::{self, Entity, Value, material_fields, mesh_entity, scene};
 use aurora_bsn::discovery::{copy_textures, material_is_cutmask, sanitize};
 use aurora_bsn::mesh::{OmmOptions, attach_omm, build_mesh, submesh_centroid};
 use aurora_mesh::{AuroraMesh, write_aurora_mesh};
-use bevy::math::{EulerRot, Quat, Vec3};
+use bevy::math::{Quat, Vec3};
 use clap::Parser;
 
 /// One WoW ADT tile, in yards (= world units): `1600/3`.
@@ -382,6 +385,7 @@ fn main() {
     let textures_dir = args.out_dir.join("textures");
     fs::create_dir_all(&textures_dir).expect("create textures dir");
     fs::create_dir_all(args.out_dir.join("map/tileset")).expect("create map dir");
+    fs::create_dir_all(args.out_dir.join("models")).expect("create models dir");
 
     // Pass 1 — parse every tile's placement CSV (m2 + wmo rows), then fold in each unique WMO's
     // interior doodads. Keyed by tile coord.
@@ -447,6 +451,47 @@ fn main() {
     }
     println!("{} of {} models collide", colliders.len(), unique_models.len());
 
+    // Each model is a `.bsn` of its own (its submeshes at their centroids, its collision
+    // body), so a placement is one instance: the editor selects the tree, not one of its
+    // parts, and a model is one asset however many tiles place it.
+    let mut model_scenes: HashMap<String, String> = HashMap::new();
+    for rel in &unique_models {
+        let submeshes = &baked_models[rel];
+        if submeshes.is_empty() {
+            continue;
+        }
+        let stem = model_stem(rel);
+        let name = model_name(rel);
+        let mut parts: Vec<Entity> = submeshes
+            .iter()
+            .enumerate()
+            .map(|(i, sub)| {
+                mesh_entity(
+                    &args.asset_prefix,
+                    &sub.mesh_stem,
+                    sub.material_fields.clone(),
+                    &format!("{name} {i}"),
+                    sub.centroid.to_array(),
+                    Quat::IDENTITY.to_array(),
+                    [1.0; 3],
+                    None,
+                )
+            })
+            .collect();
+        if let Some(collider) = colliders.get(rel) {
+            parts.push(Entity {
+                components: vec![
+                    bsn::name(&format!("{name} collider")),
+                    bsn::collider(&args.asset_prefix, collider),
+                ],
+                children: Vec::new(),
+            });
+        }
+        let path = args.out_dir.join("models").join(format!("{stem}.bsn"));
+        fs::write(&path, scene(&stem, Vec::new(), parts)).expect("write model .bsn");
+        model_scenes.insert(rel.clone(), format!("{}/models/{stem}.bsn", args.asset_prefix));
+    }
+
     // Pass 3 — write each tile's `.bsn` (doodads/WMOs only) and its terrain map data.
     let mut palette = PaletteBuilder::default();
     let mut texture_effects: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
@@ -455,30 +500,29 @@ fn main() {
         let mut entities = Vec::new();
         let mut instanced = 0usize;
         for p in placements {
-            let Some(submeshes) = baked_models.get(&p.model) else {
+            let (Some(submeshes), Some(model_scene)) =
+                (baked_models.get(&p.model), model_scenes.get(&p.model))
+            else {
                 continue;
             };
-            let name = Path::new(&p.model)
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if let Some(stem) = colliders.get(&p.model) {
-                entities.push(collider_entity(&args.asset_prefix, &name, stem, p));
-            }
+            let name = model_name(&p.model);
+            entities.push(Entity {
+                components: vec![
+                    bsn::name(&name),
+                    bsn::transform(
+                        p.translation.to_array(),
+                        Some(p.rotation.to_array()),
+                        Some([p.scale; 3]),
+                    ),
+                    bsn::scene_ref(model_scene),
+                ],
+                children: Vec::new(),
+            });
+            instanced += 1;
+            // A glow card's light stays with the placement: its flux and radius follow the
+            // placement's scale, which a light inside the model's scene could not.
             for sub in submeshes {
-                // Instance transform composed with the submesh's local centroid offset.
                 let t = p.translation + p.rotation * (sub.centroid * p.scale);
-                entities.push(mesh_entity(
-                    &args.asset_prefix,
-                    &sub.mesh_stem,
-                    sub.material_fields.clone(),
-                    &name,
-                    t.to_array(),
-                    p.rotation.to_array(),
-                    [p.scale, p.scale, p.scale],
-                    None,
-                ));
-                instanced += 1;
                 if let Some((color, lumens, radius)) = sub.glow_light {
                     entities.push(point_light(
                         &format!("{name} glow"),
@@ -1267,6 +1311,20 @@ fn emit_zone(args: &Args, palette: &PaletteBuilder, tiles: &[((i32, i32), (f32, 
 
 // ---- model baking ---------------------------------------------------------------------------
 
+/// A model's unique, filesystem-safe stem from its wow-root-relative path (basenames collide:
+/// several zones ship a `bush01.obj`); names its meshes, collider and `.bsn`.
+fn model_stem(rel: &str) -> String {
+    sanitize(rel.trim_end_matches(".obj").trim_start_matches("world/"))
+}
+
+/// What a placement of the model is called: its file's own name.
+fn model_name(rel: &str) -> String {
+    Path::new(rel)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
 /// Bake every submesh of one model OBJ into the shared `meshes/` dir (once per run), copy its
 /// textures, and return the per-submesh instance records.
 fn bake_model(
@@ -1285,9 +1343,7 @@ fn bake_model(
     let obj_dir = obj_path.parent().unwrap_or_else(|| Path::new("."));
     let emissives = model_emissives(args, obj_path, &models);
 
-    // Unique, filesystem-safe stem from the wow-root-relative path (basenames collide:
-    // several zones ship a `bush01.obj`).
-    let path_stem = sanitize(rel.trim_end_matches(".obj").trim_start_matches("world/"));
+    let path_stem = model_stem(rel);
 
     let mut out = Vec::new();
     for (i, m) in models.iter().enumerate() {
@@ -1403,7 +1459,7 @@ impl CollisionMesh {
 /// collision mesh wow.export writes beside it (`<model>.phys.obj`: a tree is its trunk, not
 /// its leaf cards); a WMO with its `.phys.obj` (BSP faces), else all its render triangles.
 fn bake_collider(args: &Args, obj_path: &Path, rel: &str) -> Option<String> {
-    let stem = sanitize(rel.trim_end_matches(".obj").trim_start_matches("world/"));
+    let stem = model_stem(rel);
     let file = args.out_dir.join("meshes").join(format!("{stem}.collider"));
     let json: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(obj_path.with_extension("json")).ok()?).ok()?;
@@ -1440,24 +1496,6 @@ fn bake_collider(args: &Args, obj_path: &Path, rel: &str) -> Option<String> {
     }
     collision.write(&file);
     Some(stem)
-}
-
-/// A collision body at a placement: the model's shared `.collider`, under the placement's own
-/// transform (collision lives in model space, not on the centred render submeshes).
-///
-/// The component is aurora's, which carries GEOMETRY only — zero's `BakedColliderPlugin` turns
-/// it into an avian `Collider` + `RigidBody::Static`. Naming avian here instead made the tile
-/// unopenable by anything without avian in its type registry, the plain `bsn` viewer included
-/// (`unknown type: avian3d::dynamics::rigid_body::RigidBody`, and the whole scene is refused).
-fn collider_entity(prefix: &str, name: &str, stem: &str, p: &Placement) -> Entity {
-    Entity {
-        components: vec![
-            bsn::name(&format!("{name} collider")),
-            bsn::transform(p.translation.to_array(), Some(p.rotation.to_array()), Some([p.scale; 3])),
-            bsn::collider(prefix, stem),
-        ],
-        children: Vec::new(),
-    }
 }
 
 // ---- placements ------------------------------------------------------------------------------
@@ -1506,15 +1544,7 @@ fn parse_tile_placements(
             continue;
         }
 
-        // Core's rotation (WoW Z-up Euler degrees → Y-up), then our 180°-about-Y frame change.
-        let rotation = Quat::from_rotation_y(PI)
-            * Quat::from_rotation_y((-90.0f32).to_radians())
-            * Quat::from_euler(
-                EulerRot::YXZ,
-                rot_y.to_radians(),
-                rot_z.to_radians(),
-                rot_x.to_radians(),
-            );
+        let rotation = Quat::from_rotation_y(PI) * csv_rotation(rot_x, rot_y, rot_z);
 
         placements.push(Placement {
             model: model_rel,
@@ -1532,6 +1562,17 @@ fn parse_tile_placements(
         }
     }
     (placements, wmos)
+}
+
+/// A placement CSV row's rotation (degrees) in core's Y-up frame, before our 180°-about-Y frame
+/// change: what wow.export's own Blender addon applies (Euler XYZ of `RotationZ`, `RotationX`,
+/// `90 + RotationY` over its Y-up -> Z-up turn), carried into Y-up. Yaw is `RotationY`; the
+/// two tilts are a roll of `-RotationX` about Z, then a pitch of `RotationZ` about X. A sloped
+/// placement (a fence down a hill) leans the wrong way with either sign or order off.
+fn csv_rotation(rot_x: f32, rot_y: f32, rot_z: f32) -> Quat {
+    Quat::from_rotation_y((rot_y - 90.0).to_radians())
+        * Quat::from_rotation_z((-rot_x).to_radians())
+        * Quat::from_rotation_x(rot_z.to_radians())
 }
 
 /// Interior doodads: each WMO ships its own `_ModelPlacementInformation.csv` with positions local
@@ -1557,13 +1598,7 @@ fn collect_wmo_interior_doodads(
         };
 
         // The WMO's own rotation in core's Y-up frame (same formula as terrain placements).
-        let wmo_rot = Quat::from_rotation_y((-90.0f32).to_radians())
-            * Quat::from_euler(
-                EulerRot::YXZ,
-                wmo.wow_rotation.y.to_radians(),
-                wmo.wow_rotation.z.to_radians(),
-                wmo.wow_rotation.x.to_radians(),
-            );
+        let wmo_rot = csv_rotation(wmo.wow_rotation.x, wmo.wow_rotation.y, wmo.wow_rotation.z);
 
         for line in content.lines().skip(1) {
             let fields: Vec<&str> = line.split(';').collect();
