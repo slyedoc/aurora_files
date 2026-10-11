@@ -51,9 +51,6 @@ struct Args {
     /// pre-extension assets encode emitters in 0..1 and render ~1000x too dim). See `aurora_bsn::lint`.
     #[arg(long)]
     emissive_nits: Option<f32>,
-    /// Reuse meshes and files that already exist instead of re-baking them.
-    #[arg(long)]
-    keep: bool,
     /// RON file of per-material repairs for what the export did not carry: base-colour tints
     /// (LINEAR) and base-colour textures for materials whose reference was lost. See
     /// `kits/fantasy_city.fixups.ron`.
@@ -92,6 +89,10 @@ fn emissive_nits_resolver(_material: &str) -> f32 {
 
 fn main() {
     let args = Args::parse();
+    // The baked meshes and textures are this run's alone; the dir's root can hold authored files
+    // beside the `.bsn` (event tracks on clips), so only these two go.
+    aurora_bsn::clean_dir(&args.out_dir.join("meshes"));
+    aurora_bsn::clean_dir(&args.out_dir.join("textures"));
 
     let stem = args
         .glb
@@ -120,7 +121,6 @@ fn main() {
         out_dir: args.out_dir,
         asset_prefix,
         scene_name,
-        replace: !args.keep,
         root_components: Vec::new(),
         emissive_nits,
         fixups: args

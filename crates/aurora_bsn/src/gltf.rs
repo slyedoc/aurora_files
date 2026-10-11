@@ -37,6 +37,13 @@ pub struct Fixups {
     /// Base-colour texture FILENAME by material name, for a material whose reference was lost.
     /// Resolved against the texture override directory, so the file ships with the bake.
     pub textures: HashMap<String, String>,
+    /// Emission by material name, overriding the file's: `Some` linear radiance in nits (no
+    /// texture), `None` none at all. For an export that lit the wrong part (Bistro's lamps glow
+    /// on the shade and the glass, not the bulb and the filament).
+    pub emissive: HashMap<String, Option<[f32; 3]>>,
+    /// Thin translucency (`AuroraMaterial::diffuse_transmission`) by material name: a lamp
+    /// shade, paper, a leaf that glows with the light behind it. glTF has no slot for it.
+    pub diffuse_transmission: HashMap<String, f32>,
 }
 
 /// Per-asset knobs for the glTF importer.
@@ -49,8 +56,6 @@ pub struct GltfConfig {
     pub asset_prefix: String,
     /// `.bsn` scene name and output filename stem.
     pub scene_name: String,
-    /// Re-bake `.aurora_mesh` files even when they already exist (overwrite).
-    pub replace: bool,
     /// Extra components on the scene ROOT entity (before its `Children`), e.g. an animation
     /// marker, for [`bake_gltf_hierarchy`].
     pub root_components: Vec<bsn::Value>,
@@ -93,7 +98,6 @@ impl Default for GltfConfig {
             out_dir: PathBuf::new(),
             asset_prefix: String::new(),
             scene_name: String::new(),
-            replace: true,
             root_components: Vec::new(),
             emissive_nits: None,
             fixups: Fixups::default(),
@@ -153,7 +157,6 @@ pub fn bake_gltf_scene(cfg: &GltfConfig) {
         meshes_dir: &meshes_dir,
         textures_dir: &textures_dir,
         asset_prefix: &cfg.asset_prefix,
-        replace: cfg.replace,
         emissive_nits: cfg.emissive_nits,
         fixups: &cfg.fixups,
         colliders: cfg.colliders,
@@ -249,7 +252,6 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
         meshes_dir: &meshes_dir,
         textures_dir: &textures_dir,
         asset_prefix: &cfg.asset_prefix,
-        replace: cfg.replace,
         emissive_nits: cfg.emissive_nits,
         fixups: &cfg.fixups,
         colliders: cfg.colliders,
@@ -513,7 +515,6 @@ struct Ctx<'a> {
     meshes_dir: &'a Path,
     textures_dir: &'a Path,
     asset_prefix: &'a str,
-    replace: bool,
     emissive_nits: Option<fn(&str) -> f32>,
     fixups: &'a Fixups,
     colliders: bool,
@@ -689,7 +690,6 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
         meshes_dir: &meshes_dir,
         textures_dir: &textures_dir,
         asset_prefix: &cfg.asset_prefix,
-        replace: cfg.replace,
         emissive_nits: cfg.emissive_nits,
         fixups: &cfg.fixups,
         colliders: cfg.colliders,
@@ -867,9 +867,7 @@ fn ensure_collider(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> 
     }
     let stem = format!("mesh{}_{}", mesh.index(), prim.index());
     let file = ctx.meshes_dir.join(format!("{stem}.collider"));
-    let result = if file.exists() && !ctx.replace {
-        Some(stem)
-    } else if build_primitive_mesh(prim, ctx.buffers, ctx.scale)
+    let result = if build_primitive_mesh(prim, ctx.buffers, ctx.scale)
         .and_then(|m| write_collider(&m, &file))
         .is_some()
     {
@@ -1004,15 +1002,11 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut Vec<bsn::Entity>) {
     out.push(entity);
 }
 
-/// Bake one primitive into a `.aurora_mesh` (skipping the bake if the file already exists from a
-/// prior run). Returns the owner stem, or `None` if the mesh has no positions or the bake fails.
+/// Bake one primitive into a `.aurora_mesh`. Returns the owner stem, or `None` if the mesh has no
+/// positions or the bake fails.
 fn bake_primitive(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> Option<String> {
     let stem = format!("mesh{}_{}", mesh.index(), prim.index());
     let mesh_file = ctx.meshes_dir.join(format!("{stem}.aurora_mesh"));
-    if mesh_file.exists() && !ctx.replace {
-        ctx.baked_count += 1;
-        return Some(stem); // re-runs only re-emit the `.bsn` (use `replace` to overwrite)
-    }
 
     let bevy_mesh = build_primitive_mesh(prim, ctx.buffers, ctx.scale)?;
     match AuroraMesh::clustered(&bevy_mesh) {
@@ -1050,11 +1044,8 @@ fn bake_primitive(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> O
 
 /// Bake a single `.glb`'s first triangle primitive into a `.aurora_mesh` at `out_file` — the stem
 /// is caller-controlled (unlike [`bake_gltf_scene`]'s `meshN_M`), so an articulated rig can name one
-/// file per link. Skips if `out_file` exists unless `replace`. `Ok(true)` baked, `Ok(false)` skipped.
-pub fn bake_glb_primitive(glb_path: &Path, out_file: &Path, replace: bool) -> Result<bool, String> {
-    if out_file.exists() && !replace {
-        return Ok(false);
-    }
+/// file per link. `Ok(true)` baked, `Ok(false)` nothing to bake.
+pub fn bake_glb_primitive(glb_path: &Path, out_file: &Path) -> Result<bool, String> {
     let bytes = fs::read(glb_path).map_err(|e| format!("read {}: {e}", glb_path.display()))?;
     let gltf = gltf::Gltf::from_slice(&bytes).map_err(|e| format!("parse gltf: {e}"))?;
     let doc: &gltf::Document = &gltf;
@@ -1272,12 +1263,23 @@ fn material_fields(material: &gltf::Material, ctx: &Ctx) -> Vec<(&'static str, b
     let emissive_tex = material
         .emissive_texture()
         .and_then(|info| tex_file(info.texture(), ctx));
-    let radiance = emissive_radiance(material, ctx.emissive_nits, emissive_tex.is_some());
+    let fixed = material.name().and_then(|n| ctx.fixups.emissive.get(n));
+    let (emissive_tex, radiance) = match fixed {
+        Some(fixed) => (None, *fixed),
+        None => {
+            let radiance = emissive_radiance(material, ctx.emissive_nits, emissive_tex.is_some());
+            (emissive_tex, radiance)
+        }
+    };
     if let Some([r, g, b]) = radiance {
         fields.push(("emissive", bsn::linear_rgba([r, g, b, 1.0])));
         if let Some(p) = emissive_tex {
             fields.push(("emissive_texture", bsn::Value::Str(p)));
         }
+    }
+
+    if let Some(t) = material.name().and_then(|n| ctx.fixups.diffuse_transmission.get(n)) {
+        fields.push(("diffuse_transmission", bsn::Value::Float(t.clamp(0.0, 1.0))));
     }
 
     // Alpha cutout (foliage, fences): emit `AlphaMode::Mask` so the ray tracer any-hit-tests it.

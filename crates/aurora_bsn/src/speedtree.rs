@@ -23,8 +23,6 @@ pub struct SpeedTreeConfig {
     pub out_dir: PathBuf,
     /// Asset-server-relative prefix the `.bsn` uses to reference meshes/textures.
     pub asset_prefix: String,
-    /// Re-bake `.aurora_mesh` files even when they already exist.
-    pub replace: bool,
     /// Uniform scale applied to every tree (SpeedTree FBX come in at author units).
     pub scale: f32,
     /// Trees per merged clump asset (0/1 = no clump baking). A clump merges K
@@ -131,7 +129,7 @@ fn bake_clump(tree: &str, ctx: &Tree, cfg: &SpeedTreeConfig) {
     for (i, src) in ctx.clump_sources.iter().enumerate() {
         let stem = format!("{tree}_clump{k}_p{i}");
         let file = ctx.meshes_dir.join(format!("{stem}.aurora_mesh"));
-        if cfg.replace || !file.exists() {
+        {
             let merged = merge_placements(&src.mesh, &placements);
             let mut cm = match AuroraMesh::clustered(&merged) {
                 Ok(cm) => cm,
@@ -389,9 +387,6 @@ fn bake_primitive(
             mesh: bevy_mesh.clone(),
             cut_image: cut.then(|| base_color_image(&prim.material())).flatten(),
         });
-    }
-    if file.exists() && !ctx.cfg.replace {
-        return Some(stem); // re-runs only re-emit the `.bsn`
     }
 
     let mut cm = match AuroraMesh::clustered(&bevy_mesh) {

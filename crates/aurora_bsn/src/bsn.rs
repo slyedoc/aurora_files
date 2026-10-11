@@ -20,6 +20,8 @@ pub enum Value {
     Path(&'static str),
     Struct(&'static str, Vec<(&'static str, Value)>),
     Tuple(&'static str, Vec<Value>),
+    /// A plain tuple, `(1, 2.0)`.
+    AnonTuple(Vec<Value>),
     List(Vec<Value>),
 }
 
@@ -139,6 +141,9 @@ fn lower_value(doc: &mut BsnDocument, value: Value) -> BsnValueId {
             path(p),
             items.into_iter().map(|v| lower_value(doc, v)).collect(),
         ),
+        Value::AnonTuple(items) => {
+            BsnValue::Tuple(items.into_iter().map(|v| lower_value(doc, v)).collect())
+        }
         Value::List(items) => {
             BsnValue::List(items.into_iter().map(|v| lower_value(doc, v)).collect())
         }
@@ -331,6 +336,12 @@ pub fn material_fields(
     }
     if is_cutmask {
         fields.push(("alpha_mode", alpha_mask(img::MASK_CUTOFF)));
+    }
+    // `illum 0`/`1` is the MTL's "colour, no highlights" (wow.export writes it for every WoW
+    // material: hand-painted diffuse, no specular maps). Matte, then -- the default 0.5 roughness
+    // gave everything a sheen, and grazing leaves turned into mirrors of the sky.
+    if material.illumination_model.is_some_and(|illum| illum <= 1) {
+        fields.push(("perceptual_roughness", Value::Float(1.0)));
     }
     fields
 }

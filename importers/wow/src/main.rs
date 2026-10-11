@@ -1,5 +1,5 @@
 //! WoW zone importer: wow.export OBJ dumps → one `.bsn` per ADT tile (doodads + WMOs) plus
-//! EDITABLE terrain map data for aurora's GPU terrain (`bevy_aurora::terrain`).
+//! the zone's terrain as an `aurora_landscape` scene.
 //!
 //! Source layout (wow.export v0.2.6, see `~/code/p/bevy_wow/assets/wow`):
 //!   maps/<map>/adt_X_Y.obj                          terrain (256 subchunk groups)
@@ -12,19 +12,21 @@
 //!   assets/wow/meshes/*.aurora_mesh + textures/*   baked models (shared)
 //!   assets/wow/meshes/*.collider                     one collision mesh per model that has one
 //!   assets/wow/<map>_X_Y.bsn                        doodad/WMO entities, TILE-LOCAL coords
-//!   assets/wow/map/<map>_X_Y_height.png             129² 16-bit height grid (min/max in json)
-//!   assets/wow/map/<map>_X_Y_alpha.png              1024² RGBA alphamap atlas (16×16 × 64²)
-//!   assets/wow/map/<map>_X_Y_layers.json            per-chunk palette indices + height range
-//!   assets/wow/map/palette.json + map/tileset/*.png the shared splat palette
-//!   assets/wow/plants/<plant>.bsn                    one prefab per ground-clutter plant
-//!                                                    (mesh + material + WindSway; edit freely)
-//!   assets/wow/clutter.ron                           ground texture -> plants + density
-//!                                                    (seeded from the GroundEffect tables;
-//!                                                    edit freely)
+//!   assets/wow/<map>_zone.bsn                       the Landscape: palette, one height + splat
+//!                                                    layer per ADT, a sculpt and a paint layer
+//!   assets/wow/map/<map>_X_Y_height.png             129² 16-bit height grid (range in the zone)
+//!   assets/wow/map/<map>_X_Y_splat_ids.png          1024² palette ids, a byte per slot (RGBA)
+//!   assets/wow/map/<map>_X_Y_splat_weights.png      1024² their weights, same layout
+//!   assets/wow/map/tileset/*.png                    the shared splat palette's textures
+//!   assets/wow/<map>_clutter.bsn                    the ground clutter: one ScatterSpecies per
+//!                                                    plant part (rest mesh, wind poses,
+//!                                                    palette densities), regenerated each run
 //!
-//! Terrain is NOT baked to a mesh: zero builds it at runtime with
-//! `bevy_aurora::terrain::terrain_mesh` and edits it on the GPU. Existing map files are left
-//! alone unless `--replace` (they may carry in-game edits).
+//! Terrain is NOT baked to a mesh: the zone scene is a landscape whose layers are the tiles'
+//! heights and splatmaps; edits go on its sculpt and paint layers (jackdaw), never into the
+//! baked files. The zone's origin is the centre of the range's middle tile. Every run cleans the
+//! output dir and writes everything, the zone included; its `.pages` bake comes from saving the
+//! zone in jackdaw.
 //!
 //! Coordinate frames: the wow.export OBJs live in `obj = (C − wow_x, height, C − wow_z)` where
 //! `C = 32 · 533.333` and `wow_*` are the CSV's coords. The proven placement math from
@@ -57,16 +59,16 @@
 //! `bevy_aurora::collision::CollisionMesh`, which shares one built collider between all of the
 //! model's instances (zero turns it into an avian static body). An M2's comes from wow.export's `<model>.phys.obj` -- WoW's own
 //! collision mesh, so a tree is its trunk and bushes are walked through; a WMO's from its
-//! render triangles, keeping what the json's per-triangle flags mark collidable (collision-
-//! only triangles are not in the OBJ and are lost). Ground clutter never collides.
+//! `.phys.obj` (its BSP faces, written by the local wow.export fork with "export collision" on),
+//! else from all its render triangles (an older dump has no collision-only ramps or caps, so
+//! stairs collide as steps). Ground clutter never collides.
 //!
 //! Ground clutter: each splat layer's `effectID` (wow.export tex json) -> GroundEffectTexture
 //! (density, up to four doodads with weights) -> GroundEffectDoodad (model file id) -> the
 //! community listfile (path) -> `maps/<map>/foliage/<basename>.obj`. The plants are baked
-//! like any model (cutmask -> Mask + opacity micromap), each gets a `.bsn` prefab, and
-//! `clutter.ron` maps every ground texture that has an effect to its plants. Zero assembles
-//! the chunks at runtime from those (game/wow_clutter.rs). Plant `.bsn`s and `clutter.ron`
-//! are never overwritten without `--replace`.
+//! in plant space (cutmask -> Mask + opacity micromap, plus baked wind poses for what WoW
+//! animates) and written as `ScatterSpecies` of the zone's landscape (`<map>_clutter.bsn`,
+//! instanced by the zone's `Clutter` child); aurora_landscape grows them on the GPU.
 //!
 //! Deferred: liquids, creatures.
 //!
@@ -74,7 +76,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::f32::consts::PI;
-use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -92,11 +93,13 @@ const TILE: f32 = 1600.0 / 3.0;
 const C: f32 = 32.0 * TILE;
 /// Height grid edge: 16 subchunks × 8 cells + 1.
 const HEIGHT_RES: u32 = 129;
-/// Alphamap atlas edge (16 chunk cells of 64px).
+/// Splatmap edge (16 chunk cells of 64px).
 const ALPHA_ATLAS: u32 = 1024;
 const ALPHA_CELL: u32 = 64;
-/// No texture in a chunk-layer slot (bevy_aurora::terrain::NO_LAYER).
+/// No texture in a chunk-layer slot.
 const NO_LAYER: u32 = u32::MAX;
+/// Texture repeats per chunk edge (WoW ground textures tile ~every 4.2 yd).
+const REPEATS: f32 = 8.0;
 
 #[derive(Parser)]
 #[command(about = "Bake wow.export ADT tiles → per-tile .bsn + editable terrain map data")]
@@ -122,9 +125,6 @@ struct Args {
     /// Asset-server-relative prefix the `.bsn` uses to reference meshes/textures.
     #[arg(long, default_value = "wow")]
     asset_prefix: String,
-    /// Reuse meshes and files that already exist instead of re-baking them.
-    #[arg(long)]
-    keep: bool,
     /// The community listfile (`<file id>;<path>` per line): resolves GroundEffectDoodad
     /// model ids to plant model names.
     #[arg(long, default_value = "/home/slyedoc/code/p/core/assets/terrain/dbc/listfile.csv")]
@@ -372,6 +372,12 @@ type DerivedGlows = HashMap<String, (bool, [f32; 3])>;
 fn main() {
     let args = Args::parse();
     let map_dir = args.wow_root.join("maps").join(&args.map);
+    // Every run starts from nothing: the output dir is this importer's alone, and output kept
+    // from an earlier run can disagree with a re-exported source.
+    if args.out_dir.exists() {
+        println!("cleaning {}", args.out_dir.display());
+        fs::remove_dir_all(&args.out_dir).expect("clean the output dir");
+    }
     fs::create_dir_all(args.out_dir.join("meshes")).expect("create meshes dir");
     let textures_dir = args.out_dir.join("textures");
     fs::create_dir_all(&textures_dir).expect("create textures dir");
@@ -431,7 +437,7 @@ fn main() {
             rel,
             &textures_dir,
             &mut cutmask_cache,
-            &OmmOptions::from_env(),
+            &if is_foliage(rel) { FOLIAGE_OMM } else { OmmOptions::from_env() },
             &mut derived,
         );
         baked_models.insert(rel.clone(), submeshes);
@@ -444,6 +450,7 @@ fn main() {
     // Pass 3 — write each tile's `.bsn` (doodads/WMOs only) and its terrain map data.
     let mut palette = PaletteBuilder::default();
     let mut texture_effects: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
+    let mut zone_tiles = Vec::new();
     for (&(ax, ay), placements) in &tile_placements {
         let mut entities = Vec::new();
         let mut instanced = 0usize;
@@ -494,10 +501,13 @@ fn main() {
             bsn_path.display()
         );
 
-        emit_tile_map(&args, &map_dir, ax, ay, &mut palette, &mut texture_effects);
+        if let Some(range) = emit_tile_map(&args, &map_dir, ax, ay, &mut palette, &mut texture_effects) {
+            zone_tiles.push(((ax, ay), range));
+        }
     }
     palette.write(&args);
-    emit_clutter(&args, &map_dir, &textures_dir, &texture_effects, &mut cutmask_cache, &mut derived);
+    emit_zone(&args, &palette, &zone_tiles);
+    emit_clutter(&args, &map_dir, &textures_dir, &palette, &texture_effects, &mut cutmask_cache);
     println!("done.");
 }
 
@@ -576,154 +586,295 @@ fn load_listfile(path: &Path, wanted: &HashSet<u32>) -> HashMap<u32, String> {
         .collect()
 }
 
-/// Bake every plant the tiles' ground textures reference, write a `.bsn` prefab per plant and
-/// the `clutter.ron` texture -> plants table.
+/// Bake every plant the tiles' ground textures reference as `ScatterSpecies` of the zone's
+/// landscape: `<map>_clutter.bsn`, one species per plant part, instanced under the zone by its
+/// `Clutter` child. WoW's density (plants per 8x8 chunk cell, split by each plant's weight)
+/// becomes the species' spacing (one spot per plant at its densest layer) and a per-palette
+/// keep factor; a plant's parts share seed, spacing and factors, so they land on one spot.
+/// Swaying parts (WoW Animscale > 0) carry [`WIND_POSES`] baked lean poses the scatter kernel
+/// cycles.
 fn emit_clutter(
     args: &Args,
     map_dir: &Path,
     textures_dir: &Path,
+    palette: &PaletteBuilder,
     texture_effects: &BTreeMap<String, BTreeSet<u32>>,
     cutmask_cache: &mut HashMap<String, bool>,
-    derived: &mut DerivedGlows,
 ) {
     let effects = load_ground_effects(&args.wow_root);
     let doodads = load_ground_doodads(&args.wow_root);
     let wanted: HashSet<u32> = doodads.values().map(|(file, _)| *file).collect();
     let listfile = load_listfile(&args.listfile, &wanted);
-    let plants_dir = args.out_dir.join("plants");
-    fs::create_dir_all(&plants_dir).expect("create plants dir");
 
-    // Plant name -> (bsn asset path) once baked.
-    let mut baked: BTreeMap<String, String> = BTreeMap::new();
-    let mut layers: BTreeMap<String, (u32, Vec<(String, f32)>)> = BTreeMap::new();
-    // A texture's chunks can carry several effect ids (some rows are missing from the table,
-    // some have no doodads): every candidate is tried, the densest with plants wins.
+    // Plant name -> its baked parts, once baked (empty when it has no usable geometry).
+    let mut baked: BTreeMap<String, Vec<SpeciesPart>> = BTreeMap::new();
+    // Plant name -> (palette id, plants per square yard).
+    let mut rates: BTreeMap<String, Vec<(u32, f32)>> = BTreeMap::new();
+    let mut textures = 0;
     for (texture, effect_ids) in texture_effects {
-      for effect_id in effect_ids {
-        let Some(effect) = effects.get(effect_id) else {
+        let id = palette.entries.iter().position(|(name, _)| name == texture);
+        let Some(id) = id else {
+            eprintln!("clutter: {texture} is not in the zone's palette");
             continue;
         };
-        if effect.density == 0 || effect.doodads.is_empty() {
-            continue;
-        }
-        // The same doodad may fill several of the four slots: sum its weights.
-        let mut plants: BTreeMap<String, f32> = BTreeMap::new();
-        for &(doodad, weight) in &effect.doodads {
-            let Some((file_id, animscale)) = doodads.get(&doodad) else { continue };
-            let Some(path) = listfile.get(file_id) else {
-                eprintln!("clutter: doodad {doodad}: file id {file_id} not in the listfile");
-                continue;
-            };
-            let name = Path::new(path)
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_ascii_lowercase())
-                .unwrap_or_default();
-            if name.is_empty() {
+        // A texture's chunks can carry several effect ids (some rows are missing from the
+        // table, some have no doodads): the densest with plants wins.
+        let mut best: Option<(u32, BTreeMap<String, f32>)> = None;
+        for effect_id in effect_ids {
+            let Some(effect) = effects.get(effect_id) else { continue };
+            if effect.density == 0 || effect.doodads.is_empty() {
                 continue;
             }
-            if !baked.contains_key(&name) {
-                let obj = map_dir.join("foliage").join(format!("{name}.obj"));
-                if !obj.exists() {
-                    eprintln!("clutter: {name}: no foliage export at {}", obj.display());
+            // The same doodad may fill several of the four slots: sum its weights.
+            let mut plants: BTreeMap<String, f32> = BTreeMap::new();
+            for &(doodad, weight) in &effect.doodads {
+                let Some((file_id, animscale)) = doodads.get(&doodad) else { continue };
+                let Some(path) = listfile.get(file_id) else {
+                    eprintln!("clutter: doodad {doodad}: file id {file_id} not in the listfile");
                     continue;
-                }
-                // Every plant triangle is a whole cutout card, so the micromap is the
-                // silhouette: finer than a tree's leaves (a quarter texel per micro-triangle,
-                // a texel of erosion) at a still-small cost, some KB per plant.
-                let plant_omm = OmmOptions {
-                    max_subdiv: 9,
-                    erode_px: 1,
-                    scale: 0.25,
-                    ..OmmOptions::from_env()
                 };
-                let submeshes = bake_model(
-                    args,
-                    &obj,
-                    &format!("foliage/{name}.obj"),
-                    textures_dir,
-                    cutmask_cache,
-                    &plant_omm,
-                    derived,
-                );
-                if submeshes.is_empty() {
+                let name = Path::new(path)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_ascii_lowercase())
+                    .unwrap_or_default();
+                if name.is_empty() {
                     continue;
                 }
-                let bsn_path = plants_dir.join(format!("{name}.bsn"));
-                if !args.keep || !bsn_path.exists() {
-                    let entities = submeshes
-                        .iter()
-                        .map(|sub| plant_entity(&args.asset_prefix, sub, &name, *animscale))
-                        .collect();
-                    let bsn = scene(&name, Vec::new(), entities);
-                    fs::write(&bsn_path, bsn).expect("write plant .bsn");
+                let parts = baked.entry(name.clone()).or_insert_with(|| {
+                    bake_species_parts(args, map_dir, textures_dir, &name, *animscale, cutmask_cache)
+                });
+                if !parts.is_empty() {
+                    *plants.entry(name).or_insert(0.0) += weight;
                 }
-                baked.insert(name.clone(), format!("{}/plants/{name}.bsn", args.asset_prefix));
             }
-            *plants.entry(name).or_insert(0.0) += weight;
+            if !plants.is_empty() && best.as_ref().is_none_or(|(d, _)| effect.density > *d) {
+                best = Some((effect.density, plants));
+            }
         }
-        if plants.is_empty() {
-            continue;
+        let Some((density, plants)) = best else { continue };
+        textures += 1;
+        let total: f32 = plants.values().sum();
+        for (name, weight) in plants {
+            let rate = density as f32 * weight / total / (CLUTTER_CELL * CLUTTER_CELL);
+            rates.entry(name).or_default().push((id as u32, rate));
         }
-        let entry = layers.entry(texture.clone()).or_insert((0, Vec::new()));
-        if effect.density > entry.0 {
-            entry.0 = effect.density;
-            entry.1 = plants
-                .into_iter()
-                .map(|(name, weight)| (baked[&name].clone(), weight))
-                .collect();
-        }
-      }
     }
 
-    let ron_path = args.out_dir.join("clutter.ron");
-    if !args.keep || !ron_path.exists() {
-        let mut out = String::new();
-        out.push_str(
-            "// Ground clutter: splat palette texture -> the plants it grows and how many\n\
-             // (WoW's density: plants per 8x8 chunk cell, ~4.2 yd square). Seeded from the\n\
-             // GroundEffect tables by the wow importer; edit freely, it is never overwritten.\n\
-             (\n    layers: {\n",
-        );
-        for (texture, (density, plants)) in &layers {
-            let _ = writeln!(out, "        \"{texture}\": (");
-            let _ = writeln!(out, "            density: {density}.0,");
-            out.push_str("            plants: [\n");
-            for (path, weight) in plants {
-                let _ = writeln!(out, "                (\"{path}\", {weight:.1}),");
-            }
-            out.push_str("            ],\n        ),\n");
+    let mut species = Vec::new();
+    for (name, rates) in &rates {
+        let densest = rates.iter().map(|r| r.1).fold(0.0, f32::max);
+        if densest <= 0.0 {
+            continue;
         }
-        out.push_str("    },\n)\n");
-        fs::write(&ron_path, out).expect("write clutter.ron");
+        let spacing = densest.recip().sqrt().max(CLUTTER_MIN_SPACING);
+        let grows_on = rates
+            .iter()
+            .map(|&(id, rate)| {
+                Value::AnonTuple(vec![
+                    Value::Int(id as i64),
+                    Value::Float((rate * spacing * spacing).min(1.0)),
+                ])
+            })
+            .collect::<Vec<_>>();
+        for (i, part) in baked[name].iter().enumerate() {
+            let poses = part
+                .poses
+                .iter()
+                .map(|stem| Value::Str(format!("{}/meshes/{stem}.aurora_mesh", args.asset_prefix)))
+                .collect();
+            species.push(Entity {
+                components: vec![
+                    bsn::name(&format!("{name} #{i}")),
+                    bsn::mesh(&args.asset_prefix, &part.rest),
+                    bsn::material(part.material_fields.clone()),
+                    Value::Struct(
+                        "aurora_landscape::scatter::ScatterSpecies",
+                        vec![
+                            ("spacing", Value::Float(spacing)),
+                            ("radius", Value::Float(160.0)),
+                            ("inner_radius", Value::Float(0.0)),
+                            ("fade", Value::Float(12.0)),
+                            ("grows_on", Value::List(grows_on.clone())),
+                            (
+                                "scale",
+                                Value::Struct(
+                                    "glam::Vec2",
+                                    vec![("x", Value::Float(0.85)), ("y", Value::Float(1.15))],
+                                ),
+                            ),
+                            ("max_slope", Value::Float(40.0)),
+                            ("sink", Value::Float(0.0)),
+                            ("poses", Value::List(poses)),
+                            ("wind_speed", Value::Float(0.35)),
+                            ("seed", Value::Int(fnv(name) as i64)),
+                            (
+                                "density",
+                                Value::Float(
+                                    CLUTTER_DENSITY
+                                        .iter()
+                                        .find(|(plant, _)| plant == name)
+                                        .map_or(1.0, |(_, d)| *d),
+                                ),
+                            ),
+                        ],
+                    ),
+                ],
+                children: Vec::new(),
+            });
+        }
     }
+    let path = args.out_dir.join(format!("{}_clutter.bsn", args.map));
+    let count = species.len();
+    fs::write(&path, scene(&format!("{}_clutter", args.map), Vec::new(), species))
+        .expect("write clutter .bsn");
     println!(
-        "clutter: {} plants baked, {} ground textures -> {}",
-        baked.len(),
-        layers.len(),
-        ron_path.display()
+        "clutter: {} plants on {textures} ground textures, {count} species -> {}",
+        rates.len(),
+        path.display()
     );
 }
 
-/// A plant prefab part: the submesh at its centroid, the material, and -- for anything WoW
-/// animates (Animscale > 0) -- the wind deformer the clutter chunks inherit. Rocks get none.
-/// Edit the amplitude per plant here.
-fn plant_entity(asset_prefix: &str, sub: &BakedSubmesh, name: &str, animscale: f32) -> Entity {
-    let mut components = vec![
-        bsn::name(name),
-        bsn::transform(sub.centroid.to_array(), Some([0.0, 0.0, 0.0, 1.0]), Some([1.0; 3])),
-        bsn::mesh(asset_prefix, &sub.mesh_stem),
+/// A WoW chunk cell (an eighth of a chunk), the area GroundEffect densities are per.
+const CLUTTER_CELL: f32 = TILE / 16.0 / 8.0;
+/// Per-plant `ScatterSpecies::density` (1 = WoW's table): Elwynn's road pebbles carpet the
+/// cobblestone at the table's rate (a pebble every ~1.7 yd).
+const CLUTTER_DENSITY: &[(&str, f32)] = &[("elwroc02", 0.15)];
+/// Closest spacing a species gets; denser layers saturate.
+const CLUTTER_MIN_SPACING: f32 = 0.3;
+/// Opacity micromaps for foliage doodads (tree canopies, bushes): their leaf cards are large and
+/// seen against the sky, where the default's 2-state micro-triangles (several texels wide, opaque
+/// wherever they touch a leaf) fringe every leaf with solid triangles. 4-state keeps the clearly
+/// opaque / clearly clear micro-triangles on the RT cores and sends only the leaf-edge band to the
+/// any-hit's exact alpha test; level 8 at a texel per micro-triangle edge keeps that band thin, and
+/// exact edges need no erosion.
+const FOLIAGE_OMM: OmmOptions = OmmOptions {
+    max_subdiv: 8,
+    erode_px: 0,
+    scale: 1.0,
+    four_state: true,
+};
+
+/// Whether a model is foliage by its path (a doodad, not a WMO or a building among the trees).
+fn is_foliage(rel: &str) -> bool {
+    const KEYS: &[&str] = &[
+        "tree", "bush", "plant", "grass", "flower", "vine", "leaf", "leaves", "fern", "canopy",
+        "lilypad", "shrub", "hedge", "reed",
     ];
-    if animscale > 0.0 {
-        components.push(Value::Struct(
-            "bevy_aurora::skinning::WindSway",
-            vec![("amplitude", Value::Float(0.25 * animscale))],
-        ));
+    let rel = rel.to_ascii_lowercase();
+    !rel.contains("/wmo/") && !rel.contains("treehut") && KEYS.iter().any(|k| rel.contains(k))
+}
+
+/// Thin translucency of cutout foliage (`AuroraMaterial::diffuse_transmission`): the share of
+/// diffuse light passed to the far side, taken from the side it lands on (0.5 = a leaf's even
+/// split; 1.0 leaves the sunlit side black).
+const FOLIAGE_TRANSMISSION: f32 = 0.5;
+/// Baked wind poses per swaying part.
+const WIND_POSES: usize = 12;
+/// The wind the poses lean for (zero's default `Wind::speed`), m/s.
+const WIND_SPEED: f32 = 4.0;
+
+/// One plant part as a species: its rest mesh, its wind poses, its material.
+struct SpeciesPart {
+    rest: String,
+    poses: Vec<String>,
+    material_fields: Vec<(&'static str, Value)>,
+}
+
+/// A plant's parts in plant space (the foliage OBJ's own origin, at the plant's base), with
+/// the opacity micromap baked into every mesh. Swaying parts get [`WIND_POSES`] lean poses:
+/// each vertex pushed along +X by its sway weight (height over the whole plant's, squared)
+/// times the lean, which swings around 0.6..1.0 of WoW's Animscale x 0.25 m at 10 m/s.
+fn bake_species_parts(
+    args: &Args,
+    map_dir: &Path,
+    textures_dir: &Path,
+    name: &str,
+    animscale: f32,
+    cutmask_cache: &mut HashMap<String, bool>,
+) -> Vec<SpeciesPart> {
+    let obj_path = map_dir.join("foliage").join(format!("{name}.obj"));
+    let Some((models, materials)) = load_obj(&obj_path) else {
+        eprintln!("clutter: {name}: no foliage export at {}", obj_path.display());
+        return Vec::new();
+    };
+    copy_textures(&obj_path, &materials, &models, textures_dir);
+    let obj_dir = obj_path.parent().unwrap_or_else(|| Path::new("."));
+    // Every plant triangle is a whole cutout card, so the micromap is the silhouette: finer
+    // than a tree's leaves (a quarter texel per micro-triangle, a texel of erosion).
+    let omm = OmmOptions {
+        max_subdiv: 9,
+        erode_px: 1,
+        scale: 0.25,
+        ..OmmOptions::from_env()
+    };
+    let (min_y, max_y) = models
+        .iter()
+        .flat_map(|m| m.mesh.positions.chunks_exact(3).map(|p| p[1]))
+        .fold((f32::MAX, f32::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)));
+    let span = (max_y - min_y).max(1.0e-3);
+    let lean = 0.25 * animscale * WIND_SPEED / 10.0;
+    let stem = sanitize(&format!("foliage/{name}"));
+    let mut parts = Vec::new();
+    for (i, m) in models.iter().enumerate() {
+        if m.mesh.indices.is_empty() {
+            continue;
+        }
+        let material = m.mesh.material_id.and_then(|id| materials.get(id));
+        let is_cutmask =
+            material.is_some_and(|mat| material_is_cutmask(obj_dir, mat, cutmask_cache));
+        let bake = |file_stem: &str, push: f32| -> bool {
+            let file = args.out_dir.join("meshes").join(format!("{file_stem}.aurora_mesh"));
+            let mut source = m.mesh.clone();
+            for p in source.positions.chunks_exact_mut(3) {
+                let t = ((p[1] - min_y) / span).clamp(0.0, 1.0);
+                p[0] += push * t * t;
+            }
+            let Ok(mut cm) = AuroraMesh::clustered(&build_mesh(&source, [0.0; 3])) else {
+                eprintln!("  {file_stem}: bake failed");
+                return false;
+            };
+            if is_cutmask && let Some(mat) = material {
+                let _ = attach_omm(&mut cm, obj_dir, mat, &omm);
+            }
+            let w = BufWriter::new(File::create(&file).expect("create .aurora_mesh"));
+            write_aurora_mesh(&cm, w).expect("write .aurora_mesh");
+            true
+        };
+        let rest = format!("{stem}_{i}_scatter");
+        if !bake(&rest, 0.0) {
+            continue;
+        }
+        let poses = if animscale > 0.0 {
+            (0..WIND_POSES)
+                .map(|k| {
+                    let phase = k as f32 / WIND_POSES as f32 * std::f32::consts::TAU;
+                    let pose = format!("{stem}_{i}_pose{k:02}");
+                    bake(&pose, lean * (0.6 + 0.4 * phase.sin()));
+                    pose
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut fields = material_fields(&args.asset_prefix, material, is_cutmask, &[]);
+        // Leaf cards pass light through: lit from behind when you look sunward. What WoW sways is
+        // foliage; rocks (no Animscale) stay opaque.
+        if is_cutmask && animscale > 0.0 {
+            fields.push(("diffuse_transmission", Value::Float(FOLIAGE_TRANSMISSION)));
+        }
+        parts.push(SpeciesPart {
+            rest,
+            poses,
+            material_fields: fields,
+        });
     }
-    components.push(bsn::material(sub.material_fields.clone()));
-    Entity {
-        components,
-        children: Vec::new(),
-    }
+    parts
+}
+
+/// FNV-1a: a plant's scatter seed, stable across imports.
+fn fnv(name: &str) -> u32 {
+    name.bytes()
+        .fold(0x811c_9dc5u32, |h, b| (h ^ b as u32).wrapping_mul(0x0100_0193))
 }
 
 /// A point light entity: a glow card's halo as illumination.
@@ -758,7 +909,7 @@ struct PaletteBuilder {
 }
 
 impl PaletteBuilder {
-    /// The map-relative file name of a palette entry (the key `clutter.ron` uses).
+    /// The map-relative file name of a palette entry (the key ground effects are gathered by).
     fn name(&self, index: u32) -> &str {
         &self.entries[index as usize].0
     }
@@ -789,21 +940,11 @@ impl PaletteBuilder {
         let dir = args.out_dir.join("map");
         for (name, src) in &self.entries {
             let dst = dir.join("tileset").join(name);
-            if !dst.exists() || !args.keep {
-                if let Err(err) = fs::copy(src, &dst) {
-                    eprintln!("palette: copy {} failed: {err}", src.display());
-                }
+            if let Err(err) = fs::copy(src, &dst) {
+                eprintln!("palette: copy {} failed: {err}", src.display());
             }
         }
-        let textures: Vec<String> = self.entries.iter().map(|(n, _)| n.clone()).collect();
-        let json = serde_json::json!({
-            // Texture repeats per subchunk cell edge (WoW ground textures tile ~every 4.2 yd).
-            "repeats": 8.0,
-            "textures": textures,
-        });
-        fs::write(dir.join("palette.json"), serde_json::to_string_pretty(&json).unwrap())
-            .expect("write palette.json");
-        println!("palette: {} textures -> {}", textures.len(), dir.join("palette.json").display());
+        println!("palette: {} textures -> {}", self.entries.len(), dir.join("tileset").display());
     }
 }
 
@@ -824,10 +965,9 @@ struct ChunkLayers {
     layers: Vec<LayerDef>,
 }
 
-/// Write one tile's editable terrain data: the 16-bit height grid (resampled from the ADT
-/// OBJ's vertices in OUR tile frame), the alphamap atlas (chunk pngs blitted into their
-/// cells), and the per-chunk layer table against the shared palette. Existing files are left
-/// alone unless `--replace` — they may carry in-game edits.
+/// Write one tile's terrain data: the 16-bit height grid (resampled from the ADT OBJ's
+/// vertices in OUR tile frame) and its splatmap (each chunk's four layers against the shared
+/// palette, weighted by its alpha png). Returns the height range the grid spans.
 fn emit_tile_map(
     args: &Args,
     map_dir: &Path,
@@ -835,12 +975,10 @@ fn emit_tile_map(
     ay: i32,
     palette: &mut PaletteBuilder,
     texture_effects: &mut BTreeMap<String, BTreeSet<u32>>,
-) {
+) -> Option<(f32, f32)> {
     let dir = args.out_dir.join("map");
     let stem = format!("{}_{ax}_{ay}", args.map);
     let height_path = dir.join(format!("{stem}_height.png"));
-    let alpha_path = dir.join(format!("{stem}_alpha.png"));
-    let layers_path = dir.join(format!("{stem}_layers.json"));
 
     // Layer tables always resolve against the palette (so the palette stays complete even
     // when this tile's files already exist).
@@ -867,16 +1005,11 @@ fn emit_tile_map(
         chunks.push(entry);
     }
 
-    let exists = height_path.exists() && alpha_path.exists() && layers_path.exists();
-    if exists && !!args.keep {
-        return;
-    }
-
     // Heights: nearest ADT vertex per grid point, through a spatial hash of the OBJ verts.
     let obj_path = map_dir.join(format!("adt_{ax}_{ay}.obj"));
     let Some((models, _)) = load_obj(&obj_path) else {
         eprintln!("tile {ax},{ay}: no terrain obj; map data skipped");
-        return;
+        return None;
     };
     let mut verts: Vec<[f32; 3]> = Vec::new();
     for m in &models {
@@ -957,25 +1090,185 @@ fn emit_tile_map(
     // texels together; the chunk table mirrors both col and row to match. A one-axis flip
     // left z mirrored → swapped textures and broken N–S tile seams.
     let atlas = image::imageops::rotate180(&atlas);
-    atlas.save(&alpha_path).expect("write alpha png");
     let chunks: Vec<[u32; 4]> = (0..256usize)
         .map(|i| chunks[(15 - i / 16) * 16 + (15 - i % 16)])
         .collect();
 
-    let json = serde_json::json!({
-        "height_min": hmin,
-        "height_max": hmax,
-        "resolution": HEIGHT_RES,
-        "chunks": chunks,
-    });
-    fs::write(&layers_path, serde_json::to_string(&json).unwrap()).expect("write layers json");
+    // Splatmap: per texel its chunk's layers, weighted as WoW blends them (each alpha
+    // channel lays its layer over the ones below).
+    let mut ids = image::RgbaImage::new(ALPHA_ATLAS, ALPHA_ATLAS);
+    let mut weights = image::RgbaImage::new(ALPHA_ATLAS, ALPHA_ATLAS);
+    for (x, z, alpha) in atlas.enumerate_pixels() {
+        let layers = chunks[((z / ALPHA_CELL) * 16 + x / ALPHA_CELL) as usize];
+        let [r, g, b, _] = alpha.0.map(|c| c as f32 / 255.0);
+        let w = [
+            (1.0 - r) * (1.0 - g) * (1.0 - b),
+            r * (1.0 - g) * (1.0 - b),
+            g * (1.0 - b),
+            b,
+        ];
+        let mut id = [0u8; 4];
+        let mut weight = [0u8; 4];
+        for slot in 0..4 {
+            if layers[slot] != NO_LAYER {
+                id[slot] = layers[slot] as u8;
+                weight[slot] = (w[slot] * 255.0).round() as u8;
+            }
+        }
+        ids.put_pixel(x, z, image::Rgba(id));
+        weights.put_pixel(x, z, image::Rgba(weight));
+    }
+    ids.save(dir.join(format!("{stem}_splat_ids.png"))).expect("write splat ids png");
+    weights.save(dir.join(format!("{stem}_splat_weights.png"))).expect("write splat weights png");
     println!("tile {ax},{ay}: map data -> {}", height_path.display());
+    Some((hmin, hmin + span))
+}
+
+/// A palette entry's material name: the tileset texture's stem (`elwynn_elwynngrassbase`).
+fn material_name(texture: &str) -> String {
+    let stem = texture.trim_end_matches(".png");
+    stem.strip_suffix("_s").unwrap_or(stem).to_string()
+}
+
+/// A tileset texture's footstep samples, guessed once from the words in its name (zero's
+/// `audio/footsteps/footstep_<set>_<nnn>.ogg`); edit them per material in the scene after.
+fn footstep_samples(texture: &str) -> Vec<String> {
+    let name = texture.to_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| name.contains(w));
+    let set = if has(&["cobble", "road", "rock", "stone", "brick", "black", "lava"]) {
+        "concrete"
+    } else if has(&["snow", "ice"]) {
+        "snow"
+    } else {
+        "grass"
+    };
+    (0..5).map(|i| format!("audio/footsteps/footstep_{set}_{i:03}.ogg")).collect()
+}
+
+/// The zone's landscape (`<map>_zone.bsn`): the palette, then per tile one entity that is
+/// both its height layer and its splat layer, then an empty sculpt and paint layer on top.
+/// Texels are a 1024th of a tile, so the splatmaps land texel for texel.
+fn emit_zone(args: &Args, palette: &PaletteBuilder, tiles: &[((i32, i32), (f32, f32))]) {
+    let prefix = &args.asset_prefix;
+    let centre = ((args.x0 + args.x1) / 2, (args.y0 + args.y1) / 2);
+    let texel = TILE / ALPHA_ATLAS as f32;
+    let page = 256.0 * texel;
+    // Our frame mirrors wow's: one ADT east (+1 x) is -TILE in our x.
+    let min = [
+        ((centre.0 - args.x1) as f32 - 0.5) * TILE,
+        ((centre.1 - args.y1) as f32 - 0.5) * TILE,
+    ];
+    let max = [
+        ((centre.0 - args.x0) as f32 + 0.5) * TILE,
+        ((centre.1 - args.y0) as f32 + 0.5) * TILE,
+    ];
+    let ivec2 = |x: f32, y: f32| {
+        Value::Struct(
+            "glam::IVec2",
+            vec![("x", Value::Int(x as i64)), ("y", Value::Int(y as i64))],
+        )
+    };
+    let vec2 = |x: f32, y: f32| {
+        Value::Struct("glam::Vec2", vec![("x", Value::Float(x)), ("y", Value::Float(y))])
+    };
+    let materials = palette
+        .entries
+        .iter()
+        .map(|(name, _)| {
+            Value::Struct(
+                "aurora_landscape::shading::LandscapeMaterial",
+                vec![
+                    ("name", Value::Str(material_name(name))),
+                    (
+                        "albedo",
+                        Value::Tuple("Some", vec![Value::Str(format!("{prefix}/map/tileset/{name}"))]),
+                    ),
+                    ("normal", Value::Path("None")),
+                    ("tile_size", Value::Float(TILE / 16.0 / REPEATS)),
+                    ("roughness", Value::Float(1.0)),
+                    ("clearcoat", Value::Float(0.0)),
+                    (
+                        "footsteps",
+                        Value::List(footstep_samples(name).into_iter().map(Value::Str).collect()),
+                    ),
+                ],
+            )
+        })
+        .collect();
+    let root = vec![
+        bsn::name(&format!("{} zone", args.map)),
+        Value::Struct(
+            "aurora_landscape::Landscape",
+            vec![
+                ("pages_min", ivec2((min[0] / page).floor(), (min[1] / page).floor())),
+                ("pages_max", ivec2((max[0] / page).ceil(), (max[1] / page).ceil())),
+                ("texel_size", Value::Float(texel)),
+            ],
+        ),
+        Value::Tuple(
+            "aurora_landscape::shading::LandscapePalette",
+            vec![Value::List(materials)],
+        ),
+    ];
+    let mut children: Vec<Entity> = tiles
+        .iter()
+        .map(|&((ax, ay), (hmin, hmax))| {
+            let stem = format!("{}_{ax}_{ay}", args.map);
+            Entity {
+                components: vec![
+                    bsn::name(&format!("tile {ax},{ay}")),
+                    bsn::transform(
+                        [(centre.0 - ax) as f32 * TILE, 0.0, (centre.1 - ay) as f32 * TILE],
+                        None,
+                        None,
+                    ),
+                    Value::Struct(
+                        "aurora_landscape::layer::HeightmapLayer",
+                        vec![
+                            ("image", Value::Str(format!("{prefix}/map/{stem}_height.png"))),
+                            ("size", vec2(TILE, TILE)),
+                            ("height_min", Value::Float(hmin)),
+                            ("height_max", Value::Float(hmax)),
+                        ],
+                    ),
+                    Value::Struct(
+                        "aurora_landscape::layer::SplatmapLayer",
+                        vec![
+                            ("ids", Value::Str(format!("{prefix}/map/{stem}_splat_ids.png"))),
+                            ("weights", Value::Str(format!("{prefix}/map/{stem}_splat_weights.png"))),
+                            ("size", vec2(TILE, TILE)),
+                        ],
+                    ),
+                ],
+                children: Vec::new(),
+            }
+        })
+        .collect();
+    children.push(Entity {
+        components: vec![bsn::name("Sculpt"), Value::Path("aurora_landscape::layer::SculptLayer")],
+        children: Vec::new(),
+    });
+    children.push(Entity {
+        components: vec![bsn::name("Paint"), Value::Path("aurora_landscape::layer::PaintLayer")],
+        children: Vec::new(),
+    });
+    // The ground clutter's species, regenerated every import (this zone is not).
+    children.push(Entity {
+        components: vec![
+            bsn::name("Clutter"),
+            bsn::scene_ref(&format!("{prefix}/{}_clutter.bsn", args.map)),
+        ],
+        children: Vec::new(),
+    });
+    let path = args.out_dir.join(format!("{}_zone.bsn", args.map));
+    fs::write(&path, scene(&format!("{}_zone", args.map), root, children)).expect("write zone .bsn");
+    println!("zone: {} tiles -> {}", tiles.len(), path.display());
 }
 
 // ---- model baking ---------------------------------------------------------------------------
 
-/// Bake every submesh of one model OBJ into the shared `meshes/` dir (skipping ones already on
-/// disk unless `--replace`), copy its textures, and return the per-submesh instance records.
+/// Bake every submesh of one model OBJ into the shared `meshes/` dir (once per run), copy its
+/// textures, and return the per-submesh instance records.
 fn bake_model(
     args: &Args,
     obj_path: &Path,
@@ -1011,7 +1304,8 @@ fn bake_model(
             .out_dir
             .join("meshes")
             .join(format!("{mesh_stem}.aurora_mesh"));
-        if !args.keep || !mesh_file.exists() {
+        // The output dir starts empty, so an existing file was baked earlier this run.
+        if !mesh_file.exists() {
             let mesh = build_mesh(&m.mesh, centroid);
             let mut cm = match AuroraMesh::clustered(&mesh) {
                 Ok(cm) => cm,
@@ -1045,7 +1339,15 @@ fn bake_model(
                 }
                 None => material_fields(&args.asset_prefix, material, is_cutmask, &[]),
             },
-            None => material_fields(&args.asset_prefix, material, is_cutmask, &[]),
+            None => {
+                let mut fields = material_fields(&args.asset_prefix, material, is_cutmask, &[]);
+                // A doodad's leaf cards (tree canopies, bushes) pass light through like the
+                // clutter's; other cutouts (WMO windows, tombstones, tents, lanterns) do not.
+                if is_cutmask && is_foliage(rel) {
+                    fields.push(("diffuse_transmission", Value::Float(FOLIAGE_TRANSMISSION)));
+                }
+                fields
+            }
         };
         out.push(BakedSubmesh {
             material_fields: fields,
@@ -1099,7 +1401,7 @@ impl CollisionMesh {
 /// Bakes a model's collision to `meshes/<stem>.collider` and returns the stem, or `None`
 /// when WoW gives the model none (most bushes, all glow cards). An M2 collides with the
 /// collision mesh wow.export writes beside it (`<model>.phys.obj`: a tree is its trunk, not
-/// its leaf cards); a WMO with the render triangles its json marks collidable.
+/// its leaf cards); a WMO with its `.phys.obj` (BSP faces), else all its render triangles.
 fn bake_collider(args: &Args, obj_path: &Path, rel: &str) -> Option<String> {
     let stem = sanitize(rel.trim_end_matches(".obj").trim_start_matches("world/"));
     let file = args.out_dir.join("meshes").join(format!("{stem}.collider"));
@@ -1116,28 +1418,19 @@ fn bake_collider(args: &Args, obj_path: &Path, rel: &str) -> Option<String> {
                 collision.extend(&m.mesh, |_| true);
             }
         }
-        "wmo" => {
-            let (models, _) = load_obj(obj_path)?;
-            // OBJ group `<GroupName><batch>` -> that batch's triangles' MOPY flags.
-            let mut flags: HashMap<String, Vec<u64>> = HashMap::new();
-            for group in json["groups"].as_array()? {
-                let Some(name) = group["groupName"].as_str() else { continue };
-                let info = group["materialInfo"].as_array();
-                for (batch, b) in group["renderBatches"].as_array().into_iter().flatten().enumerate() {
-                    let first = b["firstFace"].as_u64().unwrap_or(0) as usize / 3;
-                    let count = b["numFaces"].as_u64().unwrap_or(0) as usize / 3;
-                    let batch_flags = (first..first + count)
-                        .map(|t| info.and_then(|i| i.get(t)).and_then(|m| m["flags"].as_u64()).unwrap_or(0x20))
-                        .collect();
-                    flags.entry(format!("{name}{batch}")).or_insert(batch_flags);
-                }
+        // wow.export (local fork) writes a WMO's BSP faces -- what the client collides with,
+        // collision-only ramps and caps included -- as `<wmo>.phys.obj` too.
+        "wmo" if obj_path.with_extension("phys.obj").exists() => {
+            for m in load_obj(&obj_path.with_extension("phys.obj"))?.0 {
+                collision.extend(&m.mesh, |_| true);
             }
-            for m in &models {
-                // MOPY: 0x08 collision, 0x20 render, 0x04 detail (render-only trim).
-                let batch = flags.get(&m.name).filter(|f| f.len() == m.mesh.indices.len() / 3);
-                collision.extend(&m.mesh, |t| {
-                    batch.is_none_or(|f| f[t] & 0x08 != 0 || (f[t] & 0x20 != 0 && f[t] & 0x04 == 0))
-                });
+        }
+        // An older dump: every render triangle, as core did. Detail geometry (steps, floor
+        // trim) has to stay -- the collision-only ramps and caps that replace it in the client
+        // are not in the OBJ.
+        "wmo" => {
+            for m in load_obj(obj_path)?.0 {
+                collision.extend(&m.mesh, |_| true);
             }
         }
         _ => return None,
@@ -1145,9 +1438,7 @@ fn bake_collider(args: &Args, obj_path: &Path, rel: &str) -> Option<String> {
     if collision.indices.is_empty() {
         return None;
     }
-    if !args.keep || !file.exists() {
-        collision.write(&file);
-    }
+    collision.write(&file);
     Some(stem)
 }
 

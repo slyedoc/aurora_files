@@ -27,13 +27,11 @@ struct Args {
     /// `Cutout.bsn`. Optional value is the diffuse texture stem to match (default `FL11pet3`).
     #[arg(long, num_args = 0..=1, default_missing_value = DEFAULT_CUTOUT_TEX)]
     cutout_only: Option<String>,
-    /// Reuse meshes and files that already exist instead of re-baking them.
-    #[arg(long)]
-    keep: bool,
 }
 
 fn main() {
     let args = Args::parse();
+    aurora_bsn::clean_dir(&args.out_dir);
 
     let (scene_name, submesh_filter): (&str, Option<SubmeshFilter>) = if args.floor_only {
         // `starts_with` (not `contains`) so the two real floors (`piso_rustico`,
@@ -65,7 +63,6 @@ fn main() {
         submesh_filter,
         // Share geometry across the courtyard's repeated props (chairs, plates, colonnade).
         dedup: true,
-        replace: !args.keep,
     };
     bake_scene(&cfg);
 }

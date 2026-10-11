@@ -42,15 +42,12 @@ struct Args {
     /// Output asset directory.
     #[arg(long, default_value = "assets/kenney")]
     out: PathBuf,
-    /// Reuse meshes and files that already exist instead of re-baking them.
-    #[arg(long)]
-    keep: bool,
 }
 
 fn main() {
     let args = Args::parse();
+    aurora_bsn::clean_dir(&args.out);
     let mut baked = 0;
-    let mut skipped = 0;
     for kit in KITS {
         let src = args.raw.join(kit);
         if !src.is_dir() {
@@ -71,10 +68,6 @@ fn main() {
         for glb in glbs {
             let stem = glb.file_stem().unwrap().to_string_lossy().to_string();
             let out = meshes_dir.join(format!("{stem}.aurora_mesh"));
-            if out.exists() && !!args.keep {
-                skipped += 1;
-                continue;
-            }
             match bake(&glb) {
                 Some(data) => {
                     let w = BufWriter::new(File::create(&out).expect("create .aurora_mesh"));
@@ -97,7 +90,7 @@ fn main() {
         }
     }
     println!(
-        "kenney: {baked} props baked, {skipped} already present -> {}",
+        "kenney: {baked} props baked -> {}",
         args.out.display()
     );
 }

@@ -15,6 +15,7 @@ name = "kenney_import"
 path = "src/main.rs"
 
 [dependencies]
+aurora_bsn = { path = "../../crates/aurora_bsn" }
 aurora_mesh.workspace = true
 bevy.workspace = true
 clap.workspace = true

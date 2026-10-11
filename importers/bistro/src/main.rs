@@ -1,7 +1,8 @@
 //! Bistro importer: bake the Amazon Lumberyard Bistro glTF to `.aurora_mesh` + a `.bsn`.
 //!
 //! Uses the PNG-textured `Bistro.glb`. Geometry + textures + alpha-mode + glass transmission are
-//! imported; OMM baking and scalar/colour material factors are TODO (see `aurora_bsn::gltf`).
+//! imported; `kits/bistro.fixups.ron` moves the lamps' emission from their shades and glass onto
+//! their bulbs and filaments.
 //!
 //!   cargo run --release -p bistro_import -- raw/Bistro/Bistro.glb assets/bistro bistro
 
@@ -20,9 +21,6 @@ struct Args {
     /// Asset-server-relative prefix the `.bsn` uses to reference meshes/textures.
     #[arg(default_value = "bistro")]
     asset_prefix: String,
-    /// Reuse meshes and files that already exist instead of re-baking them.
-    #[arg(long)]
-    keep: bool,
 }
 
 /// Bistro emitters ship no `KHR_materials_emissive_strength`; assign physical nits by material name
@@ -42,6 +40,7 @@ fn emissive_nits_default(name: &str) -> f32 {
 
 fn main() {
     let args = Args::parse();
+    aurora_bsn::clean_dir(&args.out_dir);
 
     let cfg = GltfConfig {
         gltf_path: args.gltf,
@@ -49,8 +48,9 @@ fn main() {
         asset_prefix: args.asset_prefix,
         // Lowercase so the output is `bistro.bsn` (the path the bevy bistro example loads).
         scene_name: "bistro".to_string(),
-        replace: !args.keep,
         emissive_nits: Some(emissive_nits_default),
+        fixups: ron::from_str(include_str!("../../../kits/bistro.fixups.ron"))
+            .expect("parse kits/bistro.fixups.ron"),
         ..Default::default()
     };
     bake_gltf_scene(&cfg);

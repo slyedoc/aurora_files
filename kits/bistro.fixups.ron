@@ -1,0 +1,20 @@
+// Bistro's export lit the wall lights' shade rather than their bulb: Mesh.2121-2127 are a
+// 37 x 55 shade (`Paris_Wall_Light_Interior`, emissive) around a 5 x 5.5 bulb
+// (`Paris_Wall_Bulb_Light`, not). Moved here: the shade emits nothing (the path tracer lights it
+// from the bulb inside) and the bulb emits -- ~1e5 nits, a frosted bulb's, in the warm tint of
+// the file's own `Lightbulb` material, since it is a fraction of the shade's area.
+//
+// The other glass emitters stay as exported, checked by geometry, not names: a street lantern's
+// glowing sphere IS `Emissive_StreetLight` (`LanternEmissive` is its chain and rod), the posts'
+// glass has no bulb inside at all, and a spotlight's `Spotlight_Glass_Emissive` is an opaque lens
+// quad in front of its `Spotlight_Emissive` slab -- light moved behind it could not get out.
+(
+    emissive: {
+        "Paris_Wall_Light_Interior": None,
+        "Paris_Wall_Bulb_Light": Some((150000.0, 116300.0, 87450.0)),
+    },
+    // The shade passes half the bulb's light through, so it glows from inside.
+    diffuse_transmission: {
+        "Paris_Wall_Light_Interior": 0.5,
+    },
+)

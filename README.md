@@ -25,7 +25,7 @@ as a PNG-textured `.glb`/`.gltf`, then:
 cargo run --release -p bistro_import -- raw/Bistro/Bistro.glb assets/bistro bistro
 ```
 
-Every run re-bakes its meshes and files; pass `--keep` to reuse what already exists. San Miguel also has `--floor-only` and
+Every run cleans its output dir and re-bakes everything (no partial reuse). San Miguel also has `--floor-only` and
 `--cutout-only` to emit a minimal single-object scene, and `--erode <px>` to tune the OMM cutout
 mask. Run an importer with `--help` for all options.
 
@@ -84,7 +84,7 @@ cargo run --release -p speedtree_import -- raw/SpeedTree_v2/_glb assets/speedtre
 
 Foliage is classified from the base-color alpha histogram (not the glTF alpha mode), so leaf/frond
 materials get `AlphaMode::Mask` + a 2-state OMM (100% known → zero any-hit on leaves) while bark/caps
-stay opaque. `--keep` reuses baked meshes, `--scale`/`--erode`/`--level` tune size/OMM. FBX author
+stay opaque. `--scale`/`--erode`/`--level` tune size/OMM. FBX author
 units are cm; the baked entities carry a 0.01 scale so trees land metric (White Oak ≈ 7.6 m).
 
 

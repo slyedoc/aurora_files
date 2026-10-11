@@ -22,9 +22,6 @@ struct Args {
     /// Asset-relative dir holding `g1_links.json` + the link glbs (outputs land here too).
     #[arg(default_value = "ai/motionbricks/g1")]
     prefix: String,
-    /// Reuse meshes and files that already exist instead of re-baking them.
-    #[arg(long)]
-    keep: bool,
 }
 
 #[derive(Deserialize)]
@@ -52,7 +49,9 @@ fn main() {
     )
     .expect("parse g1_links.json");
 
+    // The link glbs and their manifest live in `dir` too: only the baked meshes are ours.
     let meshes_dir = dir.join("meshes");
+    aurora_bsn::clean_dir(&meshes_dir);
     let mut baked = 0usize;
     let mut children = Vec::new();
 
@@ -64,7 +63,7 @@ fn main() {
                 .to_string_lossy()
                 .into_owned();
             let out = meshes_dir.join(format!("{stem}.aurora_mesh"));
-            match bake_glb_primitive(&args.assets_root.join(&geom.glb), &out, !args.keep) {
+            match bake_glb_primitive(&args.assets_root.join(&geom.glb), &out) {
                 Ok(true) => baked += 1,
                 Ok(false) => {}
                 Err(e) => panic!("bake {stem}: {e}"),

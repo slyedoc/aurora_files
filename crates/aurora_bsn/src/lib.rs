@@ -59,12 +59,22 @@ pub struct SceneConfig {
     /// colonnade) instead of baking each submesh's geometry separately. Confirmed copies are placed
     /// by a recovered `Transform`; see the dedup pass in [`bake_scene`].
     pub dedup: bool,
-    /// Re-bake `.aurora_mesh` files even when they already exist (overwrite). When `false`, an
-    /// existing mesh file is left as-is and only the `.bsn` is re-emitted.
-    pub replace: bool,
 }
 
 type V3 = dedup::V3;
+
+/// Delete a generated output directory before a bake, so nothing from an earlier run (or an
+/// earlier export of the source) survives into this one. Refuses an `assets` root or anything
+/// holding a `.git`: a mistyped output path must not take a repo with it.
+pub fn clean_dir(dir: &std::path::Path) {
+    if !dir.exists() {
+        return;
+    }
+    let is_root = dir.file_name().is_none_or(|n| n == "assets") || dir.join(".git").exists();
+    assert!(!is_root, "refusing to clean {}: not a generated output dir", dir.display());
+    println!("cleaning {}", dir.display());
+    fs::remove_dir_all(dir).unwrap_or_else(|e| panic!("clean {}: {e}", dir.display()));
+}
 
 /// Bake the scene described by `cfg`: copy + normalize textures, bake each submesh's
 /// `.aurora_mesh`, and write the `.bsn`.
@@ -223,9 +233,6 @@ pub fn bake_scene(cfg: &SceneConfig) {
             "{}_{i}.aurora_mesh",
             discovery::sanitize(&models[i].name)
         ));
-        if mesh_file.exists() && !cfg.replace {
-            continue; // re-runs only re-emit the `.bsn` (use `replace` to overwrite)
-        }
         let m = mesh::build_mesh(&models[i].mesh, centroid);
         match AuroraMesh::clustered(&m) {
             Ok(mut cm) => {

@@ -521,7 +521,6 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 [[package]]
 name = "avian3d"
 version = "0.8.0-dev"
-source = "git+https://github.com/slyedoc/avian?branch=aurora#31c41bf3e418aa7d563292e3012b5819e17d99e6"
 dependencies = [
  "approx",
  "avian_derive",
@@ -545,7 +544,6 @@ dependencies = [
 [[package]]
 name = "avian_derive"
 version = "0.2.3"
-source = "git+https://github.com/slyedoc/avian?branch=aurora#31c41bf3e418aa7d563292e3012b5819e17d99e6"
 dependencies = [
  "proc-macro-error3",
  "proc-macro2",
@@ -1176,9 +1174,11 @@ dependencies = [
  "bevy_input",
  "bevy_input_focus",
  "bevy_log",
+ "bevy_math",
  "bevy_platform",
  "bevy_reflect",
  "bevy_scene",
+ "bevy_text",
  "bevy_ui",
  "bevy_ui_widgets",
 ]
@@ -2105,6 +2105,7 @@ version = "0.1.0"
 dependencies = [
  "aurora_bsn",
  "clap",
+ "ron 0.10.1",
 ]
 
 [[package]]
@@ -3983,6 +3984,7 @@ dependencies = [
 name = "kenney_import"
 version = "0.1.0"
 dependencies = [
+ "aurora_bsn",
  "aurora_mesh",
  "bevy",
  "clap",

@@ -23,9 +23,6 @@ struct Args {
     /// Asset-server-relative prefix the `.bsn` uses to reference meshes.
     #[arg(default_value = "hoverboard")]
     asset_prefix: String,
-    /// Reuse meshes and files that already exist instead of re-baking them.
-    #[arg(long)]
-    keep: bool,
 }
 
 /// Fallback emitter radiance in NITS, keyed on material name. The exporter splits each neon's
@@ -51,13 +48,13 @@ fn emissive_nits(material: &str) -> f32 {
 
 fn main() {
     let args = Args::parse();
+    aurora_bsn::clean_dir(&args.out_dir);
 
     let cfg = GltfConfig {
         gltf_path: args.glb,
         out_dir: args.out_dir,
         asset_prefix: args.asset_prefix,
         scene_name: "hoverboard".to_string(),
-        replace: !args.keep,
         emissive_nits: Some(emissive_nits),
         ..Default::default()
     };
