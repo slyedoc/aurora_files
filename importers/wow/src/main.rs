@@ -132,7 +132,10 @@ struct Args {
     asset_prefix: String,
     /// The community listfile (`<file id>;<path>` per line): resolves GroundEffectDoodad
     /// model ids to plant model names.
-    #[arg(long, default_value = "/home/slyedoc/code/p/core/assets/terrain/dbc/listfile.csv")]
+    #[arg(
+        long,
+        default_value = "/home/slyedoc/code/p/core/assets/terrain/dbc/listfile.csv"
+    )]
     listfile: PathBuf,
     /// Radiance (nits) of additive-blended materials: a glow card's visible core (the flame).
     /// The light a lamp gives is its point light's (`lamp_lumens`), so this only has to read.
@@ -180,7 +183,11 @@ fn model_emissives(args: &Args, obj_path: &Path, models: &[tobj::Model]) -> Vec<
     }
 }
 
-fn m2_emissives(args: &Args, json: &serde_json::Value, models: &[tobj::Model]) -> Vec<Option<Emissive>> {
+fn m2_emissives(
+    args: &Args,
+    json: &serde_json::Value,
+    models: &[tobj::Model],
+) -> Vec<Option<Emissive>> {
     let materials = json["materials"].as_array();
     let units = json["skin"]["textureUnits"].as_array();
     let (Some(materials), Some(units)) = (materials, units) else {
@@ -201,14 +208,22 @@ fn m2_emissives(args: &Args, json: &serde_json::Value, models: &[tobj::Model]) -
             let additive = matches!(blend, 3 | 4 | 7);
             (unlit || additive).then_some(Emissive {
                 tint: [1.0; 3],
-                nits: if additive { args.emissive_nits } else { args.unlit_nits },
+                nits: if additive {
+                    args.emissive_nits
+                } else {
+                    args.unlit_nits
+                },
                 additive,
             })
         })
         .collect()
 }
 
-fn wmo_emissives(args: &Args, json: &serde_json::Value, models: &[tobj::Model]) -> Vec<Option<Emissive>> {
+fn wmo_emissives(
+    args: &Args,
+    json: &serde_json::Value,
+    models: &[tobj::Model],
+) -> Vec<Option<Emissive>> {
     let (Some(materials), Some(groups)) = (json["materials"].as_array(), json["groups"].as_array())
     else {
         return vec![None; models.len()];
@@ -216,10 +231,19 @@ fn wmo_emissives(args: &Args, json: &serde_json::Value, models: &[tobj::Model]) 
     // OBJ group `<GroupName><batch>` -> WMO material id, from each group's render batches.
     let mut by_name: HashMap<String, usize> = HashMap::new();
     for group in groups {
-        let Some(name) = group["groupName"].as_str() else { continue };
-        for (batch, info) in group["renderBatches"].as_array().into_iter().flatten().enumerate() {
+        let Some(name) = group["groupName"].as_str() else {
+            continue;
+        };
+        for (batch, info) in group["renderBatches"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
             if let Some(id) = info["materialID"].as_u64() {
-                by_name.entry(format!("{name}{batch}")).or_insert(id as usize);
+                by_name
+                    .entry(format!("{name}{batch}"))
+                    .or_insert(id as usize);
             }
         }
     }
@@ -279,7 +303,9 @@ fn emissive_fields(
     let (card, mean) = if let Some(&d) = derived.get(&stem) {
         d
     } else {
-        let img = image::open(obj_dir.join(tex.replace('\\', "/"))).ok()?.into_rgba8();
+        let img = image::open(obj_dir.join(tex.replace('\\', "/")))
+            .ok()?
+            .into_rgba8();
         // A card keeps its shape in alpha; a fullbright texture is opaque throughout.
         let card = img.pixels().any(|p| p.0[3] < 128);
         let lin = |v: u8| srgb_to_linear(v as f32 / 255.0);
@@ -296,7 +322,11 @@ fn emissive_fields(
             for c in 0..3 {
                 sum[c] += rgb[c] as f64;
             }
-            glow.put_pixel(x, y, image::Rgba([enc(rgb[0]), enc(rgb[1]), enc(rgb[2]), 255]));
+            glow.put_pixel(
+                x,
+                y,
+                image::Rgba([enc(rgb[0]), enc(rgb[1]), enc(rgb[2]), 255]),
+            );
         }
         glow.save(textures_dir.join(&glow_name)).ok()?;
         let n = (img.width() * img.height()).max(1) as f64;
@@ -315,7 +345,10 @@ fn emissive_fields(
     let mut fields = if card {
         // The card's core only: a black cutout that emits; the halo is the point light's.
         vec![
-            ("base_color_texture", Value::Str(format!("{prefix}/textures/{card_name}"))),
+            (
+                "base_color_texture",
+                Value::Str(format!("{prefix}/textures/{card_name}")),
+            ),
             ("alpha_mode", bsn::alpha_mask(0.5)),
         ]
     } else {
@@ -323,7 +356,10 @@ fn emissive_fields(
     };
     let [r, g, b] = emissive.tint.map(|t| t * emissive.nits);
     fields.push(("emissive", bsn::linear_rgba([r, g, b, 1.0])));
-    fields.push(("emissive_texture", Value::Str(format!("{prefix}/textures/{glow_name}"))));
+    fields.push((
+        "emissive_texture",
+        Value::Str(format!("{prefix}/textures/{glow_name}")),
+    ));
     Some((fields, card, mean))
 }
 
@@ -404,7 +440,11 @@ fn main() {
     for ay in args.y0..=args.y1 {
         for ax in args.x0..=args.x1 {
             let (placements, wmos) = parse_tile_placements(&map_dir, &args.wow_root, ax, ay);
-            println!("tile {ax},{ay}: {} placements, {} wmos", placements.len(), wmos.len());
+            println!(
+                "tile {ax},{ay}: {} placements, {} wmos",
+                placements.len(),
+                wmos.len()
+            );
             tile_placements.insert((ax, ay), placements);
             all_wmos.extend(wmos);
         }
@@ -431,7 +471,11 @@ fn main() {
             tile.extend(placements);
         }
     }
-    println!("{} interior doodads from {} unique WMOs", interior_count, all_wmos.len());
+    println!(
+        "{} interior doodads from {} unique WMOs",
+        interior_count,
+        all_wmos.len()
+    );
 
     // Pass 2 — bake each unique model once (shared meshes/textures, instanced from the tiles).
     let unique_models: HashSet<String> = tile_placements
@@ -451,7 +495,11 @@ fn main() {
             rel,
             &textures_dir,
             &mut cutmask_cache,
-            &if is_foliage(rel) { FOLIAGE_OMM } else { OmmOptions::from_env() },
+            &if is_foliage(rel) {
+                FOLIAGE_OMM
+            } else {
+                OmmOptions::from_env()
+            },
             &mut derived,
         );
         baked_models.insert(rel.clone(), submeshes);
@@ -459,7 +507,11 @@ fn main() {
             colliders.insert(rel.clone(), stem);
         }
     }
-    println!("{} of {} models collide", colliders.len(), unique_models.len());
+    println!(
+        "{} of {} models collide",
+        colliders.len(),
+        unique_models.len()
+    );
 
     // Each model is a `.bsn` of its own (its submeshes at their centroids, its collision
     // body), so a placement is one instance: the editor selects the tree, not one of its
@@ -500,7 +552,10 @@ fn main() {
         }
         let path = args.out_dir.join("models").join(format!("{stem}.bsn"));
         fs::write(&path, scene(&stem, Vec::new(), parts)).expect("write model .bsn");
-        model_scenes.insert(rel.clone(), format!("{}/models/{stem}.bsn", args.asset_prefix));
+        model_scenes.insert(
+            rel.clone(),
+            format!("{}/models/{stem}.bsn", args.asset_prefix),
+        );
     }
 
     // Pass 3 — write each tile's `.bsn` (doodads/WMOs only) and its terrain map data.
@@ -556,13 +611,22 @@ fn main() {
             bsn_path.display()
         );
 
-        if let Some(range) = emit_tile_map(&args, &map_dir, ax, ay, &mut palette, &mut texture_effects) {
+        if let Some(range) =
+            emit_tile_map(&args, &map_dir, ax, ay, &mut palette, &mut texture_effects)
+        {
             zone_tiles.push(((ax, ay), range));
         }
     }
     palette.write(&args);
     emit_zone(&args, &palette, &zone_tiles);
-    emit_clutter(&args, &map_dir, &textures_dir, &palette, &texture_effects, &mut cutmask_cache);
+    emit_clutter(
+        &args,
+        &map_dir,
+        &textures_dir,
+        &palette,
+        &texture_effects,
+        &mut cutmask_cache,
+    );
     println!("done.");
 }
 
@@ -592,8 +656,12 @@ fn load_ground_effects(wow_root: &Path) -> HashMap<u32, GroundEffect> {
             continue;
         };
         let density = fields[1].trim().parse().unwrap_or(0);
-        let ids = fields[3].split(',').map(|s| s.trim().parse::<u32>().unwrap_or(0));
-        let weights = fields[4].split(',').map(|s| s.trim().parse::<f32>().unwrap_or(1.0));
+        let ids = fields[3]
+            .split(',')
+            .map(|s| s.trim().parse::<u32>().unwrap_or(0));
+        let weights = fields[4]
+            .split(',')
+            .map(|s| s.trim().parse::<f32>().unwrap_or(1.0));
         let doodads = ids
             .zip(weights.chain(std::iter::repeat(1.0)))
             .filter(|(id, _)| *id != 0)
@@ -619,7 +687,10 @@ fn load_ground_doodads(wow_root: &Path) -> HashMap<u32, (u32, f32)> {
             let id = it.next()?.trim().parse::<u32>().ok()?;
             let file = it.next()?.trim().parse::<u32>().ok()?;
             let _flags = it.next();
-            let animscale = it.next().and_then(|s| s.trim().parse::<f32>().ok()).unwrap_or(1.0);
+            let animscale = it
+                .next()
+                .and_then(|s| s.trim().parse::<f32>().ok())
+                .unwrap_or(1.0);
             Some((id, (file, animscale)))
         })
         .collect()
@@ -676,14 +747,18 @@ fn emit_clutter(
         // table, some have no doodads): the densest with plants wins.
         let mut best: Option<(u32, BTreeMap<String, f32>)> = None;
         for effect_id in effect_ids {
-            let Some(effect) = effects.get(effect_id) else { continue };
+            let Some(effect) = effects.get(effect_id) else {
+                continue;
+            };
             if effect.density == 0 || effect.doodads.is_empty() {
                 continue;
             }
             // The same doodad may fill several of the four slots: sum its weights.
             let mut plants: BTreeMap<String, f32> = BTreeMap::new();
             for &(doodad, weight) in &effect.doodads {
-                let Some((file_id, animscale)) = doodads.get(&doodad) else { continue };
+                let Some((file_id, animscale)) = doodads.get(&doodad) else {
+                    continue;
+                };
                 let Some(path) = listfile.get(file_id) else {
                     eprintln!("clutter: doodad {doodad}: file id {file_id} not in the listfile");
                     continue;
@@ -696,7 +771,14 @@ fn emit_clutter(
                     continue;
                 }
                 let parts = baked.entry(name.clone()).or_insert_with(|| {
-                    bake_species_parts(args, map_dir, textures_dir, &name, *animscale, cutmask_cache)
+                    bake_species_parts(
+                        args,
+                        map_dir,
+                        textures_dir,
+                        &name,
+                        *animscale,
+                        cutmask_cache,
+                    )
                 });
                 if !parts.is_empty() {
                     *plants.entry(name).or_insert(0.0) += weight;
@@ -706,7 +788,9 @@ fn emit_clutter(
                 best = Some((effect.density, plants));
             }
         }
-        let Some((density, plants)) = best else { continue };
+        let Some((density, plants)) = best else {
+            continue;
+        };
         textures += 1;
         let total: f32 = plants.values().sum();
         for (name, weight) in plants {
@@ -761,6 +845,7 @@ fn emit_clutter(
                             ("sink", Value::Float(0.0)),
                             ("poses", Value::List(poses)),
                             ("wind_speed", Value::Float(0.35)),
+                            ("wind_shear", Value::Float(part.wind_shear)),
                             ("seed", Value::Int(fnv(name) as i64)),
                             (
                                 "density",
@@ -780,8 +865,11 @@ fn emit_clutter(
     }
     let path = args.out_dir.join(format!("{}_clutter.bsn", args.map));
     let count = species.len();
-    fs::write(&path, scene(&format!("{}_clutter", args.map), Vec::new(), species))
-        .expect("write clutter .bsn");
+    fs::write(
+        &path,
+        scene(&format!("{}_clutter", args.map), Vec::new(), species),
+    )
+    .expect("write clutter .bsn");
     println!(
         "clutter: {} plants on {textures} ground textures, {count} species -> {}",
         rates.len(),
@@ -823,8 +911,9 @@ fn is_foliage(rel: &str) -> bool {
 /// diffuse light passed to the far side, taken from the side it lands on (0.5 = a leaf's even
 /// split; 1.0 leaves the sunlit side black).
 const FOLIAGE_TRANSMISSION: f32 = 0.5;
-/// Baked wind poses per swaying part.
-const WIND_POSES: usize = 12;
+/// Baked wind poses per swaying part, at evenly spaced lean amounts; the scatter kernel picks
+/// the one under a plant's continuous lean and shears the rest of the way.
+const WIND_POSES: usize = 8;
 /// The wind the poses lean for (zero's default `Wind::speed`), m/s.
 const WIND_SPEED: f32 = 4.0;
 
@@ -832,13 +921,15 @@ const WIND_SPEED: f32 = 4.0;
 struct SpeciesPart {
     rest: String,
     poses: Vec<String>,
+    /// `ScatterSpecies::wind_shear`: the shear (x per y) that stands in for one pose step.
+    wind_shear: f32,
     material_fields: Vec<(&'static str, Value)>,
 }
 
 /// A plant's parts in plant space (the foliage OBJ's own origin, at the plant's base), with
 /// the opacity micromap baked into every mesh. Swaying parts get [`WIND_POSES`] lean poses:
 /// each vertex pushed along +X by its sway weight (height over the whole plant's, squared)
-/// times the lean, which swings around 0.6..1.0 of WoW's Animscale x 0.25 m at 10 m/s.
+/// times the lean, 0.2..1.0 of WoW's Animscale x 0.25 m at 10 m/s in even steps.
 fn bake_species_parts(
     args: &Args,
     map_dir: &Path,
@@ -849,7 +940,10 @@ fn bake_species_parts(
 ) -> Vec<SpeciesPart> {
     let obj_path = map_dir.join("foliage").join(format!("{name}.obj"));
     let Some((models, materials)) = load_obj(&obj_path) else {
-        eprintln!("clutter: {name}: no foliage export at {}", obj_path.display());
+        eprintln!(
+            "clutter: {name}: no foliage export at {}",
+            obj_path.display()
+        );
         return Vec::new();
     };
     copy_textures(&obj_path, &materials, &models, textures_dir);
@@ -878,7 +972,10 @@ fn bake_species_parts(
         let is_cutmask =
             material.is_some_and(|mat| material_is_cutmask(obj_dir, mat, cutmask_cache));
         let bake = |file_stem: &str, push: f32| -> bool {
-            let file = args.out_dir.join("meshes").join(format!("{file_stem}.aurora_mesh"));
+            let file = args
+                .out_dir
+                .join("meshes")
+                .join(format!("{file_stem}.aurora_mesh"));
             let mut source = m.mesh.clone();
             for p in source.positions.chunks_exact_mut(3) {
                 let t = ((p[1] - min_y) / span).clamp(0.0, 1.0);
@@ -899,17 +996,24 @@ fn bake_species_parts(
         if !bake(&rest, 0.0) {
             continue;
         }
+        let step = lean * 0.8 / (WIND_POSES - 1) as f32;
         let poses = if animscale > 0.0 {
             (0..WIND_POSES)
                 .map(|k| {
-                    let phase = k as f32 / WIND_POSES as f32 * std::f32::consts::TAU;
                     let pose = format!("{stem}_{i}_pose{k:02}");
-                    bake(&pose, lean * (0.6 + 0.4 * phase.sin()));
+                    bake(&pose, lean * 0.2 + step * k as f32);
                     pose
                 })
                 .collect()
         } else {
             Vec::new()
+        };
+        // One step's push is `step * t^2` (t = height over the span); the best straight shear
+        // through the base for t^2 on 0..1 is 0.75 t.
+        let wind_shear = if animscale > 0.0 {
+            step * 0.75 / span
+        } else {
+            0.0
         };
         let mut fields = material_fields(&args.asset_prefix, material, is_cutmask, &[]);
         // Leaf cards pass light through: lit from behind when you look sunward. What WoW sways is
@@ -920,6 +1024,7 @@ fn bake_species_parts(
         parts.push(SpeciesPart {
             rest,
             poses,
+            wind_shear,
             material_fields: fields,
         });
     }
@@ -928,8 +1033,9 @@ fn bake_species_parts(
 
 /// FNV-1a: a plant's scatter seed, stable across imports.
 fn fnv(name: &str) -> u32 {
-    name.bytes()
-        .fold(0x811c_9dc5u32, |h, b| (h ^ b as u32).wrapping_mul(0x0100_0193))
+    name.bytes().fold(0x811c_9dc5u32, |h, b| {
+        (h ^ b as u32).wrapping_mul(0x0100_0193)
+    })
 }
 
 /// A point light entity: a glow card's halo as illumination.
@@ -978,7 +1084,10 @@ impl PaletteBuilder {
         }
         let src = map_dir.join(&key);
         // Unique flat name: `<zone>_<stem>.png` (basenames collide across zones).
-        let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let stem = src
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let zone = src
             .parent()
             .and_then(|p| p.file_name())
@@ -999,7 +1108,11 @@ impl PaletteBuilder {
                 eprintln!("palette: copy {} failed: {err}", src.display());
             }
         }
-        println!("palette: {} textures -> {}", self.entries.len(), dir.join("tileset").display());
+        println!(
+            "palette: {} textures -> {}",
+            self.entries.len(),
+            dir.join("tileset").display()
+        );
     }
 }
 
@@ -1094,7 +1207,9 @@ fn emit_tile_map(
             let mut h = 0.0f32;
             for dz in -1..=1 {
                 for dx in -1..=1 {
-                    let Some(ids) = buckets.get(&(bx + dx, bz + dz)) else { continue };
+                    let Some(ids) = buckets.get(&(bx + dx, bz + dz)) else {
+                        continue;
+                    };
                     for &i in ids {
                         let v = verts[i as usize];
                         let d = (v[0] - x).powi(2) + (v[2] - z).powi(2);
@@ -1173,8 +1288,11 @@ fn emit_tile_map(
         ids.put_pixel(x, z, image::Rgba(id));
         weights.put_pixel(x, z, image::Rgba(weight));
     }
-    ids.save(dir.join(format!("{stem}_splat_ids.png"))).expect("write splat ids png");
-    weights.save(dir.join(format!("{stem}_splat_weights.png"))).expect("write splat weights png");
+    ids.save(dir.join(format!("{stem}_splat_ids.png")))
+        .expect("write splat ids png");
+    weights
+        .save(dir.join(format!("{stem}_splat_weights.png")))
+        .expect("write splat weights png");
     println!("tile {ax},{ay}: map data -> {}", height_path.display());
     Some((hmin, hmin + span))
 }
@@ -1197,7 +1315,9 @@ fn footstep_samples(texture: &str) -> Vec<String> {
     } else {
         "grass"
     };
-    (0..5).map(|i| format!("audio/footsteps/footstep_{set}_{i:03}.ogg")).collect()
+    (0..5)
+        .map(|i| format!("audio/footsteps/footstep_{set}_{i:03}.ogg"))
+        .collect()
 }
 
 /// The zone's landscape (`<map>_zone.bsn`): the palette, then per tile one entity that is
@@ -1224,7 +1344,10 @@ fn emit_zone(args: &Args, palette: &PaletteBuilder, tiles: &[((i32, i32), (f32, 
         )
     };
     let vec2 = |x: f32, y: f32| {
-        Value::Struct("glam::Vec2", vec![("x", Value::Float(x)), ("y", Value::Float(y))])
+        Value::Struct(
+            "glam::Vec2",
+            vec![("x", Value::Float(x)), ("y", Value::Float(y))],
+        )
     };
     let materials = palette
         .entries
@@ -1236,7 +1359,10 @@ fn emit_zone(args: &Args, palette: &PaletteBuilder, tiles: &[((i32, i32), (f32, 
                     ("name", Value::Str(material_name(name))),
                     (
                         "albedo",
-                        Value::Tuple("Some", vec![Value::Str(format!("{prefix}/map/tileset/{name}"))]),
+                        Value::Tuple(
+                            "Some",
+                            vec![Value::Str(format!("{prefix}/map/tileset/{name}"))],
+                        ),
                     ),
                     ("normal", Value::Path("None")),
                     ("tile_size", Value::Float(TILE / 16.0 / REPEATS)),
@@ -1255,8 +1381,14 @@ fn emit_zone(args: &Args, palette: &PaletteBuilder, tiles: &[((i32, i32), (f32, 
         Value::Struct(
             "aurora_landscape::Landscape",
             vec![
-                ("pages_min", ivec2((min[0] / page).floor(), (min[1] / page).floor())),
-                ("pages_max", ivec2((max[0] / page).ceil(), (max[1] / page).ceil())),
+                (
+                    "pages_min",
+                    ivec2((min[0] / page).floor(), (min[1] / page).floor()),
+                ),
+                (
+                    "pages_max",
+                    ivec2((max[0] / page).ceil(), (max[1] / page).ceil()),
+                ),
                 ("texel_size", Value::Float(texel)),
             ],
         ),
@@ -1273,14 +1405,21 @@ fn emit_zone(args: &Args, palette: &PaletteBuilder, tiles: &[((i32, i32), (f32, 
                 components: vec![
                     bsn::name(&format!("tile {ax},{ay}")),
                     bsn::transform(
-                        [(centre.0 - ax) as f32 * TILE, 0.0, (centre.1 - ay) as f32 * TILE],
+                        [
+                            (centre.0 - ax) as f32 * TILE,
+                            0.0,
+                            (centre.1 - ay) as f32 * TILE,
+                        ],
                         None,
                         None,
                     ),
                     Value::Struct(
                         "aurora_landscape::layer::HeightmapLayer",
                         vec![
-                            ("image", Value::Str(format!("{prefix}/map/{stem}_height.png"))),
+                            (
+                                "image",
+                                Value::Str(format!("{prefix}/map/{stem}_height.png")),
+                            ),
                             ("size", vec2(TILE, TILE)),
                             ("height_min", Value::Float(hmin)),
                             ("height_max", Value::Float(hmax)),
@@ -1289,8 +1428,14 @@ fn emit_zone(args: &Args, palette: &PaletteBuilder, tiles: &[((i32, i32), (f32, 
                     Value::Struct(
                         "aurora_landscape::layer::SplatmapLayer",
                         vec![
-                            ("ids", Value::Str(format!("{prefix}/map/{stem}_splat_ids.png"))),
-                            ("weights", Value::Str(format!("{prefix}/map/{stem}_splat_weights.png"))),
+                            (
+                                "ids",
+                                Value::Str(format!("{prefix}/map/{stem}_splat_ids.png")),
+                            ),
+                            (
+                                "weights",
+                                Value::Str(format!("{prefix}/map/{stem}_splat_weights.png")),
+                            ),
                             ("size", vec2(TILE, TILE)),
                         ],
                     ),
@@ -1300,11 +1445,17 @@ fn emit_zone(args: &Args, palette: &PaletteBuilder, tiles: &[((i32, i32), (f32, 
         })
         .collect();
     children.push(Entity {
-        components: vec![bsn::name("Sculpt"), Value::Path("aurora_landscape::layer::SculptLayer")],
+        components: vec![
+            bsn::name("Sculpt"),
+            Value::Path("aurora_landscape::layer::SculptLayer"),
+        ],
         children: Vec::new(),
     });
     children.push(Entity {
-        components: vec![bsn::name("Paint"), Value::Path("aurora_landscape::layer::PaintLayer")],
+        components: vec![
+            bsn::name("Paint"),
+            Value::Path("aurora_landscape::layer::PaintLayer"),
+        ],
         children: Vec::new(),
     });
     // The ground clutter's species, regenerated every import (this zone is not).
@@ -1316,7 +1467,8 @@ fn emit_zone(args: &Args, palette: &PaletteBuilder, tiles: &[((i32, i32), (f32, 
         children: Vec::new(),
     });
     let path = args.out_dir.join(format!("{}_zone.bsn", args.map));
-    fs::write(&path, scene(&format!("{}_zone", args.map), root, children)).expect("write zone .bsn");
+    fs::write(&path, scene(&format!("{}_zone", args.map), root, children))
+        .expect("write zone .bsn");
     println!("zone: {} tiles -> {}", tiles.len(), path.display());
 }
 
@@ -1372,14 +1524,23 @@ fn bake_model(
         let mut glow_light = None;
         let mut is_card = false;
         let fields = match &emissive {
-            Some(e) => match emissive_fields(args, obj_dir, textures_dir, material, is_cutmask, e, derived) {
+            Some(e) => match emissive_fields(
+                args,
+                obj_dir,
+                textures_dir,
+                material,
+                is_cutmask,
+                e,
+                derived,
+            ) {
                 Some((fields, card, mean)) => {
                     let area = submesh_area(&m.mesh);
                     let light = (lamp_color(mean), (area / PI).sqrt() * 0.5);
                     if card {
                         // A card's halo is its lamp's light (none for a fake light shaft).
                         is_card = true;
-                        glow_light = lamp_lumens(rel).map(|lm| (light.0, lm * args.light_scale, light.1));
+                        glow_light =
+                            lamp_lumens(rel).map(|lm| (light.0, lm * args.light_scale, light.1));
                     } else if !e.additive && e.nits == args.unlit_nits {
                         let luma = 0.2126 * mean[0] + 0.7152 * mean[1] + 0.0722 * mean[2];
                         if fullbright.is_none_or(|(_, best, _, _)| luma * area > best) {
@@ -1450,7 +1611,15 @@ fn lamp_color(mean: [f32; 3]) -> [f32; 3] {
 
 /// Whether a model is a light fixture (its fullbright glass gets a point light).
 fn is_lamp(rel: &str) -> bool {
-    const KEYS: &[&str] = &["lantern", "lamp", "torch", "candle", "brazier", "sconce", "chandelier"];
+    const KEYS: &[&str] = &[
+        "lantern",
+        "lamp",
+        "torch",
+        "candle",
+        "brazier",
+        "sconce",
+        "chandelier",
+    ];
     let rel = rel.to_ascii_lowercase();
     KEYS.iter().any(|k| rel.contains(k))
 }
@@ -1497,7 +1666,8 @@ impl CollisionMesh {
     /// `.collider`: `ACOL`, version, vertex count, triangle count (u32 LE), then the
     /// positions (f32 LE x 3) and the triangles (u32 LE x 3). Read by zero's `physics`.
     fn write(&self, path: &Path) {
-        let mut bytes = Vec::with_capacity(16 + self.positions.len() * 12 + self.indices.len() * 12);
+        let mut bytes =
+            Vec::with_capacity(16 + self.positions.len() * 12 + self.indices.len() * 12);
         bytes.extend_from_slice(b"ACOL");
         bytes.extend_from_slice(&1u32.to_le_bytes());
         bytes.extend_from_slice(&(self.positions.len() as u32).to_le_bytes());
@@ -1644,10 +1814,18 @@ fn collect_wmo_interior_doodads(
     let half = TILE / 2.0;
 
     for wmo in wmos {
-        let clean = wmo.rel_path.trim_start_matches("../").trim_start_matches("../");
+        let clean = wmo
+            .rel_path
+            .trim_start_matches("../")
+            .trim_start_matches("../");
         let wmo_obj = wow_root.join(clean);
-        let Some(wmo_dir) = wmo_obj.parent() else { continue };
-        let Some(stem) = wmo_obj.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+        let Some(wmo_dir) = wmo_obj.parent() else {
+            continue;
+        };
+        let Some(stem) = wmo_obj
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+        else {
             continue;
         };
         let csv_path = wmo_dir.join(format!("{stem}_ModelPlacementInformation.csv"));
@@ -1705,7 +1883,13 @@ fn resolve_model(wow_root: &Path, csv_path: &Path, cell: &str) -> Option<String>
     let src = csv_path.parent()?.join(cell);
     let canonical = src.canonicalize().ok()?;
     let root = wow_root.canonicalize().ok()?;
-    Some(canonical.strip_prefix(&root).ok()?.to_string_lossy().into_owned())
+    Some(
+        canonical
+            .strip_prefix(&root)
+            .ok()?
+            .to_string_lossy()
+            .into_owned(),
+    )
 }
 
 /// `tobj` load with the same options the rest of aurora_bsn uses.
