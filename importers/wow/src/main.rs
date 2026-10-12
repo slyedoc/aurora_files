@@ -51,12 +51,14 @@
 //! everywhere) is WoW's additive billboard halo, which a flat emitter cannot be: a path
 //! tracer shows it as a disc. So a card becomes two things: its CORE (`<tex>_card.png`,
 //! black RGB with the alpha, cut at 0.5, emitting `<tex>_glow.png` = RGB x alpha) -- the
-//! visible flame -- and a `PointLight` at the card's centre carrying the whole card's flux
-//! (pi x radiance x area), which is the halo's illumination without the halo. A FULLBRIGHT
-//! material (opaque alpha) keeps its base colour and emits `<tex>_glow.png` =
-//! RGB^`--unlit-contrast`, so a lantern's bright glass glows and its dark frame does not.
-//! The tracer's light table averages the emissive texture, so an emitter lights the scene
-//! by what it actually emits.
+//! visible flame -- and a `PointLight` at the card's centre, the halo's illumination without the
+//! halo. A FULLBRIGHT material (opaque alpha) keeps its base colour and emits `<tex>_glow.png` =
+//! RGB^`--unlit-contrast`, so a lantern's bright glass glows and its dark frame does not; a
+//! lamp whose only emitter is such glass gets its point light there.
+//!
+//! Emitters glow only a little (they have to read, not light the scene); the light is the
+//! point light's, by what the lamp is (`lamp_lumens`: a lantern 800 lm, a candle 40, a firefly
+//! 2), times `--light-scale`. WoW's volumetric light shafts are glow cards that light nothing.
 //!
 //! Collision: a model with collision has a child in its scene carrying
 //! `bevy_aurora::collision::CollisionMesh`, which shares one built collider between all of the
@@ -132,15 +134,19 @@ struct Args {
     /// model ids to plant model names.
     #[arg(long, default_value = "/home/slyedoc/code/p/core/assets/terrain/dbc/listfile.csv")]
     listfile: PathBuf,
-    /// Radiance (nits) of additive-blended materials: lamp glows, flames, fireflies.
-    #[arg(long, default_value_t = 20000.0)]
+    /// Radiance (nits) of additive-blended materials: a glow card's visible core (the flame).
+    /// The light a lamp gives is its point light's (`lamp_lumens`), so this only has to read.
+    #[arg(long, default_value_t = 500.0)]
     emissive_nits: f32,
     /// Radiance (nits) of unlit (fullbright) materials: lantern glass, lit logs.
-    #[arg(long, default_value_t = 8000.0)]
+    #[arg(long, default_value_t = 40.0)]
     unlit_nits: f32,
     /// Radiance (nits) of WMO self-illuminated colours (lit windows).
-    #[arg(long, default_value_t = 5000.0)]
+    #[arg(long, default_value_t = 30.0)]
     sidn_nits: f32,
+    /// Multiplies every lamp's point light (`lamp_lumens`).
+    #[arg(long, default_value_t = 1.0)]
+    light_scale: f32,
     /// Exponent on a fullbright material's linear colour for its glow map: higher keeps the
     /// emission to the texture's brightest parts (lantern glass, not its frame).
     #[arg(long, default_value_t = 3.0)]
@@ -1350,7 +1356,10 @@ fn bake_model(
 
     let path_stem = model_stem(rel);
 
-    let mut out = Vec::new();
+    let mut out: Vec<BakedSubmesh> = Vec::new();
+    // A lamp whose only emitter is fullbright glass gets its light there: (submesh, weight,
+    // colour, radius) of the brightest glass.
+    let mut fullbright: Option<(usize, f32, [f32; 3], f32)> = None;
     for (i, m) in models.iter().enumerate() {
         let Some(centroid) = submesh_centroid(&m.mesh) else {
             continue;
@@ -1361,17 +1370,21 @@ fn bake_model(
             material.is_some_and(|mat| material_is_cutmask(obj_dir, mat, cutmask_cache));
 
         let mut glow_light = None;
+        let mut is_card = false;
         let fields = match &emissive {
             Some(e) => match emissive_fields(args, obj_dir, textures_dir, material, is_cutmask, e, derived) {
                 Some((fields, card, mean)) => {
+                    let area = submesh_area(&m.mesh);
+                    let light = (lamp_color(mean), (area / PI).sqrt() * 0.5);
                     if card {
-                        // The whole card's flux, as a Lambertian emitter of its mean radiance.
-                        let area = submesh_area(&m.mesh);
-                        let radiance = mean.map(|c| c * e.nits);
-                        let lumens = PI * (0.2126 * radiance[0] + 0.7152 * radiance[1] + 0.0722 * radiance[2]) * area;
-                        let luma = (0.2126 * mean[0] + 0.7152 * mean[1] + 0.0722 * mean[2]).max(1e-6);
-                        let color = mean.map(|c| c / luma);
-                        glow_light = Some((color, lumens, (area / PI).sqrt() * 0.5));
+                        // A card's halo is its lamp's light (none for a fake light shaft).
+                        is_card = true;
+                        glow_light = lamp_lumens(rel).map(|lm| (light.0, lm * args.light_scale, light.1));
+                    } else if !e.additive && e.nits == args.unlit_nits {
+                        let luma = 0.2126 * mean[0] + 0.7152 * mean[1] + 0.0722 * mean[2];
+                        if fullbright.is_none_or(|(_, best, _, _)| luma * area > best) {
+                            fullbright = Some((out.len(), luma * area, light.0, light.1));
+                        }
                     }
                     fields
                 }
@@ -1394,7 +1407,7 @@ fn bake_model(
             .join(format!("{mesh_stem}.aurora_mesh"));
         // The output dir starts empty, so an existing file was baked earlier this run. A glow
         // card is not drawn (its halo is its light), so it has no mesh.
-        if glow_light.is_none() && !mesh_file.exists() {
+        if !is_card && !mesh_file.exists() {
             let mesh = build_mesh(&m.mesh, centroid);
             let mut cm = match AuroraMesh::clustered(&mesh) {
                 Ok(cm) => cm,
@@ -1412,14 +1425,52 @@ fn bake_model(
         }
 
         out.push(BakedSubmesh {
-            drawn: glow_light.is_none(),
+            drawn: !is_card,
             material_fields: fields,
             mesh_stem,
             centroid: Vec3::new(centroid[0] as f32, centroid[1] as f32, centroid[2] as f32),
             glow_light,
         });
     }
+    if let Some((i, _, color, radius)) = fullbright
+        && !out.iter().any(|s| s.glow_light.is_some())
+        && let Some(lumens) = lamp_lumens(rel)
+        && is_lamp(rel)
+    {
+        out[i].glow_light = Some((color, lumens * args.light_scale, radius));
+    }
     out
+}
+
+/// A glow's colour at unit luminance.
+fn lamp_color(mean: [f32; 3]) -> [f32; 3] {
+    let luma = (0.2126 * mean[0] + 0.7152 * mean[1] + 0.0722 * mean[2]).max(1e-6);
+    mean.map(|c| c / luma)
+}
+
+/// Whether a model is a light fixture (its fullbright glass gets a point light).
+fn is_lamp(rel: &str) -> bool {
+    const KEYS: &[&str] = &["lantern", "lamp", "torch", "candle", "brazier", "sconce", "chandelier"];
+    let rel = rel.to_ascii_lowercase();
+    KEYS.iter().any(|k| rel.contains(k))
+}
+
+/// The light (lumens, at unit scale) a model's glow gives off, by what it is; None for glows
+/// that light nothing (WoW's fake volumetric shafts).
+fn lamp_lumens(rel: &str) -> Option<f32> {
+    let rel = rel.to_ascii_lowercase();
+    if rel.contains("volumetric") || rel.contains("lightshaft") {
+        return None;
+    }
+    Some(if rel.contains("firefl") {
+        2.0
+    } else if rel.contains("candle") {
+        40.0
+    } else if rel.contains("torch") || rel.contains("brazier") || rel.contains("fire") {
+        600.0
+    } else {
+        800.0
+    })
 }
 
 // ---- collision -----------------------------------------------------------------------------
