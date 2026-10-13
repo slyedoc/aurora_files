@@ -31,6 +31,9 @@ const fn surface(roughness: f32, bump: f32, variance: f32) -> Surface {
     }
 }
 
+/// How far WoW's gloss mask, where painted, lowers roughness at its peak.
+const GLOSS_RANGE: f32 = 0.4;
+
 /// First match wins: specific kinds before the broad ones that share their words.
 const KINDS: &[(&[&str], Surface)] = &[
     (&["water", "mist", "steam"], surface(0.08, 0.0, 0.0)),
@@ -119,8 +122,10 @@ pub struct Derived {
 }
 
 /// Bakes (once per run: the output dir starts empty) the normal and roughness maps of the
-/// colour texture `name` in `textures_dir`.
-pub fn derive(textures_dir: &Path, name: &str, surface: Surface) -> Option<Derived> {
+/// colour texture `name` in `textures_dir`. `gloss`: the texture's alpha is WoW's specular
+/// mask (an opaque material's), not opacity: roughness follows it and it shapes the relief
+/// with the luminance.
+pub fn derive(textures_dir: &Path, name: &str, surface: Surface, gloss: bool) -> Option<Derived> {
     let stem = name.strip_suffix(".png").unwrap_or(name);
     let normal_name = format!("{stem}_n.ktx2");
     let mr_name = format!("{stem}_mr.ktx2");
@@ -129,10 +134,11 @@ pub fn derive(textures_dir: &Path, name: &str, surface: Surface) -> Option<Deriv
         && (!want_normal || textures_dir.join(&normal_name).exists());
     if !done {
         let colour = image::open(textures_dir.join(name)).ok()?.to_rgba8();
-        let height = height_field(&colour);
-        let (normal, mr) = maps(&colour, &height, surface);
+        let mask = gloss.then(|| gloss_mask(&colour)).flatten();
+        let height = height_field(&colour, mask.as_deref());
+        let (normal, mr) = maps(&colour, &height, mask.as_deref(), surface);
         let tmp = textures_dir.join(format!("{stem}.derived.png"));
-        let mut bake = |image: &RgbaImage, role: Role, dst: &str| -> Option<()> {
+        let bake = |image: &RgbaImage, role: Role, dst: &str| -> Option<()> {
             image.save(&tmp).ok()?;
             let baked = bake_texture(&tmp, role, &textures_dir.join(dst));
             let _ = fs::remove_file(&tmp);
@@ -161,8 +167,12 @@ pub fn apply(fields: &mut Vec<(&'static str, Value)>, prefix: &str, textures_dir
         return;
     };
     let surface = classify(&name);
+    // Cutouts and blends keep alpha as opacity; cloth, glass and water have no gloss to vary.
+    let gloss = !fields.iter().any(|(field, _)| *field == "alpha_mode")
+        && surface.bump > 0.0
+        && surface.roughness < 0.9;
     fields.retain(|(field, _)| *field != "perceptual_roughness");
-    match derive(textures_dir, &name, surface) {
+    match derive(textures_dir, &name, surface, gloss) {
         Some(derived) => {
             fields.push(("perceptual_roughness", Value::Float(1.0)));
             fields.push((
@@ -180,9 +190,20 @@ pub fn apply(fields: &mut Vec<(&'static str, Value)>, prefix: &str, textures_dir
     }
 }
 
-/// The texture's relief, guessed from its painting: luminance minus its local average (so
-/// painted light gradients do not tilt the surface), in units of its own spread. Tiles wrap.
-fn height_field(colour: &RgbaImage) -> Vec<f32> {
+/// The alpha channel as a gloss mask, 0..1 over its own peak; `None` when it is flat (no mask
+/// was painted).
+fn gloss_mask(colour: &RgbaImage) -> Option<Vec<f32>> {
+    let alpha: Vec<f32> = colour.pixels().map(|p| p.0[3] as f32).collect();
+    let (lo, hi) = alpha
+        .iter()
+        .fold((f32::MAX, 0.0f32), |(lo, hi), &a| (lo.min(a), hi.max(a)));
+    (hi - lo > 8.0).then(|| alpha.iter().map(|a| a / hi).collect())
+}
+
+/// The texture's relief, guessed from its painting: luminance (and the gloss mask, whose
+/// mortar and grime read cleaner) minus its local average, so painted light gradients do not
+/// tilt the surface, in units of its own spread. Tiles wrap.
+fn height_field(colour: &RgbaImage, mask: Option<&[f32]>) -> Vec<f32> {
     let (w, h) = colour.dimensions();
     let (w, h) = (w as usize, h as usize);
     let lum: Vec<f32> = colour
@@ -193,9 +214,25 @@ fn height_field(colour: &RgbaImage) -> Vec<f32> {
         })
         .map(|l| l.max(1.0e-4).sqrt())
         .collect();
-    let fine = box_blur(&lum, w, h, 1);
+    let lum = high_pass(&lum, w, h);
+    match mask {
+        Some(mask) => {
+            let mask = high_pass(mask, w, h);
+            let mixed: Vec<f32> = lum.iter().zip(&mask).map(|(l, m)| 0.5 * (l + m)).collect();
+            normalised(mixed)
+        }
+        None => lum,
+    }
+}
+
+/// `values` minus their local average, in units of their spread.
+fn high_pass(values: &[f32], w: usize, h: usize) -> Vec<f32> {
+    let fine = box_blur(values, w, h, 1);
     let coarse = box_blur(&fine, w, h, (w.min(h) / 16).max(2));
-    let mut high: Vec<f32> = fine.iter().zip(&coarse).map(|(f, c)| f - c).collect();
+    normalised(fine.iter().zip(&coarse).map(|(f, c)| f - c).collect())
+}
+
+fn normalised(mut high: Vec<f32>) -> Vec<f32> {
     let spread = (high.iter().map(|v| v * v).sum::<f32>() / high.len() as f32)
         .sqrt()
         .max(1.0e-4);
@@ -233,7 +270,12 @@ fn box_blur(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
 
 /// The normal map (tangent space, +Y toward the top of the image as glTF and aurora's
 /// tangent frame have it) and the metallic-roughness map (G roughness, B metallic 0).
-fn maps(colour: &RgbaImage, height: &[f32], s: Surface) -> (RgbaImage, RgbaImage) {
+fn maps(
+    colour: &RgbaImage,
+    height: &[f32],
+    mask: Option<&[f32]>,
+    s: Surface,
+) -> (RgbaImage, RgbaImage) {
     let (w, h) = colour.dimensions();
     let (wu, hu) = (w as usize, h as usize);
     let at = |x: usize, y: usize| height[(y % hu) * wu + (x % wu)];
@@ -247,7 +289,14 @@ fn maps(colour: &RgbaImage, height: &[f32], s: Surface) -> (RgbaImage, RgbaImage
             let n = Vec3::new(-s.bump * dx, -s.bump * dy, 1.0).normalize();
             let byte = |v: f32| ((v * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0).round() as u8;
             normal.put_pixel(x as u32, y as u32, Rgba([byte(n.x), byte(n.y), byte(n.z), 255]));
-            let rough = (s.roughness - s.variance * at(x, y)).clamp(0.04, 1.0);
+            let rough = match mask {
+                Some(mask) => {
+                    let g = mask[y * wu + x];
+                    s.roughness + s.variance - g * (GLOSS_RANGE + s.variance)
+                }
+                None => s.roughness - s.variance * at(x, y),
+            }
+            .clamp(0.04, 1.0);
             let g = (rough * 255.0).round() as u8;
             mr.put_pixel(x as u32, y as u32, Rgba([255, g, 0, 255]));
         }

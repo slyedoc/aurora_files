@@ -1369,7 +1369,7 @@ fn emit_zone(args: &Args, palette: &PaletteBuilder, tiles: &[((i32, i32), (f32, 
         .iter()
         .map(|(name, _)| {
             let kind = surface::classify_ground(name);
-            let normal = surface::derive(&tileset, name, kind)
+            let normal = surface::derive(&tileset, name, kind, false)
                 .and_then(|d| d.normal)
                 .map_or(Value::Path("None"), |n| {
                     Value::Tuple("Some", vec![Value::Str(format!("{prefix}/map/tileset/{n}"))])
