@@ -792,10 +792,14 @@ fn emit_clutter(
             continue;
         };
         textures += 1;
+        let bare = CLUTTER_BARE.iter().any(|b| texture.starts_with(b));
         let total: f32 = plants.values().sum();
         for (name, weight) in plants {
-            let rate = density as f32 * weight / total / (CLUTTER_CELL * CLUTTER_CELL);
-            rates.entry(name).or_default().push((id as u32, rate));
+            let rate =
+                CLUTTER_SCALE * density as f32 * weight / total / (CLUTTER_CELL * CLUTTER_CELL);
+            if !bare {
+                rates.entry(name).or_default().push((id as u32, rate));
+            }
         }
     }
 
@@ -879,6 +883,11 @@ fn emit_clutter(
 
 /// A WoW chunk cell (an eighth of a chunk), the area GroundEffect densities are per.
 const CLUTTER_CELL: f32 = TILE / 16.0 / 8.0;
+/// Plants per WoW GroundEffect plant: the client's table reads sparse at path-traced ground
+/// level; spacing shrinks by its square root.
+const CLUTTER_SCALE: f32 = 4.0;
+/// Ground textures that grow none of WoW's table: Northshire's dirt paths and its road.
+const CLUTTER_BARE: &[&str] = &["elwynn_elwynndirtbase2", "elwynn_elwynncobblestonebase"];
 /// Per-plant `ScatterSpecies::density` (1 = WoW's table): Elwynn's road pebbles carpet the
 /// cobblestone at the table's rate (a pebble every ~1.7 yd).
 const CLUTTER_DENSITY: &[(&str, f32)] = &[("elwroc02", 0.15)];
