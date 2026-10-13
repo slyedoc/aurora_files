@@ -92,6 +92,8 @@ use aurora_mesh::{AuroraMesh, write_aurora_mesh};
 use bevy::math::{Quat, Vec3};
 use clap::Parser;
 
+mod surface;
+
 /// One WoW ADT tile, in yards (= world units): `1600/3`.
 const TILE: f32 = 1600.0 / 3.0;
 /// wow.export's map-space origin constant: `32 · TILE` (maps span ADT 0..64 centered at 32).
@@ -352,7 +354,9 @@ fn emissive_fields(
             ("alpha_mode", bsn::alpha_mask(0.5)),
         ]
     } else {
-        material_fields(prefix, material, is_cutmask, &[])
+        let mut fields = material_fields(prefix, material, is_cutmask, &[]);
+        surface::apply(&mut fields, prefix, textures_dir);
+        fields
     };
     let [r, g, b] = emissive.tint.map(|t| t * emissive.nits);
     fields.push(("emissive", bsn::linear_rgba([r, g, b, 1.0])));
@@ -1025,6 +1029,7 @@ fn bake_species_parts(
             0.0
         };
         let mut fields = material_fields(&args.asset_prefix, material, is_cutmask, &[]);
+        surface::apply(&mut fields, &args.asset_prefix, textures_dir);
         // Leaf cards pass light through: lit from behind when you look sunward. What WoW sways is
         // foliage; rocks (no Animscale) stay opaque.
         if is_cutmask && animscale > 0.0 {
@@ -1358,10 +1363,17 @@ fn emit_zone(args: &Args, palette: &PaletteBuilder, tiles: &[((i32, i32), (f32, 
             vec![("x", Value::Float(x)), ("y", Value::Float(y))],
         )
     };
+    let tileset = args.out_dir.join("map/tileset");
     let materials = palette
         .entries
         .iter()
         .map(|(name, _)| {
+            let kind = surface::classify_ground(name);
+            let normal = surface::derive(&tileset, name, kind)
+                .and_then(|d| d.normal)
+                .map_or(Value::Path("None"), |n| {
+                    Value::Tuple("Some", vec![Value::Str(format!("{prefix}/map/tileset/{n}"))])
+                });
             Value::Struct(
                 "aurora_landscape::shading::LandscapeMaterial",
                 vec![
@@ -1373,9 +1385,9 @@ fn emit_zone(args: &Args, palette: &PaletteBuilder, tiles: &[((i32, i32), (f32, 
                             vec![Value::Str(format!("{prefix}/map/tileset/{name}"))],
                         ),
                     ),
-                    ("normal", Value::Path("None")),
+                    ("normal", normal),
                     ("tile_size", Value::Float(TILE / 16.0 / REPEATS)),
-                    ("roughness", Value::Float(1.0)),
+                    ("roughness", Value::Float(kind.roughness)),
                     ("clearcoat", Value::Float(0.0)),
                     (
                         "footsteps",
@@ -1558,10 +1570,15 @@ fn bake_model(
                     }
                     fields
                 }
-                None => material_fields(&args.asset_prefix, material, is_cutmask, &[]),
+                None => {
+                    let mut fields = material_fields(&args.asset_prefix, material, is_cutmask, &[]);
+                    surface::apply(&mut fields, &args.asset_prefix, textures_dir);
+                    fields
+                }
             },
             None => {
                 let mut fields = material_fields(&args.asset_prefix, material, is_cutmask, &[]);
+                surface::apply(&mut fields, &args.asset_prefix, textures_dir);
                 // A doodad's leaf cards (tree canopies, bushes) pass light through like the
                 // clutter's; other cutouts (WMO windows, tombstones, tents, lanterns) do not.
                 if is_cutmask && is_foliage(rel) {
