@@ -44,7 +44,7 @@
 //! texture at `--emissive-nits`. An unlit material (flag 1) is WoW's fullbright: lantern
 //! glass and lit windows, but also campfire logs and lava, so it glows at the lower
 //! `--unlit-nits`. A WMO material with a self-illuminated (sidn) colour glows in that colour
-//! at `--sidn-nits` (WoW only shows it at night).
+//! at `--sidn-nits`, day and night alike (one value, as WoW shows the texture as is).
 //!
 //! What emits is baked into derived textures under `textures/`. A glow CARD (any emissive
 //! material whose texture has real alpha -- the shape lives there, the RGB is bright
@@ -53,8 +53,8 @@
 //! black RGB with the alpha, cut at 0.5, emitting `<tex>_glow.png` = RGB x alpha) -- the
 //! visible flame -- and a `PointLight` at the card's centre, the halo's illumination without the
 //! halo. A FULLBRIGHT material (opaque alpha) keeps its base colour and emits `<tex>_glow.png` =
-//! RGB^`--unlit-contrast`, so a lantern's bright glass glows and its dark frame does not; a
-//! lamp whose only emitter is such glass gets its point light there.
+//! RGB^`--unlit-contrast` (1: its own colour, frame and glass alike, as WoW draws it unlit); a
+//! lamp whose only emitter is such a material gets its point light there.
 //!
 //! Emitters glow only a little (they have to read, not light the scene); the light is the
 //! point light's, by what the lamp is (`lamp_lumens`: a lantern 800 lm, a candle 40, a firefly
@@ -149,15 +149,16 @@ struct Args {
     /// Radiance (nits) of unlit (fullbright) materials: lantern glass, lit logs.
     #[arg(long, default_value_t = 40.0)]
     unlit_nits: f32,
-    /// Radiance (nits) of WMO self-illuminated colours (lit windows).
-    #[arg(long, default_value_t = 30.0)]
+    /// Radiance (nits) of WMO self-illuminated colours (lit windows), day and night alike: WoW
+    /// shows its texture as is, and 200 reads by day beside shaded stone (~5-30 nits).
+    #[arg(long, default_value_t = 200.0)]
     sidn_nits: f32,
     /// Multiplies every lamp's point light (`lamp_lumens`).
     #[arg(long, default_value_t = 1.0)]
     light_scale: f32,
-    /// Exponent on a fullbright material's linear colour for its glow map: higher keeps the
-    /// emission to the texture's brightest parts (lantern glass, not its frame).
-    #[arg(long, default_value_t = 3.0)]
+    /// Exponent on a fullbright material's linear colour for its glow map. 1 is WoW's: the
+    /// texture shows as it is, frame and glass alike (higher left lantern frames black).
+    #[arg(long, default_value_t = 1.0)]
     unlit_contrast: f32,
 }
 
