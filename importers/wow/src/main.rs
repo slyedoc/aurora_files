@@ -102,6 +102,9 @@ const C: f32 = 32.0 * TILE;
 const HEIGHT_RES: u32 = 129;
 /// Splatmap edge (16 chunk cells of 64px).
 const ALPHA_ATLAS: u32 = 1024;
+/// `aurora_landscape::HOLE`: the palette id that is no ground. A splat texel no ADT triangle
+/// covers (WoW's terrain holes: the mine mouths, cave entrances) is all hole.
+const HOLE: u8 = 255;
 const ALPHA_CELL: u32 = 64;
 /// No texture in a chunk-layer slot.
 const NO_LAYER: u32 = u32::MAX;
@@ -1239,6 +1242,44 @@ fn emit_tile_map(
             hmax = hmax.max(h);
         }
     }
+    // Holes: WoW cuts them by leaving the chunk's triangles out (wow.export writes a holed
+    // chunk with fewer faces), so a splat texel whose centre no triangle covers is a hole.
+    // Rasterized in the OBJ frame, the frame of the heights above and of the splat after its
+    // rotation below.
+    let texel = TILE / ALPHA_ATLAS as f32;
+    let mut covered = vec![false; (ALPHA_ATLAS * ALPHA_ATLAS) as usize];
+    for m in &models {
+        let p = &m.mesh.positions;
+        let xz = |i: u32| {
+            let i = i as usize * 3;
+            [
+                (p[i] - center_x) / texel + ALPHA_ATLAS as f32 * 0.5,
+                (p[i + 2] - center_z) / texel + ALPHA_ATLAS as f32 * 0.5,
+            ]
+        };
+        for tri in m.mesh.indices.chunks_exact(3) {
+            let [a, b, c] = [xz(tri[0]), xz(tri[1]), xz(tri[2])];
+            let area = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+            if area.abs() < 1e-9 {
+                continue;
+            }
+            let lo = |i: usize| a[i].min(b[i]).min(c[i]).floor().max(0.0) as u32;
+            let hi = |i: usize| (a[i].max(b[i]).max(c[i]).ceil() as u32).min(ALPHA_ATLAS);
+            for z in lo(1)..hi(1) {
+                for x in lo(0)..hi(0) {
+                    let q = [x as f32 + 0.5, z as f32 + 0.5];
+                    let edge = |u: [f32; 2], v: [f32; 2]| {
+                        ((v[0] - u[0]) * (q[1] - u[1]) - (v[1] - u[1]) * (q[0] - u[0])) / area
+                    };
+                    // Inclusive with a hair of slack: a centre on a shared edge is covered.
+                    if edge(a, b) >= -1e-4 && edge(b, c) >= -1e-4 && edge(c, a) >= -1e-4 {
+                        covered[(z * ALPHA_ATLAS + x) as usize] = true;
+                    }
+                }
+            }
+        }
+    }
+
     let span = (hmax - hmin).max(1e-3);
     let img = image::ImageBuffer::<image::Luma<u16>, Vec<u16>>::from_fn(
         HEIGHT_RES,
@@ -1299,8 +1340,16 @@ fn emit_tile_map(
                 weight[slot] = (w[slot] * 255.0).round() as u8;
             }
         }
+        if !covered[(z * ALPHA_ATLAS + x) as usize] {
+            id = [HOLE, 0, 0, 0];
+            weight = [255, 0, 0, 0];
+        }
         ids.put_pixel(x, z, image::Rgba(id));
         weights.put_pixel(x, z, image::Rgba(weight));
+    }
+    let holes = covered.iter().filter(|c| !**c).count();
+    if holes > 0 {
+        println!("tile {ax},{ay}: {holes} hole texels");
     }
     ids.save(dir.join(format!("{stem}_splat_ids.png")))
         .expect("write splat ids png");
