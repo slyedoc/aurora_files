@@ -21,7 +21,7 @@ use bevy::{
     scene::ScenePatchInstance,
 };
 use bevy_aurora::prelude::*;
-use bevy_aurora::environment::MainPhysicsEnvironmentEntity;
+use bevy_aurora::environment::Environment;
 use bevy_aurora::dlss::DlssPlugin;
 use clap::Parser;
 use util::park::HoverParkPlugin;
@@ -129,6 +129,10 @@ fn main() {
 #[derive(Component)]
 struct ViewerSun;
 
+/// The viewer's one environment root: scenes, camera, sky and sun live under it.
+#[derive(Resource)]
+struct ViewerEnvironment(Entity);
+
 /// The skies `1` / `2` cycle through: `None` is the gradient sky with a sun, then each `.hdr` /
 /// `.exr` under `assets/sky/` as an asset path.
 #[derive(Resource)]
@@ -179,9 +183,9 @@ impl SkyCycle {
             },
         };
         let gradient = matches!(sky, Sky::Gradient);
-        // The main world's sky; the gradient gets a sun (the HDR skies carry theirs).
+        // The environment's sky; the gradient gets a sun (the HDR skies carry theirs).
         commands.queue(move |world: &mut World| {
-            let main = world.resource::<MainPhysicsEnvironmentEntity>().0;
+            let main = world.resource::<ViewerEnvironment>().0;
             world.entity_mut(main).insert(sky);
             let suns: Vec<Entity> = world
                 .query_filtered::<Entity, With<ViewerSun>>()
@@ -192,6 +196,7 @@ impl SkyCycle {
             }
             if gradient {
                 world.spawn((
+                    ChildOf(main),
                     Name::new("Sun"),
                     ViewerSun,
                     // Matches the camera's locked `AuroraExposure::SUNLIGHT`.
@@ -302,6 +307,11 @@ fn setup(
     mut graphs: ResMut<Assets<AnimationGraph>>,
     mut windows: Query<&mut Window>,
 ) {
+    let environment = commands
+        .spawn((Name::new("Environment"), Environment::default()))
+        .id();
+    commands.insert_resource(ViewerEnvironment(environment));
+
     let cycle = SkyCycle::discover(args.sky.as_deref());
     if cycle.current().is_some() {
         cycle.apply(&mut commands, &asset_server, args.sky_scale);
@@ -323,6 +333,7 @@ fn setup(
     for (i, scene) in scenes.iter().enumerate() {
         let (col, row) = (i % cols, i / cols);
         let mut root = commands.spawn((
+            ChildOf(environment),
             Name::new(scene.clone()),
             Transform::from_xyz(col as f32 * args.spacing, 0.0, row as f32 * args.spacing),
             Visibility::Visible,
@@ -348,6 +359,7 @@ fn setup(
     }
 
     commands.spawn((
+        ChildOf(environment),
         Name::new("camera"),
         Camera3d::default(),
         Projection::Perspective(PerspectiveProjection {

@@ -111,3 +111,10 @@ avian3d = { git = "https://github.com/slyedoc/avian", branch = "aurora" }
 
 [patch."https://github.com/simgine/bevy_enhanced_input"]
 bevy_enhanced_input = { git = "https://github.com/slyedoc/bevy_enhanced_input", branch = "aurora" }
+
+# bevy_aurora needs the Vulkan 1.4 / descriptor-heap ash (unreleased master, slyedoc fork);
+# gpu-allocator, by version on ash, needs the fork renaming push_next. Same as zero.
+[patch.crates-io]
+ash = { git = "https://github.com/slyedoc/ash", branch = "aurora" }
+ash-window = { git = "https://github.com/slyedoc/ash", branch = "aurora" }
+gpu-allocator = { git = "https://github.com/slyedoc/gpu-allocator", branch = "ash-push-rename" }
