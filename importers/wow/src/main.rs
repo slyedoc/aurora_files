@@ -901,17 +901,16 @@ const CLUTTER_BARE: &[&str] = &["elwynn_elwynndirtbase2", "elwynn_elwynncobblest
 const CLUTTER_DENSITY: &[(&str, f32)] = &[("elwroc02", 0.15)];
 /// Closest spacing a species gets; denser layers saturate.
 const CLUTTER_MIN_SPACING: f32 = 0.3;
-/// Opacity micromaps for foliage doodads (tree canopies, bushes): their leaf cards are large and
-/// seen against the sky, where the default's 2-state micro-triangles (several texels wide, opaque
-/// wherever they touch a leaf) fringe every leaf with solid triangles. 4-state keeps the clearly
-/// opaque / clearly clear micro-triangles on the RT cores and sends only the leaf-edge band to the
-/// any-hit's exact alpha test; level 8 at a texel per micro-triangle edge keeps that band thin, and
-/// exact edges need no erosion.
+/// Opacity micromaps for foliage doodads (tree canopies, bushes): 2-state, so the hardware decides
+/// every hit and no alpha test or stochastic coin remains (aurora treats such a hit as a plain
+/// surface, which lets ReSTIR PT replay paths through the canopy). Level 8 at a texel per
+/// micro-triangle edge keeps the solid fringe a 2-state micro-triangle leaves at a leaf's edge
+/// about a texel wide. (4-state sent that band to the exact any-hit alpha test instead.)
 const FOLIAGE_OMM: OmmOptions = OmmOptions {
     max_subdiv: 8,
     erode_px: 0,
     scale: 1.0,
-    four_state: true,
+    four_state: false,
 };
 
 /// Whether a model is foliage by its path (a doodad, not a WMO or a building among the trees).
