@@ -72,6 +72,10 @@ def parse_args():
                    help="zero the ROTATION of every empty before export. For a RIGGED source "
                         "whose hero pose lives on joint empties, so it ships at its bind pose and "
                         "joint rotation 0 means rest. Locations are left alone - those are pivots.")
+    p.add_argument("--collection-roots", action="store_true",
+                   help="one root node per child collection (of --collection, else the scene), at "
+                        "its base-centre, parenting that collection's objects. A set authored as "
+                        "collections then bakes with prop_import --per-group: one .bsn per piece")
     return p.parse_args(argv)
 
 
@@ -609,6 +613,28 @@ def flatten_all(args):
     print(f"  {flattened} flattened, {textured} left textured")
 
 
+def collection_roots(parent):
+    print("--- collection roots")
+    for c in parent.children:
+        objs = [o for o in c.all_objects if o.type not in {"LIGHT", "CAMERA"}]
+        meshes = [o for o in objs if o.type == "MESH"]
+        if not meshes:
+            continue
+        lo, hi = world_bbox(meshes)
+        root = bpy.data.objects.new(c.name, None)
+        c.objects.link(root)
+        root.location = ((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5, lo.z)
+        bpy.context.view_layer.update()
+        for o in objs:
+            if o.parent is None:
+                mw = o.matrix_world.copy()
+                o.parent = root
+                o.matrix_world = mw
+        print(f"  {c.name:20s} {len(objs):5d} objects  origin ({root.location.x:.2f}, "
+              f"{root.location.y:.2f}, {root.location.z:.2f})")
+    bpy.context.view_layer.update()
+
+
 # ---------------- export ----------------
 
 def main():
@@ -629,6 +655,10 @@ def main():
         for ob in list(bpy.data.objects):
             if ob.type in {"LIGHT", "CAMERA"}:
                 bpy.data.objects.remove(ob, do_unlink=True)
+
+    if args.collection_roots:
+        collection_roots(bpy.data.collections[args.collection] if args.collection
+                         else bpy.context.scene.collection)
 
     convert_non_meshes()
     normalize(args)
