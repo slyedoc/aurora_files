@@ -76,13 +76,12 @@
 //! instanced by the zone's `Clutter` child); aurora_landscape grows them on the GPU.
 //!
 //! Liquids: wow.export's `liquid_X_Y.json` (the ADT's MH2O: per-subchunk instances of 8x8 cells,
-//! an existence bitmap and corner heights) becomes a `water` child of the tile: one surface mesh
-//! of every water cell (`WaterSurface`, flat runs merged into rectangles), and `WaterVolume`
-//! boxes for the medium under it (`emit_tile_liquids`). WoW floods whole cells and lets the
-//! terrain hide the spill, and so do the boxes: one spreads over any cell whose terrain stands
-//! above its level, so a lake is one box and a river a few steps. Magma is skipped.
+//! an existence bitmap and corner heights) becomes a `water` child of the tile: a surface mesh per
+//! kind of liquid (flat runs merged into rectangles; `emit_tile_liquids`). Water surfaces carry
+//! their `WaterKind` (ocean; lake, or river where a cell slopes), whose material is the medium
+//! below (aurora tracks it by the surface crossings); magma is an emissive lava surface.
 //!
-//! Deferred: magma, creatures.
+//! Deferred: creatures.
 //!
 //!   cargo run --release -p wow_import                        # Northshire (31-33 × 47-49)
 
@@ -199,11 +198,22 @@ fn model_emissives(args: &Args, obj_path: &Path, models: &[tobj::Model]) -> Vec<
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
         return vec![None; models.len()];
     };
-    match json["fileType"].as_str() {
+    let mut emissives = match json["fileType"].as_str() {
         Some("m2") => m2_emissives(args, &json, models),
         Some("wmo") => wmo_emissives(args, &json, models),
         _ => vec![None; models.len()],
+    };
+    // A lava model's unlit lava (Blackrock's statue lavafalls, bubbling holes) is molten rock,
+    // not a lantern: it glows like the lava surfaces.
+    let path = obj_path.to_string_lossy().to_ascii_lowercase();
+    if path.contains("/passivedoodads/") && path.contains("lava") {
+        for e in emissives.iter_mut().flatten() {
+            if !e.additive {
+                e.nits = LAVA_NITS;
+            }
+        }
     }
+    emissives
 }
 
 fn m2_emissives(
@@ -509,6 +519,18 @@ fn main() {
         ))
     });
     let interior = collect_wmo_interior_doodads(&args.wow_root, &all_wmos);
+    let mut effects = 0usize;
+    for tile in tile_placements.values_mut() {
+        let before = tile.len();
+        tile.retain(|p| !is_effect(&p.model));
+        effects += before - tile.len();
+    }
+    println!("{effects} particle-effect placements dropped");
+    let mut wmo_liquid = wmo_liquids(&args, &all_wmos);
+    println!(
+        "{} WMO liquid surfaces",
+        wmo_liquid.values().map(Vec::len).sum::<usize>()
+    );
     let mut interior_count = 0usize;
     for (coord, placements) in interior {
         if let Some(tile) = tile_placements.get_mut(&coord) {
@@ -649,6 +671,7 @@ fn main() {
         if let Some(water) = emit_tile_liquids(&args, &map_dir, ax, ay) {
             entities.push(water);
         }
+        entities.extend(wmo_liquid.remove(&(ax, ay)).unwrap_or_default());
 
         let scene_name = format!("{}_{ax}_{ay}", args.map);
         let bsn = scene(&scene_name, Vec::new(), entities);
@@ -958,6 +981,25 @@ const FOLIAGE_OMM: OmmOptions = OmmOptions {
     scale: 1.0,
     four_state: false,
 };
+
+/// Whether a model only carries a particle effect (smoke, steam, mist, splashes): WoW draws
+/// its emitters, which the export lacks, so what is left is the emitter's stand-in geometry.
+fn is_effect(rel: &str) -> bool {
+    const KEYS: &[&str] = &[
+        "/particleemitters/",
+        "/fx/",
+        "lavasteam/lavasteam.",
+        "statuelavasplash",
+        // Bone-animated bubble rings: frozen, a fan of spikes.
+        "statuelavabubble",
+        "deadminesteam0",
+        "valvesteam",
+        "ashtreesmoke",
+        "skullspoutsplash",
+    ];
+    let rel = rel.to_ascii_lowercase().replace('\\', "/");
+    KEYS.iter().any(|k| rel.contains(k))
+}
 
 /// Whether a model is foliage by its path (a doodad, not a WMO or a building among the trees).
 fn is_foliage(rel: &str) -> bool {
@@ -1752,24 +1794,118 @@ struct LiquidVertices {
     height: Vec<f32>,
 }
 
+/// LiquidType 2: the sea.
+const LIQUID_OCEAN: u32 = 2;
 /// LiquidType 7: magma (Burning Steppes, Searing Gorge).
 const LIQUID_MAGMA: u32 = 7;
 /// Liquid cells on a tile's side (16 subchunks of 8).
 const LIQUID_CELLS: usize = 128;
-/// Water levels within this many yards share a box (a river steps down at most this much).
-const WATER_STEP: f32 = 2.0;
-/// A box may spread over a dry cell whose terrain is no more than this below its top (the bank's
-/// edge; the sliver of medium it adds lies under the bank's own slope).
-const WATER_BANK: f32 = 1.5;
+/// A water cell whose corners differ by more than this (yards) flows: a river.
+const RIVER_SLOPE: f32 = 0.05;
 const WATER_IOR: f32 = 1.33;
+/// Lava's glow (nits, times its texture): molten rock runs 10^4..10^5 nits, so it glows in
+/// daylight too.
+const LAVA_NITS: f32 = 10000.0;
+/// Lava's texture (the Burning Steppes' own, tileable; the export has no `XTextures/lava`
+/// flipbook), one repeat over this many cells, sliding at `LAVA_SCROLL` UV per second.
+const LAVA_TEXTURE: &str = "dungeons/textures/lava/burningsteppslava02.png";
+const LAVA_REPEAT_CELLS: usize = 3;
+const LAVA_SCROLL: [f32; 2] = [0.02, 0.008];
 
-/// One water cell: its corner heights, (col, row), (col + 1, row), (col, row + 1), (col + 1, row + 1).
+/// One liquid cell: its corner heights, (col, row), (col + 1, row), (col, row + 1), (col + 1, row + 1).
 type WaterCell = [f32; 4];
 
-/// A tile's water (`None` when it has none): a `water` entity whose children are the surface
-/// mesh and the medium's boxes, tile-local. Cell (col, row) of MH2O lies at our
-/// `x = TILE/2 - col * CELL`, `z = TILE/2 - row * CELL` and on (measured against the terrain:
-/// the only orientation whose water sits over its lake beds on every tile).
+/// What a liquid cell is; a tile gets one surface per kind it has.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Liquid {
+    Lake,
+    River,
+    Ocean,
+    Magma,
+    Slime,
+}
+
+impl Liquid {
+    const ALL: [Self; 5] = [Self::Lake, Self::River, Self::Ocean, Self::Magma, Self::Slime];
+
+    /// A WMO liquid tile's kind from its MLIQ flags' low bits (0 water, 1 ocean, 2 magma,
+    /// 3 slime).
+    fn of_wmo_tile(flags: u8) -> Self {
+        match flags & 3 {
+            1 => Self::Ocean,
+            2 => Self::Magma,
+            3 => Self::Slime,
+            _ => Self::Lake,
+        }
+    }
+
+    fn of(liquid_type: u32, cell: WaterCell) -> Self {
+        match liquid_type {
+            LIQUID_OCEAN => Self::Ocean,
+            LIQUID_MAGMA => Self::Magma,
+            _ if cell.iter().any(|&h| (h - cell[0]).abs() > RIVER_SLOPE) => Self::River,
+            _ => Self::Lake,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Lake => "lake",
+            Self::River => "river",
+            Self::Ocean => "ocean",
+            Self::Magma => "magma",
+            Self::Slime => "slime",
+        }
+    }
+
+    /// The `WaterKind` a water surface carries; none for magma.
+    fn water_kind(self) -> Option<&'static str> {
+        match self {
+            Self::Lake => Some("bevy_aurora::water::WaterKind::Lake"),
+            Self::River => Some("bevy_aurora::water::WaterKind::River"),
+            Self::Ocean => Some("bevy_aurora::water::WaterKind::Ocean"),
+            Self::Slime => Some("bevy_aurora::water::WaterKind::Swamp"),
+            Self::Magma => None,
+        }
+    }
+
+    fn material(self, prefix: &str) -> Vec<(&'static str, Value)> {
+        match self {
+            Self::Magma => {
+                let texture = Value::Str(format!("{prefix}/textures/lava.png"));
+                vec![
+                    ("base_color", bsn::color_linear([0.4, 0.4, 0.4, 1.0])),
+                    ("base_color_texture", texture.clone()),
+                    ("perceptual_roughness", Value::Float(0.8)),
+                    ("emissive", bsn::linear_rgba([LAVA_NITS, LAVA_NITS, LAVA_NITS, 1.0])),
+                    ("emissive_texture", texture),
+                    (
+                        "uv_scroll",
+                        Value::Struct(
+                            "glam::Vec2",
+                            vec![
+                                ("x", Value::Float(LAVA_SCROLL[0])),
+                                ("y", Value::Float(LAVA_SCROLL[1])),
+                            ],
+                        ),
+                    ),
+                ]
+            }
+            _ => vec![
+                ("perceptual_roughness", Value::Float(0.0)),
+                ("specular_transmission", Value::Float(1.0)),
+                ("ior", Value::Float(WATER_IOR)),
+                ("double_sided", Value::Bool(true)),
+                ("cull_mode", Value::Path("None")),
+            ],
+        }
+    }
+}
+
+/// A tile's liquids (`None` when it has none): a `water` entity whose children are a surface mesh
+/// per kind, tile-local. Cell (col, row) of MH2O lies at our `x = TILE/2 - col * CELL`,
+/// `z = TILE/2 - row * CELL` and on (measured against the terrain: the only orientation whose
+/// water sits over its lake beds on every tile).
 fn emit_tile_liquids(args: &Args, map_dir: &Path, ax: i32, ay: i32) -> Option<Entity> {
     let text = fs::read_to_string(map_dir.join(format!("liquid_{ax}_{ay}.json"))).ok()?;
     let file: LiquidFile = match serde_json::from_str(&text) {
@@ -1780,8 +1916,7 @@ fn emit_tile_liquids(args: &Args, map_dir: &Path, ax: i32, ay: i32) -> Option<En
         }
     };
     let n = LIQUID_CELLS;
-    let mut cells: Vec<Option<WaterCell>> = vec![None; n * n];
-    let mut magma = 0usize;
+    let mut cells: Vec<Option<(WaterCell, Liquid)>> = vec![None; n * n];
     for (ci, chunk) in file.chunks.iter().enumerate() {
         for inst in &chunk.instances {
             let heights = inst
@@ -1801,10 +1936,6 @@ fn emit_tile_liquids(args: &Args, map_dir: &Path, ax: i32, ay: i32) -> Option<En
                     {
                         continue;
                     }
-                    if inst.liquid_type == LIQUID_MAGMA {
-                        magma += 1;
-                        continue;
-                    }
                     let corner = |dx: usize, dy: usize| {
                         heights
                             .get((cy + dy) * (w + 1) + cx + dx)
@@ -1814,26 +1945,29 @@ fn emit_tile_liquids(args: &Args, map_dir: &Path, ax: i32, ay: i32) -> Option<En
                     let col = (ci % 16) * 8 + inst.x_offset + cx;
                     let row = (ci / 16) * 8 + inst.y_offset + cy;
                     if col < n && row < n {
-                        cells[row * n + col] =
-                            Some([corner(0, 0), corner(1, 0), corner(0, 1), corner(1, 1)]);
+                        let cell = [corner(0, 0), corner(1, 0), corner(0, 1), corner(1, 1)];
+                        cells[row * n + col] = Some((cell, Liquid::of(inst.liquid_type, cell)));
                     }
                 }
             }
         }
     }
-    if magma > 0 {
-        println!("tile {ax},{ay}: {magma} magma cells skipped");
+    if cells.iter().flatten().any(|(_, l)| *l == Liquid::Magma) {
+        copy_lava_texture(args);
     }
-    if cells.iter().all(Option::is_none) {
+    let children: Vec<Entity> = Liquid::ALL
+        .into_iter()
+        .filter_map(|liquid| {
+            let only: Vec<Option<WaterCell>> = cells
+                .iter()
+                .map(|c| c.filter(|(_, l)| *l == liquid).map(|(cell, _)| cell))
+                .collect();
+            liquid_surface(args, ax, ay, &only, liquid)
+        })
+        .collect();
+    if children.is_empty() {
         return None;
     }
-
-    let floor = terrain_cell_floor(map_dir, ax, ay);
-    let mut children = Vec::new();
-    if let Some(surface) = water_surface(args, ax, ay, &cells) {
-        children.push(surface);
-    }
-    children.extend(water_boxes(&cells, &floor));
     Some(Entity {
         components: vec![bsn::name("water")],
         children,
@@ -1849,39 +1983,15 @@ fn liquid_xz(col: usize, row: usize) -> [f32; 2] {
     ]
 }
 
-/// The lowest terrain under each liquid cell (from the ADT OBJ's vertices; `NEG_INFINITY` where
-/// none, a hole).
-fn terrain_cell_floor(map_dir: &Path, ax: i32, ay: i32) -> Vec<f32> {
-    let n = LIQUID_CELLS;
-    let mut floor = vec![f32::INFINITY; n * n];
-    if let Some((models, _)) = load_obj(&map_dir.join(format!("adt_{ax}_{ay}.obj"))) {
-        let cell = TILE / n as f32;
-        let centre = [C - (ax as f32 + 0.5) * TILE, C - (ay as f32 + 0.5) * TILE];
-        for m in &models {
-            for v in m.mesh.positions.chunks_exact(3) {
-                // A vertex on a cell corner counts for every cell it touches.
-                let fc = (TILE * 0.5 - (v[0] - centre[0])) / cell;
-                let fr = (TILE * 0.5 - (v[2] - centre[1])) / cell;
-                for c in [(fc - 1e-3).floor(), (fc + 1e-3).floor()] {
-                    for r in [(fr - 1e-3).floor(), (fr + 1e-3).floor()] {
-                        if c >= 0.0 && r >= 0.0 && (c as usize) < n && (r as usize) < n {
-                            let i = r as usize * n + c as usize;
-                            floor[i] = floor[i].min(v[1]);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    floor
-        .into_iter()
-        .map(|f| if f.is_finite() { f } else { f32::NEG_INFINITY })
-        .collect()
-}
-
-/// Every water cell as one mesh: flat cells of one height merged into rectangles, sloped ones a
+/// One kind's cells as one mesh: flat cells of one height merged into rectangles, sloped ones a
 /// quad each.
-fn water_surface(args: &Args, ax: i32, ay: i32, cells: &[Option<WaterCell>]) -> Option<Entity> {
+fn liquid_surface(
+    args: &Args,
+    ax: i32,
+    ay: i32,
+    cells: &[Option<WaterCell>],
+    liquid: Liquid,
+) -> Option<Entity> {
     let n = LIQUID_CELLS;
     let flat = |i: usize| {
         cells[i]
@@ -1890,7 +2000,9 @@ fn water_surface(args: &Args, ax: i32, ay: i32, cells: &[Option<WaterCell>]) -> 
     };
     let mut done = vec![false; n * n];
     let mut positions: Vec<f32> = Vec::new();
+    let mut texcoords: Vec<f32> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
+    let lava = liquid == Liquid::Magma;
     let mut quad = |c0: usize, r0: usize, c1: usize, r1: usize, h: WaterCell| {
         let base = (positions.len() / 3) as u32;
         for (k, (c, r)) in [(c0, r0), (c1, r0), (c0, r1), (c1, r1)]
@@ -1899,6 +2011,13 @@ fn water_surface(args: &Args, ax: i32, ay: i32, cells: &[Option<WaterCell>]) -> 
         {
             let [x, z] = liquid_xz(c, r);
             positions.extend([x, h[k], z]);
+            if lava {
+                // Small UVs (they are stored as half floats): each cell its slice of a repeat.
+                let wrap = |i: usize, i0: usize| {
+                    ((i0 % LAVA_REPEAT_CELLS) + (i - i0)) as f32 / LAVA_REPEAT_CELLS as f32
+                };
+                texcoords.extend([wrap(c, c0), wrap(r, r0)]);
+            }
         }
         // Facing up: +col is -x and +row is -z, so (0, 2, 1) winds counter-clockwise from above.
         indices.extend([base, base + 2, base + 1, base + 1, base + 2, base + 3]);
@@ -1910,7 +2029,8 @@ fn water_surface(args: &Args, ax: i32, ay: i32, cells: &[Option<WaterCell>]) -> 
                 continue;
             }
             let Some(cell) = cells[i] else { continue };
-            let Some(h) = flat(i) else {
+            // Lava keeps a quad per cell, so its UVs stay small.
+            let Some(h) = flat(i).filter(|_| !lava) else {
                 done[i] = true;
                 quad(c, r, c + 1, r + 1, cell);
                 continue;
@@ -1939,132 +2059,194 @@ fn water_surface(args: &Args, ax: i32, ay: i32, cells: &[Option<WaterCell>]) -> 
     }
     let source = tobj::Mesh {
         positions,
+        texcoords,
         indices,
         ..Default::default()
     };
-    let centre = submesh_centroid(&source)?;
-    let mut mesh = build_mesh(&source, centre);
+    let stem = format!("{}_{ax}_{ay}_{}", args.map, liquid.name());
+    let centre = bake_liquid_mesh(args, &stem, &source)?;
+    Some(liquid_entity(args, &stem, liquid, centre, Quat::IDENTITY))
+}
+
+/// The lava surfaces' texture, into the output's textures (baked with the rest).
+fn copy_lava_texture(args: &Args) {
+    let dst = args.out_dir.join("textures").join("lava.png");
+    if !dst.exists()
+        && let Err(err) = fs::copy(args.wow_root.join(LAVA_TEXTURE), &dst)
+    {
+        eprintln!("lava texture: {err}");
+    }
+}
+
+/// Bakes a liquid surface mesh to `meshes/<stem>.aurora_mesh`; its vertices' centroid (the mesh
+/// is stored about it).
+fn bake_liquid_mesh(args: &Args, stem: &str, source: &tobj::Mesh) -> Option<Vec3> {
+    let centre = submesh_centroid(source)?;
+    let mut mesh = build_mesh(source, centre);
     mesh.compute_normals();
     let Ok(cm) = AuroraMesh::clustered(&mesh) else {
-        eprintln!("tile {ax},{ay}: water surface bake failed");
+        eprintln!("{stem}: liquid surface bake failed");
         return None;
     };
-    let stem = format!("{}_{ax}_{ay}_water", args.map);
     let file = args
         .out_dir
         .join("meshes")
         .join(format!("{stem}.aurora_mesh"));
     let w = BufWriter::new(File::create(&file).expect("create .aurora_mesh"));
     write_aurora_mesh(&cm, w).expect("write .aurora_mesh");
+    Some(Vec3::new(centre[0] as f32, centre[1] as f32, centre[2] as f32))
+}
+
+/// A baked liquid surface's entity: its material, and its `WaterKind` when it is water.
+fn liquid_entity(args: &Args, stem: &str, liquid: Liquid, translation: Vec3, rotation: Quat) -> Entity {
     let mut entity = mesh_entity(
         &args.asset_prefix,
-        &stem,
-        vec![
-            ("perceptual_roughness", Value::Float(0.0)),
-            ("specular_transmission", Value::Float(1.0)),
-            ("ior", Value::Float(WATER_IOR)),
-            ("double_sided", Value::Bool(true)),
-            ("cull_mode", Value::Path("None")),
-        ],
-        "water surface",
-        [centre[0] as f32, centre[1] as f32, centre[2] as f32],
-        Quat::IDENTITY.to_array(),
+        stem,
+        liquid.material(&args.asset_prefix),
+        &format!("{} surface", liquid.name()),
+        translation.to_array(),
+        rotation.to_array(),
         [1.0; 3],
         None,
     );
+    if let Some(kind) = liquid.water_kind() {
+        entity.components.push(Value::Path(kind));
+    }
     entity
-        .components
-        .push(Value::Path("bevy_aurora::water_volume::WaterSurface"));
-    Some(entity)
 }
 
-/// The medium as boxes, each from its cells' lowest terrain to their highest water. Cells within
-/// [`WATER_STEP`] of each other share one; a box spreads over any cell whose terrain stands
-/// above its top (less [`WATER_BANK`]), where its water would be underground, so boxes never
-/// share water above ground.
-fn water_boxes(cells: &[Option<WaterCell>], floor: &[f32]) -> Vec<Entity> {
-    let n = LIQUID_CELLS;
-    let level = |i: usize| cells[i].map(|c| c.iter().copied().fold(f32::MIN, f32::max));
-    // Cells whose water stands over their terrain somewhere, keyed by their step.
-    let key: Vec<Option<i32>> = (0..n * n)
-        .map(|i| {
-            let l = level(i)?;
-            (floor[i] < l).then(|| (l / WATER_STEP).round() as i32)
-        })
-        .collect();
-    let mut used = vec![false; n * n];
-    let mut boxes = Vec::new();
-    for r in 0..n {
-        for c in 0..n {
-            let i = r * n + c;
-            let Some(k) = key[i] else { continue };
-            if used[i] {
-                continue;
-            }
-            let top_guess = (k as f32 + 0.5) * WATER_STEP;
-            let fits = |cc: usize, rr: usize, used: &[bool]| {
-                if cc >= n || rr >= n {
-                    return false;
-                }
-                let j = rr * n + cc;
-                match key[j] {
-                    Some(kj) => kj == k && !used[j],
-                    None => floor[j] > top_guess - WATER_BANK,
-                }
+/// MLIQ cell size: the ADT's (533.33 / 128 yards).
+const WMO_LIQUID_CELL: f32 = TILE / LIQUID_CELLS as f32;
+
+#[derive(serde::Deserialize)]
+struct WmoJson {
+    #[serde(default)]
+    groups: Vec<WmoJsonGroup>,
+}
+
+#[derive(serde::Deserialize)]
+struct WmoJsonGroup {
+    #[serde(default)]
+    liquid: Option<WmoLiquid>,
+}
+
+/// A WMO group's MLIQ: a grid of `tileX` x `tileY` tiles from `corner` (WMO-local, Z up), a
+/// height per vertex, flags per tile (bit 3: no liquid; the low two bits its kind).
+#[derive(serde::Deserialize)]
+struct WmoLiquid {
+    #[serde(rename = "vertX")]
+    vert_x: usize,
+    #[serde(rename = "tileX")]
+    tile_x: usize,
+    #[serde(rename = "tileY")]
+    tile_y: usize,
+    vertices: Vec<WmoLiquidVertex>,
+    tiles: Vec<u8>,
+    corner: [f32; 3],
+}
+
+#[derive(serde::Deserialize)]
+struct WmoLiquidVertex {
+    height: f32,
+}
+
+/// Every WMO's liquids (Blackrock Mountain's lava, a city's canals), keyed by the tile the WMO's
+/// origin lands in: a surface per group and kind, in the WMO's frame, placed like its interior
+/// doodads. Each WMO model's meshes are baked once.
+fn wmo_liquids(args: &Args, wmos: &[WmoPlacement]) -> BTreeMap<(i32, i32), Vec<Entity>> {
+    copy_lava_texture(args);
+    let mut by_tile: BTreeMap<(i32, i32), Vec<Entity>> = BTreeMap::new();
+    let mut baked: HashMap<String, Vec<(String, Liquid, Vec3)>> = HashMap::new();
+    let half = TILE / 2.0;
+    for wmo in wmos {
+        let clean = wmo.rel_path.trim_start_matches("../").trim_start_matches("../");
+        let obj = args.wow_root.join(clean);
+        let surfaces = baked.entry(clean.to_string()).or_insert_with(|| {
+            let Ok(text) = fs::read_to_string(obj.with_extension("json")) else {
+                return Vec::new();
             };
-            let mut w = 1;
-            while fits(c + w, r, &used) {
-                w += 1;
-            }
-            let mut d = 1;
-            while (0..w).all(|kk| fits(c + kk, r + d, &used)) {
-                d += 1;
-            }
-            let (mut top, mut bottom) = (f32::MIN, f32::MAX);
-            for rr in r..r + d {
-                for cc in c..c + w {
-                    let j = rr * n + cc;
-                    if key[j].is_some() {
-                        used[j] = true;
-                        top = top.max(level(j).unwrap());
-                        if floor[j].is_finite() {
-                            bottom = bottom.min(floor[j]);
-                        }
+            let Ok(json) = serde_json::from_str::<WmoJson>(&text) else {
+                return Vec::new();
+            };
+            let model = model_stem(clean);
+            let mut out = Vec::new();
+            for (gi, group) in json.groups.iter().enumerate() {
+                let Some(l) = &group.liquid else { continue };
+                for liquid in Liquid::ALL {
+                    let source = wmo_liquid_mesh(l, liquid);
+                    if source.indices.is_empty() {
+                        continue;
+                    }
+                    let stem = format!("{model}_liquid{gi}_{}", liquid.name());
+                    if let Some(centre) = bake_liquid_mesh(args, &stem, &source) {
+                        out.push((stem, liquid, centre));
                     }
                 }
             }
-            if bottom > top {
-                // Only holes under it: a nominal depth.
-                bottom = top - 10.0;
-            }
-            bottom -= 1.0;
-            let [x0, z0] = liquid_xz(c, r);
-            let [x1, z1] = liquid_xz(c + w, r + d);
-            boxes.push(Entity {
-                components: vec![
-                    bsn::name("water volume"),
-                    bsn::transform(
-                        [(x0 + x1) * 0.5, (top + bottom) * 0.5, (z0 + z1) * 0.5],
-                        None,
-                        None,
-                    ),
-                    Value::Struct(
-                        "bevy_aurora::water_volume::WaterVolume",
-                        vec![(
-                            "half_extents",
-                            bsn::vec3([
-                                (x0 - x1).abs() * 0.5,
-                                (top - bottom) * 0.5,
-                                (z0 - z1).abs() * 0.5,
-                            ]),
-                        )],
-                    ),
-                ],
-                children: Vec::new(),
-            });
+            out
+        });
+        if surfaces.is_empty() {
+            continue;
+        }
+        let wmo_rot = csv_rotation(wmo.wow_rotation.x, wmo.wow_rotation.y, wmo.wow_rotation.z);
+        let ax = (wmo.wow_position.x / TILE).floor() as i32;
+        let ay = (wmo.wow_position.z / TILE).floor() as i32;
+        let tx = (wmo.wow_position.x - ax as f32 * TILE) - half;
+        let tz = (wmo.wow_position.z - ay as f32 * TILE) - half;
+        let origin = Vec3::new(-tx, wmo.wow_position.y, -tz);
+        let rotation = Quat::from_rotation_y(PI) * wmo_rot;
+        for (stem, liquid, centre) in surfaces.iter() {
+            by_tile.entry((ax, ay)).or_default().push(liquid_entity(
+                args,
+                stem,
+                *liquid,
+                origin + rotation * *centre,
+                rotation,
+            ));
         }
     }
-    boxes
+    by_tile
+}
+
+/// One kind's tiles of a WMO liquid as quads in the WMO's frame, Y up (OBJ's `x, z, -y`).
+fn wmo_liquid_mesh(l: &WmoLiquid, liquid: Liquid) -> tobj::Mesh {
+    let mut positions = Vec::new();
+    let mut texcoords = Vec::new();
+    let mut indices = Vec::new();
+    let lava = liquid == Liquid::Magma;
+    for j in 0..l.tile_y {
+        for i in 0..l.tile_x {
+            let Some(&flags) = l.tiles.get(j * l.tile_x + i) else { continue };
+            if flags & 8 != 0 || Liquid::of_wmo_tile(flags) != liquid {
+                continue;
+            }
+            let base = (positions.len() / 3) as u32;
+            for (di, dj) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                let h = l
+                    .vertices
+                    .get((j + dj) * l.vert_x + i + di)
+                    .map_or(l.corner[2], |v| v.height);
+                let x = l.corner[0] + (i + di) as f32 * WMO_LIQUID_CELL;
+                let y = l.corner[1] + (j + dj) as f32 * WMO_LIQUID_CELL;
+                positions.extend([x, h, -y]);
+                if lava {
+                    let r = LAVA_REPEAT_CELLS;
+                    texcoords.extend([
+                        ((i % r) + di) as f32 / r as f32,
+                        ((j % r) + dj) as f32 / r as f32,
+                    ]);
+                }
+            }
+            // +i is +x and +j is -z (mirrored from the ADT grid): (0, 1, 2) faces up.
+            indices.extend([base, base + 1, base + 2, base + 1, base + 3, base + 2]);
+        }
+    }
+    tobj::Mesh {
+        positions,
+        texcoords,
+        indices,
+        ..Default::default()
+    }
 }
 
 // ---- model baking ---------------------------------------------------------------------------
