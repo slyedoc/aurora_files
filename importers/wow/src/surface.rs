@@ -1,8 +1,9 @@
 //! Surface response for classic WoW's colour-only materials, derived at bake time: a roughness
 //! and a bump strength per kind of surface (by texture name: stone, wood, metal, cloth, leaves,
 //! glass, water), and from each colour texture a height estimate (its luminance high-pass, dark
-//! mortar and crevices low) turned into a normal map and a per-texel roughness. The colours stay
-//! the originals. Maps bake to KTX2 (BC5 normals, linear BC7 data) beside the colour PNG.
+//! mortar and crevices low) turned into a normal map and a per-texel roughness, both off
+//! (NORMAL_MAPS, ROUGHNESS_MAPS). The colours stay the originals. Maps bake to KTX2 (BC5 normals, linear BC7 data)
+//! beside the colour PNG.
 
 use std::fs;
 use std::path::Path;
@@ -34,6 +35,11 @@ const fn surface(roughness: f32, bump: f32, variance: f32) -> Surface {
 /// How far WoW's gloss mask, where painted, lowers roughness at its peak.
 const GLOSS_RANGE: f32 = 0.4;
 
+/// Per-texel roughness maps (crevices rougher, the gloss mask smoother) and normal maps from the
+/// height estimate. Off: a material keeps its colour and takes its kind's roughness as a factor.
+const ROUGHNESS_MAPS: bool = false;
+const NORMAL_MAPS: bool = false;
+
 /// First match wins: specific kinds before the broad ones that share their words.
 const KINDS: &[(&[&str], Surface)] = &[
     (&["water", "mist", "steam"], surface(0.08, 0.0, 0.0)),
@@ -43,23 +49,54 @@ const KINDS: &[(&[&str], Surface)] = &[
     ),
     (
         &[
-            "treetallcanopy", "leaf", "flower", "grass", "shrub", "vine", "reed", "kelp",
-            "lilypad", "seaweed", "cabbage",
+            "treetallcanopy",
+            "leaf",
+            "flower",
+            "grass",
+            "shrub",
+            "vine",
+            "reed",
+            "kelp",
+            "lilypad",
+            "seaweed",
+            "cabbage",
         ],
         surface(0.6, 0.4, 0.08),
     ),
     (
         &[
-            "metal", "iron", "chain", "anvil", "blade", "sword", "shield", "plate", "pick",
-            "shovel", "cleaver", "brass", "silver", "lever", "rail", "pipe", "bars", "knob",
-            "stein", "mug", "candel", "chandelier", "lantern", "lamp", "armor",
+            "metal",
+            "iron",
+            "chain",
+            "anvil",
+            "blade",
+            "sword",
+            "shield",
+            "plate",
+            "pick",
+            "shovel",
+            "cleaver",
+            "brass",
+            "silver",
+            "lever",
+            "rail",
+            "pipe",
+            "bars",
+            "knob",
+            "stein",
+            "mug",
+            "candel",
+            "chandelier",
+            "lantern",
+            "lamp",
+            "armor",
         ],
         surface(0.45, 0.6, 0.15),
     ),
     (
         &[
-            "cloth", "banner", "rug", "quilt", "pillow", "tent", "leather", "rope",
-            "sack", "hay", "canopy", "net", "web", "cocoon", "cork",
+            "cloth", "banner", "rug", "quilt", "pillow", "tent", "leather", "rope", "sack", "hay",
+            "canopy", "net", "web", "cocoon", "cork",
         ],
         surface(0.95, 0.5, 0.03),
     ),
@@ -70,17 +107,33 @@ const KINDS: &[(&[&str], Surface)] = &[
     ),
     (
         &[
-            "wood", "plank", "beam", "barrel", "crate", "cask", "door", "fence", "post",
-            "wagon", "wheel", "furniture", "chair", "bench", "table", "support", "dock",
-            "lumber", "planter", "keg",
+            "wood",
+            "plank",
+            "beam",
+            "barrel",
+            "crate",
+            "cask",
+            "door",
+            "fence",
+            "post",
+            "wagon",
+            "wheel",
+            "furniture",
+            "chair",
+            "bench",
+            "table",
+            "support",
+            "dock",
+            "lumber",
+            "planter",
+            "keg",
         ],
         surface(0.75, 1.1, 0.12),
     ),
     (
         &[
-            "brick", "stone", "rock", "cobble", "street", "sidewalk", "tomb", "monument",
-            "statue", "bust", "wall", "floor", "cave", "border", "trim", "pillar", "dirt",
-            "ash", "crop",
+            "brick", "stone", "rock", "cobble", "street", "sidewalk", "tomb", "monument", "statue",
+            "bust", "wall", "floor", "cave", "border", "trim", "pillar", "dirt", "ash", "crop",
         ],
         surface(0.8, 1.8, 0.12),
     ),
@@ -92,7 +145,10 @@ const DEFAULT: Surface = surface(0.85, 1.0, 0.1);
 const GROUND: &[(&[&str], Surface)] = &[
     (&["cobble", "road", "street"], surface(0.8, 1.2, 0.1)),
     (&["rock", "stone", "lava"], surface(0.8, 1.2, 0.1)),
-    (&["grass", "flower", "scrub", "moss", "crop"], surface(0.92, 0.5, 0.05)),
+    (
+        &["grass", "flower", "scrub", "moss", "crop"],
+        surface(0.92, 0.5, 0.05),
+    ),
 ];
 
 const GROUND_DEFAULT: Surface = surface(0.95, 0.6, 0.05);
@@ -118,7 +174,7 @@ pub fn classify(texture: &str) -> Surface {
 /// The derived maps of one colour texture, as file names in the textures dir.
 pub struct Derived {
     pub normal: Option<String>,
-    pub metallic_roughness: String,
+    pub metallic_roughness: Option<String>,
 }
 
 /// Bakes (once per run: the output dir starts empty) the normal and roughness maps of the
@@ -129,8 +185,8 @@ pub fn derive(textures_dir: &Path, name: &str, surface: Surface, gloss: bool) ->
     let stem = name.strip_suffix(".png").unwrap_or(name);
     let normal_name = format!("{stem}_n.ktx2");
     let mr_name = format!("{stem}_mr.ktx2");
-    let want_normal = surface.bump > 0.0;
-    let done = textures_dir.join(&mr_name).exists()
+    let want_normal = NORMAL_MAPS && surface.bump > 0.0;
+    let done = (!ROUGHNESS_MAPS || textures_dir.join(&mr_name).exists())
         && (!want_normal || textures_dir.join(&normal_name).exists());
     if !done {
         let colour = image::open(textures_dir.join(name)).ok()?.to_rgba8();
@@ -142,28 +198,31 @@ pub fn derive(textures_dir: &Path, name: &str, surface: Surface, gloss: bool) ->
             image.save(&tmp).ok()?;
             let baked = bake_texture(&tmp, role, &textures_dir.join(dst));
             let _ = fs::remove_file(&tmp);
-            baked
-                .map_err(|e| eprintln!("  {dst}: {e:#}"))
-                .ok()
+            baked.map_err(|e| eprintln!("  {dst}: {e:#}")).ok()
         };
-        bake(&mr, Role::Data, &mr_name)?;
+        if ROUGHNESS_MAPS {
+            bake(&mr, Role::Data, &mr_name)?;
+        }
         if want_normal {
             bake(&normal, Role::Normal, &normal_name)?;
         }
     }
     Some(Derived {
         normal: want_normal.then_some(normal_name),
-        metallic_roughness: mr_name,
+        metallic_roughness: ROUGHNESS_MAPS.then_some(mr_name),
     })
 }
 
-/// Material fields for a colour-only WoW material: its kind's roughness factor (1 under the
-/// map, which carries the value) and the derived maps, replacing the matte default.
+/// Material fields for a colour-only WoW material: its kind's roughness factor (1 under a
+/// roughness map, which carries the value) and the derived maps, replacing the matte default.
 pub fn apply(fields: &mut Vec<(&'static str, Value)>, prefix: &str, textures_dir: &Path) {
-    let Some(name) = fields.iter().find_map(|(field, value)| match (field, value) {
-        (&"base_color_texture", Value::Str(path)) => path.rsplit('/').next().map(str::to_owned),
-        _ => None,
-    }) else {
+    let Some(name) = fields
+        .iter()
+        .find_map(|(field, value)| match (field, value) {
+            (&"base_color_texture", Value::Str(path)) => path.rsplit('/').next().map(str::to_owned),
+            _ => None,
+        })
+    else {
         return;
     };
     let surface = classify(&name);
@@ -172,21 +231,22 @@ pub fn apply(fields: &mut Vec<(&'static str, Value)>, prefix: &str, textures_dir
         && surface.bump > 0.0
         && surface.roughness < 0.9;
     fields.retain(|(field, _)| *field != "perceptual_roughness");
-    match derive(textures_dir, &name, surface, gloss) {
-        Some(derived) => {
+    let derived = derive(textures_dir, &name, surface, gloss);
+    match derived.as_ref().and_then(|d| d.metallic_roughness.as_ref()) {
+        Some(mr) => {
             fields.push(("perceptual_roughness", Value::Float(1.0)));
             fields.push((
                 "metallic_roughness_texture",
-                Value::Str(format!("{prefix}/textures/{}", derived.metallic_roughness)),
+                Value::Str(format!("{prefix}/textures/{mr}")),
             ));
-            if let Some(normal) = derived.normal {
-                fields.push((
-                    "normal_map_texture",
-                    Value::Str(format!("{prefix}/textures/{normal}")),
-                ));
-            }
         }
         None => fields.push(("perceptual_roughness", Value::Float(surface.roughness))),
+    }
+    if let Some(normal) = derived.and_then(|d| d.normal) {
+        fields.push((
+            "normal_map_texture",
+            Value::Str(format!("{prefix}/textures/{normal}")),
+        ));
     }
 }
 
@@ -288,7 +348,11 @@ fn maps(
             let dy = (at(x, y + hu - 1) - at(x, y + 1)) * 0.5;
             let n = Vec3::new(-s.bump * dx, -s.bump * dy, 1.0).normalize();
             let byte = |v: f32| ((v * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0).round() as u8;
-            normal.put_pixel(x as u32, y as u32, Rgba([byte(n.x), byte(n.y), byte(n.z), 255]));
+            normal.put_pixel(
+                x as u32,
+                y as u32,
+                Rgba([byte(n.x), byte(n.y), byte(n.z), 255]),
+            );
             let rough = match mask {
                 Some(mask) => {
                     let g = mask[y * wu + x];
@@ -316,7 +380,13 @@ mod tests {
         assert_eq!(classify("glassbottle04.png").bump, 0.0);
         assert_eq!(classify("westfallwagonwood.png").roughness, 0.75);
         assert_eq!(classify("mm_abbey_combo_01.png"), DEFAULT);
-        assert_eq!(classify_ground("elwynn_elwynndirtbase2_s.png"), GROUND_DEFAULT);
-        assert_eq!(classify_ground("elwynn_elwynngrassbase_s.png").roughness, 0.92);
+        assert_eq!(
+            classify_ground("elwynn_elwynndirtbase2_s.png"),
+            GROUND_DEFAULT
+        );
+        assert_eq!(
+            classify_ground("elwynn_elwynngrassbase_s.png").roughness,
+            0.92
+        );
     }
 }
