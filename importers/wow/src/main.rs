@@ -75,7 +75,14 @@
 //! animates) and written as `ScatterSpecies` of the zone's landscape (`<map>_clutter.bsn`,
 //! instanced by the zone's `Clutter` child); aurora_landscape grows them on the GPU.
 //!
-//! Deferred: liquids, creatures.
+//! Liquids: wow.export's `liquid_X_Y.json` (the ADT's MH2O: per-subchunk instances of 8x8 cells,
+//! an existence bitmap and corner heights) becomes a `water` child of the tile: one surface mesh
+//! of every water cell (`WaterSurface`, flat runs merged into rectangles), and `WaterVolume`
+//! boxes for the medium under it (`emit_tile_liquids`). WoW floods whole cells and lets the
+//! terrain hide the spill, and so do the boxes: one spreads over any cell whose terrain stands
+//! above its level, so a lake is one box and a river a few steps. Magma is skipped.
+//!
+//! Deferred: magma, creatures.
 //!
 //!   cargo run --release -p wow_import                        # Northshire (31-33 × 47-49)
 
@@ -129,6 +136,16 @@ struct Args {
     y0: i32,
     #[arg(long, default_value_t = 49)]
     y1: i32,
+    /// Every ADT the dump has (the range becomes their bounds; the x/y range is ignored).
+    #[arg(long)]
+    all: bool,
+    /// The zone streams: a window this many pages around the viewer (`Landscape::stream_radius`),
+    /// for ranges too large to keep resident. 0 keeps every page.
+    #[arg(long, default_value_t = 0)]
+    stream_radius: u32,
+    /// Streaming only: coarser rings around the window (`Landscape::lod_rings`).
+    #[arg(long, default_value_t = 0)]
+    lod_rings: u8,
     /// Output asset directory.
     #[arg(long, default_value = "assets/wow")]
     out_dir: PathBuf,
@@ -427,8 +444,24 @@ struct BakedSubmesh {
 type DerivedGlows = HashMap<String, (bool, [f32; 3])>;
 
 fn main() {
-    let args = Args::parse();
+    let mut args = Args::parse();
     let map_dir = args.wow_root.join("maps").join(&args.map);
+    let present = present_tiles(&map_dir);
+    if args.all {
+        let (xs, ys) = (present.iter().map(|t| t.0), present.iter().map(|t| t.1));
+        args.x0 = xs.clone().min().expect("no ADTs in the dump");
+        args.x1 = xs.max().unwrap();
+        args.y0 = ys.clone().min().unwrap();
+        args.y1 = ys.max().unwrap();
+        println!(
+            "all: {} ADTs in {}..={} x {}..={}",
+            present.len(),
+            args.x0,
+            args.x1,
+            args.y0,
+            args.y1
+        );
+    }
     // Every run starts from nothing: the output dir is this importer's alone, and output kept
     // from an earlier run can disagree with a re-exported source.
     if args.out_dir.exists() {
@@ -447,6 +480,10 @@ fn main() {
     let mut all_wmos: Vec<WmoPlacement> = Vec::new();
     for ay in args.y0..=args.y1 {
         for ax in args.x0..=args.x1 {
+            // A range over the map's edge (or around its sea) names ADTs that don't exist.
+            if !present.contains(&(ax, ay)) {
+                continue;
+            }
             let (placements, wmos) = parse_tile_placements(&map_dir, &args.wow_root, ax, ay);
             println!(
                 "tile {ax},{ay}: {} placements, {} wmos",
@@ -609,6 +646,10 @@ fn main() {
             }
         }
 
+        if let Some(water) = emit_tile_liquids(&args, &map_dir, ax, ay) {
+            entities.push(water);
+        }
+
         let scene_name = format!("{}_{ax}_{ay}", args.map);
         let bsn = scene(&scene_name, Vec::new(), entities);
         let bsn_path = args.out_dir.join(format!("{scene_name}.bsn"));
@@ -627,6 +668,7 @@ fn main() {
     }
     palette.write(&args);
     emit_zone(&args, &palette, &zone_tiles);
+    emit_world(&args, &tile_placements);
     emit_clutter(
         &args,
         &map_dir,
@@ -1446,22 +1488,24 @@ fn emit_zone(args: &Args, palette: &PaletteBuilder, tiles: &[((i32, i32), (f32, 
             )
         })
         .collect();
+    let mut landscape = vec![
+        (
+            "pages_min",
+            ivec2((min[0] / page).floor(), (min[1] / page).floor()),
+        ),
+        (
+            "pages_max",
+            ivec2((max[0] / page).ceil(), (max[1] / page).ceil()),
+        ),
+        ("texel_size", Value::Float(texel)),
+    ];
+    if args.stream_radius > 0 {
+        landscape.push(("stream_radius", Value::Int(args.stream_radius as i64)));
+        landscape.push(("lod_rings", Value::Int(args.lod_rings as i64)));
+    }
     let root = vec![
         bsn::name(&format!("{} zone", args.map)),
-        Value::Struct(
-            "aurora_landscape::Landscape",
-            vec![
-                (
-                    "pages_min",
-                    ivec2((min[0] / page).floor(), (min[1] / page).floor()),
-                ),
-                (
-                    "pages_max",
-                    ivec2((max[0] / page).ceil(), (max[1] / page).ceil()),
-                ),
-                ("texel_size", Value::Float(texel)),
-            ],
-        ),
+        Value::Struct("aurora_landscape::Landscape", landscape),
         Value::Tuple(
             "aurora_landscape::shading::LandscapePalette",
             vec![Value::List(materials)],
@@ -1540,6 +1584,404 @@ fn emit_zone(args: &Args, palette: &PaletteBuilder, tiles: &[((i32, i32), (f32, 
     fs::write(&path, scene(&format!("{}_zone", args.map), root, children))
         .expect("write zone .bsn");
     println!("zone: {} tiles -> {}", tiles.len(), path.display());
+}
+
+/// The ADTs the dump has (`adt_X_Y.obj`).
+fn present_tiles(map_dir: &Path) -> BTreeSet<(i32, i32)> {
+    let mut tiles = BTreeSet::new();
+    for entry in fs::read_dir(map_dir).expect("read the map dir").flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(coords) = name
+            .strip_prefix("adt_")
+            .and_then(|n| n.strip_suffix(".obj"))
+        else {
+            continue;
+        };
+        if let Some((x, y)) = coords.split_once('_')
+            && let (Ok(x), Ok(y)) = (x.parse(), y.parse())
+        {
+            tiles.insert((x, y));
+        }
+    }
+    tiles
+}
+
+/// `<map>_world.bsn`: the zone and every tile at its place on the ADT grid, in the zone's frame
+/// (origin at the centre of the range's middle tile, heights absolute), so one scene opens the
+/// whole range.
+fn emit_world(args: &Args, tiles: &BTreeMap<(i32, i32), Vec<Placement>>) {
+    let prefix = &args.asset_prefix;
+    let centre = ((args.x0 + args.x1) / 2, (args.y0 + args.y1) / 2);
+    let mut children = vec![Entity {
+        components: vec![
+            bsn::name(&format!("{} zone", args.map)),
+            bsn::scene_ref(&format!("{prefix}/{}_zone.bsn", args.map)),
+        ],
+        children: Vec::new(),
+    }];
+    for &(ax, ay) in tiles.keys() {
+        children.push(Entity {
+            components: vec![
+                bsn::name(&format!("tile {ax},{ay}")),
+                bsn::transform(
+                    [
+                        (centre.0 - ax) as f32 * TILE,
+                        0.0,
+                        (centre.1 - ay) as f32 * TILE,
+                    ],
+                    None,
+                    None,
+                ),
+                bsn::scene_ref(&format!("{prefix}/{}_{ax}_{ay}.bsn", args.map)),
+            ],
+            children: Vec::new(),
+        });
+    }
+    let path = args.out_dir.join(format!("{}_world.bsn", args.map));
+    fs::write(
+        &path,
+        scene(&format!("{}_world", args.map), Vec::new(), children),
+    )
+    .expect("write world .bsn");
+    println!("world: {} tiles -> {}", tiles.len(), path.display());
+}
+
+// ---- liquids ---------------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct LiquidFile {
+    #[serde(rename = "liquidChunks")]
+    chunks: Vec<LiquidChunk>,
+}
+
+#[derive(serde::Deserialize)]
+struct LiquidChunk {
+    instances: Vec<LiquidInstance>,
+}
+
+#[derive(serde::Deserialize)]
+struct LiquidInstance {
+    #[serde(rename = "liquidType")]
+    liquid_type: u32,
+    #[serde(rename = "minHeightLevel")]
+    min_height: f32,
+    #[serde(rename = "xOffset")]
+    x_offset: usize,
+    #[serde(rename = "yOffset")]
+    y_offset: usize,
+    width: usize,
+    height: usize,
+    /// One bit per cell, row-major; absent = every cell.
+    #[serde(default)]
+    bitmap: Vec<u8>,
+    #[serde(rename = "vertexData", default)]
+    vertex_data: Option<LiquidVertices>,
+}
+
+#[derive(serde::Deserialize)]
+struct LiquidVertices {
+    /// `(width + 1) * (height + 1)` corner heights; absent = flat at `minHeightLevel`.
+    #[serde(default)]
+    height: Vec<f32>,
+}
+
+/// LiquidType 7: magma (Burning Steppes, Searing Gorge).
+const LIQUID_MAGMA: u32 = 7;
+/// Liquid cells on a tile's side (16 subchunks of 8).
+const LIQUID_CELLS: usize = 128;
+/// Water levels within this many yards share a box (a river steps down at most this much).
+const WATER_STEP: f32 = 2.0;
+/// A box may spread over a dry cell whose terrain is no more than this below its top (the bank's
+/// edge; the sliver of medium it adds lies under the bank's own slope).
+const WATER_BANK: f32 = 1.5;
+const WATER_IOR: f32 = 1.33;
+
+/// One water cell: its corner heights, (col, row), (col + 1, row), (col, row + 1), (col + 1, row + 1).
+type WaterCell = [f32; 4];
+
+/// A tile's water (`None` when it has none): a `water` entity whose children are the surface
+/// mesh and the medium's boxes, tile-local. Cell (col, row) of MH2O lies at our
+/// `x = TILE/2 - col * CELL`, `z = TILE/2 - row * CELL` and on (measured against the terrain:
+/// the only orientation whose water sits over its lake beds on every tile).
+fn emit_tile_liquids(args: &Args, map_dir: &Path, ax: i32, ay: i32) -> Option<Entity> {
+    let text = fs::read_to_string(map_dir.join(format!("liquid_{ax}_{ay}.json"))).ok()?;
+    let file: LiquidFile = match serde_json::from_str(&text) {
+        Ok(file) => file,
+        Err(err) => {
+            eprintln!("tile {ax},{ay}: liquid json: {err}");
+            return None;
+        }
+    };
+    let n = LIQUID_CELLS;
+    let mut cells: Vec<Option<WaterCell>> = vec![None; n * n];
+    let mut magma = 0usize;
+    for (ci, chunk) in file.chunks.iter().enumerate() {
+        for inst in &chunk.instances {
+            let heights = inst
+                .vertex_data
+                .as_ref()
+                .map(|v| v.height.as_slice())
+                .unwrap_or(&[]);
+            let w = inst.width;
+            for cy in 0..inst.height {
+                for cx in 0..w {
+                    let bit = cy * w + cx;
+                    if !inst.bitmap.is_empty()
+                        && inst.bitmap.get(bit >> 3).is_none_or(|b| (b >> (bit & 7)) & 1 == 0)
+                    {
+                        continue;
+                    }
+                    if inst.liquid_type == LIQUID_MAGMA {
+                        magma += 1;
+                        continue;
+                    }
+                    let corner = |dx: usize, dy: usize| {
+                        heights
+                            .get((cy + dy) * (w + 1) + cx + dx)
+                            .copied()
+                            .unwrap_or(inst.min_height)
+                    };
+                    let col = (ci % 16) * 8 + inst.x_offset + cx;
+                    let row = (ci / 16) * 8 + inst.y_offset + cy;
+                    if col < n && row < n {
+                        cells[row * n + col] =
+                            Some([corner(0, 0), corner(1, 0), corner(0, 1), corner(1, 1)]);
+                    }
+                }
+            }
+        }
+    }
+    if magma > 0 {
+        println!("tile {ax},{ay}: {magma} magma cells skipped");
+    }
+    if cells.iter().all(Option::is_none) {
+        return None;
+    }
+
+    let floor = terrain_cell_floor(map_dir, ax, ay);
+    let mut children = Vec::new();
+    if let Some(surface) = water_surface(args, ax, ay, &cells) {
+        children.push(surface);
+    }
+    children.extend(water_boxes(&cells, &floor));
+    Some(Entity {
+        components: vec![bsn::name("water")],
+        children,
+    })
+}
+
+/// Our tile-local (x, z) of MH2O corner (col, row).
+fn liquid_xz(col: usize, row: usize) -> [f32; 2] {
+    let cell = TILE / LIQUID_CELLS as f32;
+    [TILE * 0.5 - col as f32 * cell, TILE * 0.5 - row as f32 * cell]
+}
+
+/// The lowest terrain under each liquid cell (from the ADT OBJ's vertices; `NEG_INFINITY` where
+/// none, a hole).
+fn terrain_cell_floor(map_dir: &Path, ax: i32, ay: i32) -> Vec<f32> {
+    let n = LIQUID_CELLS;
+    let mut floor = vec![f32::INFINITY; n * n];
+    if let Some((models, _)) = load_obj(&map_dir.join(format!("adt_{ax}_{ay}.obj"))) {
+        let cell = TILE / n as f32;
+        let centre = [C - (ax as f32 + 0.5) * TILE, C - (ay as f32 + 0.5) * TILE];
+        for m in &models {
+            for v in m.mesh.positions.chunks_exact(3) {
+                // A vertex on a cell corner counts for every cell it touches.
+                let fc = (TILE * 0.5 - (v[0] - centre[0])) / cell;
+                let fr = (TILE * 0.5 - (v[2] - centre[1])) / cell;
+                for c in [(fc - 1e-3).floor(), (fc + 1e-3).floor()] {
+                    for r in [(fr - 1e-3).floor(), (fr + 1e-3).floor()] {
+                        if c >= 0.0 && r >= 0.0 && (c as usize) < n && (r as usize) < n {
+                            let i = r as usize * n + c as usize;
+                            floor[i] = floor[i].min(v[1]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    floor
+        .into_iter()
+        .map(|f| if f.is_finite() { f } else { f32::NEG_INFINITY })
+        .collect()
+}
+
+/// Every water cell as one mesh: flat cells of one height merged into rectangles, sloped ones a
+/// quad each.
+fn water_surface(args: &Args, ax: i32, ay: i32, cells: &[Option<WaterCell>]) -> Option<Entity> {
+    let n = LIQUID_CELLS;
+    let flat = |i: usize| cells[i].filter(|c| c.iter().all(|&h| h == c[0])).map(|c| c[0]);
+    let mut done = vec![false; n * n];
+    let mut positions: Vec<f32> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+    let mut quad = |c0: usize, r0: usize, c1: usize, r1: usize, h: WaterCell| {
+        let base = (positions.len() / 3) as u32;
+        for (k, (c, r)) in [(c0, r0), (c1, r0), (c0, r1), (c1, r1)].into_iter().enumerate() {
+            let [x, z] = liquid_xz(c, r);
+            positions.extend([x, h[k], z]);
+        }
+        // Facing up: +col is -x and +row is -z, so (0, 2, 1) winds counter-clockwise from above.
+        indices.extend([base, base + 2, base + 1, base + 1, base + 2, base + 3]);
+    };
+    for r in 0..n {
+        for c in 0..n {
+            let i = r * n + c;
+            if done[i] {
+                continue;
+            }
+            let Some(cell) = cells[i] else { continue };
+            let Some(h) = flat(i) else {
+                done[i] = true;
+                quad(c, r, c + 1, r + 1, cell);
+                continue;
+            };
+            let same = |cc: usize, rr: usize, done: &[bool]| {
+                cc < n && rr < n && !done[rr * n + cc] && flat(rr * n + cc) == Some(h)
+            };
+            let mut w = 1;
+            while same(c + w, r, &done) {
+                w += 1;
+            }
+            let mut d = 1;
+            while (0..w).all(|k| same(c + k, r + d, &done)) {
+                d += 1;
+            }
+            for rr in r..r + d {
+                for cc in c..c + w {
+                    done[rr * n + cc] = true;
+                }
+            }
+            quad(c, r, c + w, r + d, [h; 4]);
+        }
+    }
+    if indices.is_empty() {
+        return None;
+    }
+    let source = tobj::Mesh {
+        positions,
+        indices,
+        ..Default::default()
+    };
+    let centre = submesh_centroid(&source)?;
+    let mut mesh = build_mesh(&source, centre);
+    mesh.compute_normals();
+    let Ok(cm) = AuroraMesh::clustered(&mesh) else {
+        eprintln!("tile {ax},{ay}: water surface bake failed");
+        return None;
+    };
+    let stem = format!("{}_{ax}_{ay}_water", args.map);
+    let file = args.out_dir.join("meshes").join(format!("{stem}.aurora_mesh"));
+    let w = BufWriter::new(File::create(&file).expect("create .aurora_mesh"));
+    write_aurora_mesh(&cm, w).expect("write .aurora_mesh");
+    let mut entity = mesh_entity(
+        &args.asset_prefix,
+        &stem,
+        vec![
+            ("perceptual_roughness", Value::Float(0.0)),
+            ("specular_transmission", Value::Float(1.0)),
+            ("ior", Value::Float(WATER_IOR)),
+            ("double_sided", Value::Bool(true)),
+            ("cull_mode", Value::Path("None")),
+        ],
+        "water surface",
+        [centre[0] as f32, centre[1] as f32, centre[2] as f32],
+        Quat::IDENTITY.to_array(),
+        [1.0; 3],
+        None,
+    );
+    entity
+        .components
+        .push(Value::Path("bevy_aurora::water_volume::WaterSurface"));
+    Some(entity)
+}
+
+/// The medium as boxes, each from its cells' lowest terrain to their highest water. Cells within
+/// [`WATER_STEP`] of each other share one; a box spreads over any cell whose terrain stands
+/// above its top (less [`WATER_BANK`]), where its water would be underground, so boxes never
+/// share water above ground.
+fn water_boxes(cells: &[Option<WaterCell>], floor: &[f32]) -> Vec<Entity> {
+    let n = LIQUID_CELLS;
+    let level = |i: usize| cells[i].map(|c| c.iter().copied().fold(f32::MIN, f32::max));
+    // Cells whose water stands over their terrain somewhere, keyed by their step.
+    let key: Vec<Option<i32>> = (0..n * n)
+        .map(|i| {
+            let l = level(i)?;
+            (floor[i] < l).then(|| (l / WATER_STEP).round() as i32)
+        })
+        .collect();
+    let mut used = vec![false; n * n];
+    let mut boxes = Vec::new();
+    for r in 0..n {
+        for c in 0..n {
+            let i = r * n + c;
+            let Some(k) = key[i] else { continue };
+            if used[i] {
+                continue;
+            }
+            let top_guess = (k as f32 + 0.5) * WATER_STEP;
+            let fits = |cc: usize, rr: usize, used: &[bool]| {
+                if cc >= n || rr >= n {
+                    return false;
+                }
+                let j = rr * n + cc;
+                match key[j] {
+                    Some(kj) => kj == k && !used[j],
+                    None => floor[j] > top_guess - WATER_BANK,
+                }
+            };
+            let mut w = 1;
+            while fits(c + w, r, &used) {
+                w += 1;
+            }
+            let mut d = 1;
+            while (0..w).all(|kk| fits(c + kk, r + d, &used)) {
+                d += 1;
+            }
+            let (mut top, mut bottom) = (f32::MIN, f32::MAX);
+            for rr in r..r + d {
+                for cc in c..c + w {
+                    let j = rr * n + cc;
+                    if key[j].is_some() {
+                        used[j] = true;
+                        top = top.max(level(j).unwrap());
+                        if floor[j].is_finite() {
+                            bottom = bottom.min(floor[j]);
+                        }
+                    }
+                }
+            }
+            if bottom > top {
+                // Only holes under it: a nominal depth.
+                bottom = top - 10.0;
+            }
+            bottom -= 1.0;
+            let [x0, z0] = liquid_xz(c, r);
+            let [x1, z1] = liquid_xz(c + w, r + d);
+            boxes.push(Entity {
+                components: vec![
+                    bsn::name("water volume"),
+                    bsn::transform(
+                        [(x0 + x1) * 0.5, (top + bottom) * 0.5, (z0 + z1) * 0.5],
+                        None,
+                        None,
+                    ),
+                    Value::Struct(
+                        "bevy_aurora::water_volume::WaterVolume",
+                        vec![(
+                            "half_extents",
+                            bsn::vec3([
+                                (x0 - x1).abs() * 0.5,
+                                (top - bottom) * 0.5,
+                                (z0 - z1).abs() * 0.5,
+                            ]),
+                        )],
+                    ),
+                ],
+                children: Vec::new(),
+            });
+        }
+    }
+    boxes
 }
 
 // ---- model baking ---------------------------------------------------------------------------
