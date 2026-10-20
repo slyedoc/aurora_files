@@ -7,7 +7,7 @@
 //! The asset root is `$BEVY_ASSET_ROOT` if set, else the current directory when it has an
 //! `assets/` folder (so the installed binary works from any repo), else this workspace. Scene
 //! paths resolve against that root, which is also what the `.bsn`'s own mesh/texture strings
-//! assume. `--timeout` auto-exits (always on under CLAUDECODE). F2 toggles aurora's dev panel,
+//! assume. `--timeout` auto-exits. F2 toggles aurora's dev panel,
 //! F1 the world inspector, Space toggles accumulation. A scene baked with clips (`.animclip`
 //! beside its `.bsn`) plays the first on loop; N steps to the next.
 
@@ -118,7 +118,7 @@ fn main() {
         HoverParkPlugin,
     ));    
     app.add_screenshot(KeyCode::F12);
-    app.add_timeout_exit(args.timeout, 60.0);
+    app.add_timeout_exit(args.timeout);
     app.insert_resource(args.clone());
     app.add_systems(Startup, setup);
     app.add_systems(Update, (cycle_sky, next_clip));

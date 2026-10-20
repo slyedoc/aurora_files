@@ -91,7 +91,7 @@ fn main() {
     ));
     app.init_asset::<Kit>().register_asset_loader(KitLoader);
     app.add_screenshot(KeyCode::F12);
-    app.add_timeout_exit(args.timeout, 60.0);
+    app.add_timeout_exit(args.timeout);
     app.init_resource::<Filter>();
     app.insert_resource(args);
     app.init_resource::<PaletteDirty>();

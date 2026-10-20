@@ -9,7 +9,7 @@
 //!   cargo run --release -p bevy_city -- --size 30 --car-density 0.3
 //!
 //! `--size 100` is the 2M-entity configuration. F2 toggles aurora's dev panel, F1 the world
-//! inspector, Space toggles accumulation; `--timeout` auto-exits (always on under CLAUDECODE).
+//! inspector, Space toggles accumulation; `--timeout` auto-exits.
 
 use bevy::{
     camera_controller::free_camera::{FreeCamera, FreeCameraPlugin},
@@ -98,9 +98,7 @@ fn main() {
         }
     }
     let args = Args::parse();
-    let timeout = args
-        .timeout
-        .or_else(|| std::env::var_os("CLAUDECODE").map(|_| 60.0));
+    let timeout = args.timeout;
 
     let mut app = App::new();
     app.add_plugins(AuroraDefaultPlugins.set(bevy::log::LogPlugin {
