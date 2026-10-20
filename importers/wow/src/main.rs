@@ -677,6 +677,10 @@ fn main() {
         &texture_effects,
         &mut cutmask_cache,
     );
+    // Material textures to block-compressed KTX2 (BC7 colour, BC5 normals), as every importer
+    // finishes: the zone's thousands of colour PNGs otherwise upload as uncompressed RGBA. The
+    // landscape palette's ground textures are not material fields and stay as they are.
+    aurora_bsn::finish_textures(&args.out_dir, &args.asset_prefix);
     println!("done.");
 }
 
@@ -1176,7 +1180,7 @@ impl PaletteBuilder {
 }
 
 /// One ground-texture layer of a terrain subchunk (wow.export `tex_X_Y_<chunk>.json`).
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Clone)]
 struct LayerDef {
     /// Alpha channel in the chunk's 64×64 png (−1 = base layer, full weight).
     #[serde(rename = "channelIndex")]
@@ -1186,10 +1190,87 @@ struct LayerDef {
     /// GroundEffectTexture row: the ground clutter this layer grows (0 = none).
     #[serde(rename = "effectID", default)]
     effect_id: u32,
+    /// The chunk it belongs to: set in a whole tile's `tex_X_Y.json`, absent per chunk.
+    #[serde(rename = "chunkIndex", default)]
+    chunk_index: u32,
 }
 #[derive(serde::Deserialize)]
 struct ChunkLayers {
     layers: Vec<LayerDef>,
+}
+
+/// A tile's splat source as wow.export wrote it: one json + 64² png per chunk
+/// (`tex_X_Y_<chunk>`, "split alpha maps" on), or one json listing every chunk's layers and one
+/// 1024² atlas of the chunks' 64² cells (`tex_X_Y`, off). The two are the same data: on tile
+/// 32,48, which has both, every texel and layer list matches.
+enum SplatSource {
+    PerChunk,
+    Whole {
+        layers: Vec<Vec<LayerDef>>,
+        atlas: Option<image::RgbaImage>,
+    },
+}
+
+impl SplatSource {
+    fn open(map_dir: &Path, ax: i32, ay: i32) -> Self {
+        if map_dir.join(format!("tex_{ax}_{ay}_0.json")).exists() {
+            return Self::PerChunk;
+        }
+        let mut layers: Vec<Vec<LayerDef>> = (0..256).map(|_| Vec::new()).collect();
+        if let Some(whole) = fs::read_to_string(map_dir.join(format!("tex_{ax}_{ay}.json")))
+            .ok()
+            .and_then(|t| serde_json::from_str::<ChunkLayers>(&t).ok())
+        {
+            for layer in whole.layers {
+                if let Some(chunk) = layers.get_mut(layer.chunk_index as usize) {
+                    chunk.push(layer);
+                }
+            }
+        }
+        let atlas = image::open(map_dir.join(format!("tex_{ax}_{ay}.png")))
+            .ok()
+            .map(|img| img.into_rgba8());
+        Self::Whole { layers, atlas }
+    }
+
+    /// Chunk `ci`'s layers, base first.
+    fn layers(&self, map_dir: &Path, ax: i32, ay: i32, ci: u32) -> Vec<LayerDef> {
+        match self {
+            Self::PerChunk => fs::read_to_string(map_dir.join(format!("tex_{ax}_{ay}_{ci}.json")))
+                .ok()
+                .and_then(|t| serde_json::from_str::<ChunkLayers>(&t).ok())
+                .map_or_else(Vec::new, |c| c.layers),
+            Self::Whole { layers, .. } => layers[ci as usize].clone(),
+        }
+    }
+
+    /// The 1024² alpha atlas, chunk `ci` in cell (ci % 16, ci / 16).
+    fn atlas(&self, map_dir: &Path, ax: i32, ay: i32) -> image::RgbaImage {
+        match self {
+            Self::Whole {
+                atlas: Some(atlas), ..
+            } => atlas.clone(),
+            Self::Whole { atlas: None, .. } => image::RgbaImage::new(ALPHA_ATLAS, ALPHA_ATLAS),
+            Self::PerChunk => {
+                let mut atlas = image::RgbaImage::new(ALPHA_ATLAS, ALPHA_ATLAS);
+                for ci in 0..256u32 {
+                    let Ok(img) = image::open(map_dir.join(format!("tex_{ax}_{ay}_{ci}.png")))
+                    else {
+                        continue;
+                    };
+                    let img = img.into_rgba8();
+                    let x0 = (ci % 16) * ALPHA_CELL;
+                    let y0 = (ci / 16) * ALPHA_CELL;
+                    for y in 0..ALPHA_CELL.min(img.height()) {
+                        for x in 0..ALPHA_CELL.min(img.width()) {
+                            atlas.put_pixel(x0 + x, y0 + y, *img.get_pixel(x, y));
+                        }
+                    }
+                }
+                atlas
+            }
+        }
+    }
 }
 
 /// Write one tile's terrain data: the 16-bit height grid (resampled from the ADT OBJ's
@@ -1209,24 +1290,20 @@ fn emit_tile_map(
 
     // Layer tables always resolve against the palette (so the palette stays complete even
     // when this tile's files already exist).
+    let splat = SplatSource::open(map_dir, ax, ay);
     let mut chunks: Vec<[u32; 4]> = Vec::with_capacity(256);
     for ci in 0..256u32 {
         let mut entry = [NO_LAYER; 4];
-        if let Some(defs) = fs::read_to_string(map_dir.join(format!("tex_{ax}_{ay}_{ci}.json")))
-            .ok()
-            .and_then(|t| serde_json::from_str::<ChunkLayers>(&t).ok())
-        {
-            for l in defs.layers.iter() {
-                // Slot by channel: base (channelIndex -1) -> 0, channels 0..2 -> 1..3.
-                let slot = (l.channel_index + 1).clamp(0, 3) as usize;
-                let index = palette.index(map_dir, &l.file);
-                entry[slot] = index;
-                if l.effect_id != 0 {
-                    texture_effects
-                        .entry(palette.name(index).to_string())
-                        .or_default()
-                        .insert(l.effect_id);
-                }
+        for l in splat.layers(map_dir, ax, ay, ci).iter() {
+            // Slot by channel: base (channelIndex -1) -> 0, channels 0..2 -> 1..3.
+            let slot = (l.channel_index + 1).clamp(0, 3) as usize;
+            let index = palette.index(map_dir, &l.file);
+            entry[slot] = index;
+            if l.effect_id != 0 {
+                texture_effects
+                    .entry(palette.name(index).to_string())
+                    .or_default()
+                    .insert(l.effect_id);
             }
         }
         chunks.push(entry);
@@ -1333,21 +1410,8 @@ fn emit_tile_map(
     );
     img.save(&height_path).expect("write height png");
 
-    // Alphamap atlas: each chunk's 64² png blitted into its 16×16 cell.
-    let mut atlas = image::RgbaImage::new(ALPHA_ATLAS, ALPHA_ATLAS);
-    for ci in 0..256u32 {
-        let Ok(img) = image::open(map_dir.join(format!("tex_{ax}_{ay}_{ci}.png"))) else {
-            continue;
-        };
-        let img = img.into_rgba8();
-        let x0 = (ci % 16) * ALPHA_CELL;
-        let y0 = (ci / 16) * ALPHA_CELL;
-        for y in 0..ALPHA_CELL.min(img.height()) {
-            for x in 0..ALPHA_CELL.min(img.width()) {
-                atlas.put_pixel(x0 + x, y0 + y, *img.get_pixel(x, y));
-            }
-        }
-    }
+    // Alphamap atlas: each chunk's 64² alphas in its 16×16 cell.
+    let atlas = splat.atlas(map_dir, ax, ay);
 
     // Rotate the splat data 180° into OUR tile frame. Our whole world is the wow frame
     // rotated 180° about Y (the placement transform: t → (−x, y, −z)), so BOTH atlas axes
@@ -1463,7 +1527,10 @@ fn emit_zone(args: &Args, palette: &PaletteBuilder, tiles: &[((i32, i32), (f32, 
             let normal = surface::derive(&tileset, name, kind, false)
                 .and_then(|d| d.normal)
                 .map_or(Value::Path("None"), |n| {
-                    Value::Tuple("Some", vec![Value::Str(format!("{prefix}/map/tileset/{n}"))])
+                    Value::Tuple(
+                        "Some",
+                        vec![Value::Str(format!("{prefix}/map/tileset/{n}"))],
+                    )
                 });
             Value::Struct(
                 "aurora_landscape::shading::LandscapeMaterial",
@@ -1727,7 +1794,10 @@ fn emit_tile_liquids(args: &Args, map_dir: &Path, ax: i32, ay: i32) -> Option<En
                 for cx in 0..w {
                     let bit = cy * w + cx;
                     if !inst.bitmap.is_empty()
-                        && inst.bitmap.get(bit >> 3).is_none_or(|b| (b >> (bit & 7)) & 1 == 0)
+                        && inst
+                            .bitmap
+                            .get(bit >> 3)
+                            .is_none_or(|b| (b >> (bit & 7)) & 1 == 0)
                     {
                         continue;
                     }
@@ -1773,7 +1843,10 @@ fn emit_tile_liquids(args: &Args, map_dir: &Path, ax: i32, ay: i32) -> Option<En
 /// Our tile-local (x, z) of MH2O corner (col, row).
 fn liquid_xz(col: usize, row: usize) -> [f32; 2] {
     let cell = TILE / LIQUID_CELLS as f32;
-    [TILE * 0.5 - col as f32 * cell, TILE * 0.5 - row as f32 * cell]
+    [
+        TILE * 0.5 - col as f32 * cell,
+        TILE * 0.5 - row as f32 * cell,
+    ]
 }
 
 /// The lowest terrain under each liquid cell (from the ADT OBJ's vertices; `NEG_INFINITY` where
@@ -1810,13 +1883,20 @@ fn terrain_cell_floor(map_dir: &Path, ax: i32, ay: i32) -> Vec<f32> {
 /// quad each.
 fn water_surface(args: &Args, ax: i32, ay: i32, cells: &[Option<WaterCell>]) -> Option<Entity> {
     let n = LIQUID_CELLS;
-    let flat = |i: usize| cells[i].filter(|c| c.iter().all(|&h| h == c[0])).map(|c| c[0]);
+    let flat = |i: usize| {
+        cells[i]
+            .filter(|c| c.iter().all(|&h| h == c[0]))
+            .map(|c| c[0])
+    };
     let mut done = vec![false; n * n];
     let mut positions: Vec<f32> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     let mut quad = |c0: usize, r0: usize, c1: usize, r1: usize, h: WaterCell| {
         let base = (positions.len() / 3) as u32;
-        for (k, (c, r)) in [(c0, r0), (c1, r0), (c0, r1), (c1, r1)].into_iter().enumerate() {
+        for (k, (c, r)) in [(c0, r0), (c1, r0), (c0, r1), (c1, r1)]
+            .into_iter()
+            .enumerate()
+        {
             let [x, z] = liquid_xz(c, r);
             positions.extend([x, h[k], z]);
         }
@@ -1870,7 +1950,10 @@ fn water_surface(args: &Args, ax: i32, ay: i32, cells: &[Option<WaterCell>]) -> 
         return None;
     };
     let stem = format!("{}_{ax}_{ay}_water", args.map);
-    let file = args.out_dir.join("meshes").join(format!("{stem}.aurora_mesh"));
+    let file = args
+        .out_dir
+        .join("meshes")
+        .join(format!("{stem}.aurora_mesh"));
     let w = BufWriter::new(File::create(&file).expect("create .aurora_mesh"));
     write_aurora_mesh(&cm, w).expect("write .aurora_mesh");
     let mut entity = mesh_entity(
