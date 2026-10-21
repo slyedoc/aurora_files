@@ -14,7 +14,7 @@ use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-use aurora_mesh::{AuroraMesh, write_aurora_mesh};
+use aurora_mesh::{AuroraMesh, MorphTargets, write_aurora_mesh};
 use bevy::asset::RenderAssetUsages;
 use bevy::math::{Mat4, Quat, Vec3};
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
@@ -1009,7 +1009,8 @@ fn bake_primitive(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> O
     let mesh_file = ctx.meshes_dir.join(format!("{stem}.aurora_mesh"));
 
     let bevy_mesh = build_primitive_mesh(prim, ctx.buffers, ctx.scale)?;
-    match AuroraMesh::clustered(&bevy_mesh) {
+    let morphs = primitive_morph_targets(mesh, prim, ctx.buffers, ctx.scale);
+    match AuroraMesh::clustered_with_morphs(&bevy_mesh, morphs.as_ref()) {
         Ok(mut cm) => {
             // Alpha-cutout primitives get a baked opacity micromap against their base-colour
             // alpha (the material's own cutoff).
@@ -1064,6 +1065,36 @@ pub fn bake_glb_primitive(glb_path: &Path, out_file: &Path) -> Result<bool, Stri
     let w = BufWriter::new(File::create(out_file).map_err(|e| format!("create: {e}"))?);
     write_aurora_mesh(&cm, w).map_err(|e| format!("write cluster: {e:?}"))?;
     Ok(true)
+}
+
+/// A primitive's morph targets (position offsets, scaled like its positions) named by the mesh's
+/// `extras.targetNames` (what Blender exports), or `None` when it has none.
+pub(crate) fn primitive_morph_targets(
+    mesh: &gltf::Mesh,
+    prim: &gltf::Primitive,
+    buffers: &[gltf::buffer::Data],
+    scale: f32,
+) -> Option<MorphTargets> {
+    let reader = prim.reader(|b| buffers.get(b.index()).map(|d| d.0.as_slice()));
+    let n = reader.read_positions()?.len();
+    let positions: Vec<Vec<Vec3>> = reader
+        .read_morph_targets()
+        .map(|(p, _, _)| match p {
+            Some(p) => p.map(|d| Vec3::from(d) * scale).collect(),
+            None => vec![Vec3::ZERO; n],
+        })
+        .collect();
+    if positions.is_empty() {
+        return None;
+    }
+    let names: Vec<String> = mesh
+        .extras()
+        .as_ref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw.get()).ok())
+        .and_then(|v| v.get("targetNames").cloned())
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    Some(MorphTargets { names, positions })
 }
 
 /// Build a bevy [`Mesh`] from a glTF primitive (positions in node-local space; the node's world

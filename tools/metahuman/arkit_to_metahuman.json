@@ -1,0 +1,199 @@
+{
+ "controls_prefix": "CTRL_expressions_",
+ "poses": {
+  "BrowDownLeft": {
+   "browdownl": 1.0
+  },
+  "BrowDownRight": {
+   "browdownr": 1.0
+  },
+  "BrowInnerUp": {
+   "browlaterall": 1.0,
+   "browlateralr": 1.0,
+   "browraiseinl": 1.0,
+   "browraiseinr": 1.0
+  },
+  "BrowOuterUpLeft": {
+   "browraiseinl": 1.0,
+   "browraiseouterl": 1.0
+  },
+  "BrowOuterUpRight": {
+   "browraiseinr": 1.0,
+   "browraiseouterr": 1.0
+  },
+  "CheekPuff": {
+   "mouthcheekblowl": 1.0,
+   "mouthcheekblowr": 1.0,
+   "mouthlipsblowl": 1.0,
+   "mouthlipsblowr": 1.0
+  },
+  "CheekSquintLeft": {
+   "eyecheekraisel": 1.0
+  },
+  "CheekSquintRight": {
+   "eyecheekraiser": 1.0
+  },
+  "EyeBlinkLeft": {
+   "eyeblinkl": 1.0
+  },
+  "EyeBlinkRight": {
+   "eyeblinkr": 1.0
+  },
+  "EyeLookDownLeft": {
+   "eyelookdownl": 1.0
+  },
+  "EyeLookDownRight": {
+   "eyelookdownr": 1.0
+  },
+  "EyeLookInLeft": {
+   "eyelookrightl": 1.0
+  },
+  "EyeLookInRight": {
+   "eyelookleftr": 1.0
+  },
+  "EyeLookOutLeft": {
+   "eyelookleftl": 1.0
+  },
+  "EyeLookOutRight": {
+   "eyelookrightr": 1.0
+  },
+  "EyeLookUpLeft": {
+   "eyelookupl": 1.0
+  },
+  "EyeLookUpRight": {
+   "eyelookupr": 1.0
+  },
+  "EyeSquintLeft": {
+   "eyesquintinnerl": 1.0
+  },
+  "EyeSquintRight": {
+   "eyesquintinnerr": 1.0
+  },
+  "EyeWideLeft": {
+   "eyewidenl": 1.0
+  },
+  "EyeWideRight": {
+   "eyewidenr": 1.0
+  },
+  "JawForward": {
+   "jawfwd": 0.999
+  },
+  "JawLeft": {
+   "jawleft": 1.0
+  },
+  "JawOpen": {
+   "jawopen": 1.0
+  },
+  "JawRight": {
+   "jawright": 1.0
+  },
+  "MouthClose": {
+   "jawOpen": 1.0,
+   "mouthLipsTogetherDL": 1.0,
+   "mouthLipsTogetherDR": 1.0,
+   "mouthLipsTogetherUL": 1.0,
+   "mouthLipsTogetherUR": 1.0
+  },
+  "MouthDimpleLeft": {
+   "mouthdimplel": 1.0
+  },
+  "MouthDimpleRight": {
+   "mouthdimpler": 1.0
+  },
+  "MouthFrownLeft": {
+   "mouthcornerdepressl": 1.0
+  },
+  "MouthFrownRight": {
+   "mouthcornerdepressr": 1.0
+  },
+  "MouthFunnel": {
+   "mouthfunneldl": 1.0,
+   "mouthfunneldr": 1.0,
+   "mouthfunnelul": 1.0,
+   "mouthfunnelur": 1.0
+  },
+  "MouthLeft": {
+   "mouthleft": 1.0
+  },
+  "MouthLowerDownLeft": {
+   "mouthlowerlipdepressl": 1.0
+  },
+  "MouthLowerDownRight": {
+   "mouthlowerlipdepressr": 1.0
+  },
+  "MouthPressLeft": {
+   "mouthpressdl": 1.0,
+   "mouthpressul": 1.0
+  },
+  "MouthPressRight": {
+   "mouthpressdr": 1.0,
+   "mouthpressur": 1.0
+  },
+  "MouthPucker": {
+   "mouthfunneldl": 0.752,
+   "mouthfunneldr": 0.752,
+   "mouthfunnelul": 0.752,
+   "mouthfunnelur": 0.752,
+   "mouthlipspursedl": 1.0,
+   "mouthlipspursedr": 1.0,
+   "mouthlipspurseul": 1.0,
+   "mouthlipspurseur": 1.0,
+   "mouthlipstowardsdl": 0.412,
+   "mouthlipstowardsdr": 0.412,
+   "mouthlipstowardsul": 0.412,
+   "mouthlipstowardsur": 0.412
+  },
+  "MouthRight": {
+   "mouthright": 1.0
+  },
+  "MouthRollLower": {
+   "mouthlowerliprollinl": 1.0,
+   "mouthlowerliprollinr": 1.0,
+   "mouthupperliprollinl": 0.499,
+   "mouthupperliprollinr": 0.499
+  },
+  "MouthRollUpper": {
+   "mouthupperliprollinl": 0.998,
+   "mouthupperliprollinr": 0.998
+  },
+  "MouthShrugLower": {
+   "jawchinraisedl": 1.0,
+   "jawchinraisedr": 1.0
+  },
+  "MouthShrugUpper": {
+   "jawchinraiseul": 1.0,
+   "jawchinraiseur": 1.0
+  },
+  "MouthSmileLeft": {
+   "mouthcornerpulll": 1.0
+  },
+  "MouthSmileRight": {
+   "mouthcornerpullr": 1.0
+  },
+  "MouthStretchLeft": {
+   "mouthstretchl": 1.0
+  },
+  "MouthStretchRight": {
+   "mouthstretchr": 1.0
+  },
+  "MouthUpperUpLeft": {
+   "mouthupperlipraisel": 1.0
+  },
+  "MouthUpperUpRight": {
+   "mouthupperlipraiser": 1.0
+  },
+  "NoseSneerLeft": {
+   "nosewrinklel": 1.0
+  },
+  "NoseSneerRight": {
+   "nosewrinkler": 1.0
+  },
+  "TongueOut": {
+   "tonguedown": 0.826,
+   "tongueout": 0.769,
+   "tongueright": 0.07,
+   "tonguewide": 0.628
+  }
+ },
+ "source": "MetaHumanCharacter/Face/ARKit/AS_MetaHuman_ARKit_Mapping (UE 5.7.4), each pose minus Default, |v|<0.05 dropped; MouthClose (absent from Epic's mapping) is evaluated as jawOpen + mouthLipsTogether U/D L/R and baked minus JawOpen; tongueRollDown dropped (not a raw control in UE 5.7 head DNA)"
+}

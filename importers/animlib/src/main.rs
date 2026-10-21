@@ -61,6 +61,10 @@ struct Args {
     /// pelvis is keyed relative to `root`. Bake from a root-motion source (`*_RM.glb`).
     #[arg(long)]
     root_motion: bool,
+
+    /// Write only the rig's `.skn.ron` (clips retargeted elsewhere, e.g. UE's own retargeter).
+    #[arg(long)]
+    skeleton_only: bool,
 }
 
 /// Source joint name -> target bone name, tried FIRST; the caller falls back to the source name
@@ -856,6 +860,9 @@ fn main() {
     });
     let skeleton_asset = asset_path(&skeleton);
     eprintln!("skeleton: {} bones -> {}", rig.bones.len(), skeleton.display());
+    if args.skeleton_only {
+        return;
+    }
 
     fs::create_dir_all(&args.out).expect("create out dir");
     let wanted: BTreeSet<&str> = args.clips.iter().map(|s| s.as_str()).collect();
