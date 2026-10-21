@@ -444,6 +444,8 @@ struct BakedSubmesh {
     material_fields: Vec<(&'static str, Value)>,
     /// Local centroid the geometry was centered on (translation of an un-instanced entity).
     centroid: Vec3,
+    /// The submesh's bounds in the model's space.
+    bounds: (Vec3, Vec3),
     /// A glow card's halo as a point light at the centroid: (linear colour, lumens at unit
     /// scale, emitter radius).
     glow_light: Option<([f32; 3], f32, f32)>,
@@ -617,8 +619,19 @@ fn main() {
                 children: Vec::new(),
             });
         }
+        let (lo, hi) = submeshes
+            .iter()
+            .filter(|sub| sub.drawn)
+            .fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), sub| {
+                (lo.min(sub.bounds.0), hi.max(sub.bounds.1))
+            });
+        let root = if lo.cmple(hi).all() {
+            vec![bsn::prop(lo.to_array(), hi.to_array())]
+        } else {
+            Vec::new()
+        };
         let path = args.out_dir.join("models").join(format!("{stem}.bsn"));
-        fs::write(&path, scene(&stem, Vec::new(), parts)).expect("write model .bsn");
+        fs::write(&path, scene(&stem, root, parts)).expect("write model .bsn");
         model_scenes.insert(
             rel.clone(),
             format!("{}/models/{stem}.bsn", args.asset_prefix),
@@ -2372,6 +2385,13 @@ fn bake_model(
             material_fields: fields,
             mesh_stem,
             centroid: Vec3::new(centroid[0] as f32, centroid[1] as f32, centroid[2] as f32),
+            bounds: m.mesh.positions.chunks_exact(3).fold(
+                (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
+                |(lo, hi), p| {
+                    let p = Vec3::new(p[0], p[1], p[2]);
+                    (lo.min(p), hi.max(p))
+                },
+            ),
             glow_light,
         });
     }

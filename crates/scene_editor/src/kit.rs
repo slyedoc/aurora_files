@@ -1,35 +1,23 @@
-//! Kit manifests: what a baked prop set contains, and how to find every set on disk.
+//! The prop sets on disk: every `.bsn` whose root carries a `bevy_aurora::prop::Prop` (the bakers
+//! write it), grouped by the asset folder it sits in.
 //!
-//! **A bevy `AssetServer` cannot enumerate.** There is no "list the `.bsn` files under this
-//! folder" call, and a shipped build has no folder to walk anyway — the asset source may be a
-//! processed cache or a remote reader. So a palette cannot discover its own contents at runtime;
-//! something has to have written the list down. `prop_import` does, at bake time, because that
-//! is the one moment the answer is known for free.
-//!
-//! That leaves the same problem one level up — which KITS exist — and it gets the opposite
-//! answer: a tool may walk the filesystem, because a tool runs against a working tree. So
-//! discovery scans for `*.kit.ron`, and everything below that point is data.
+//! **A bevy `AssetServer` cannot enumerate**, so this walks the filesystem: a tool runs against a
+//! working tree. `bevy_aurora::prop::catalog` reads the bounds from the files' text, so the shelf
+//! can lay out before a single prop has streamed.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use bevy::{asset::AssetPath, prelude::*};
-use serde::Deserialize;
-
-/// One baked prop set: the manifest `prop_import` writes beside the `.bsn` files it produced.
-#[derive(Asset, TypePath, Debug, Deserialize)]
-pub struct Kit {
-    pub props: Vec<KitProp>,
-}
+use bevy::prelude::*;
+use bevy_aurora::prop::catalog;
 
 /// One placeable `.bsn`, with the bounds it was baked at.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct KitProp {
     /// The prop's name, which is its source glTF node's name sanitized.
     pub name: String,
     /// Asset-relative path to the `.bsn`, ready to hand to the `AssetServer`.
     pub bsn: String,
-    /// Corners of the prop's own AABB, in metres, at its baked origin. Stored as arrays rather
-    /// than `Vec3` because RON writes a 3-tuple and glam's serde impl expects a struct.
+    /// Corners of the prop's own AABB, in metres, at its baked origin.
     pub min: [f32; 3],
     pub max: [f32; 3],
 }
@@ -100,93 +88,39 @@ impl KitProp {
     }
 }
 
-/// Every kit found under the asset root, in load order.
+/// Every prop set under the asset root, by folder name.
 #[derive(Resource, Default)]
 pub struct Kits(pub Vec<KitEntry>);
 
 pub struct KitEntry {
-    /// The manifest's own stem, e.g. `fantasy_props`.
+    /// The top-level asset folder, e.g. `props`, `lunarbase`.
     pub name: String,
-    pub handle: Handle<Kit>,
+    pub props: Vec<KitProp>,
 }
 
-/// Reads `<name>.kit.ron`.
-#[derive(Default, TypePath)]
-pub struct KitLoader;
-
-impl bevy::asset::AssetLoader for KitLoader {
-    type Asset = Kit;
-    type Settings = ();
-    type Error = KitLoadError;
-
-    fn extensions(&self) -> &[&str] {
-        // The FULL extension, not `ron`. Bevy resolves a loader by trying the whole extension
-        // chain first (`get_full_extension` -> "kit.ron") and only then the secondary ones, so
-        // claiming the compound extension takes precedence over any plain `.ron` loader in the
-        // app without either having to know about the other.
-        &["kit.ron"]
-    }
-
-    async fn load(
-        &self,
-        reader: &mut dyn bevy::asset::io::Reader,
-        _: &Self::Settings,
-        _: &mut bevy::asset::LoadContext<'_>,
-    ) -> Result<Kit, KitLoadError> {
-        let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes).await?;
-        Ok(ron::de::from_bytes(&bytes)?)
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum KitLoadError {
-    #[error("io: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("ron: {0}")]
-    Ron(#[from] ron::error::SpannedError),
-}
-
-/// Find every `*.kit.ron` under the asset root and start it loading.
-///
-/// Walks the filesystem rather than asking the asset server, for the reason in the module
-/// header: enumeration is a tool's privilege, not a runtime's.
-pub fn discover(assets: &AssetServer, root: &Path) -> Kits {
-    let mut found = Vec::new();
-    walk(root, root, &mut found);
-    found.sort_by(|a, b| a.0.cmp(&b.0));
-    Kits(
-        found
-            .into_iter()
-            .map(|(name, relative)| KitEntry {
-                handle: assets.load::<Kit>(AssetPath::from(relative)),
-                name,
-            })
-            .collect(),
-    )
-}
-
-fn walk(root: &Path, dir: &Path, found: &mut Vec<(String, PathBuf)>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            walk(root, &path, found);
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
+/// Every prop under the asset root, grouped by its top-level folder.
+pub fn discover(root: &Path) -> Kits {
+    let mut kits: Vec<KitEntry> = Vec::new();
+    for prop in catalog(root) {
+        let folder = prop.path.split('/').next().unwrap_or_default().to_string();
+        let entry = match kits.iter_mut().position(|k| k.name == folder) {
+            Some(i) => &mut kits[i],
+            None => {
+                kits.push(KitEntry {
+                    name: folder,
+                    props: Vec::new(),
+                });
+                kits.last_mut().unwrap()
+            }
         };
-        let Some(stem) = name.strip_suffix(".kit.ron") else {
-            continue;
-        };
-        let Ok(relative) = path.strip_prefix(root) else {
-            continue;
-        };
-        found.push((stem.to_string(), relative.to_path_buf()));
+        entry.props.push(KitProp {
+            name: prop.name,
+            bsn: prop.path,
+            min: prop.prop.min.to_array(),
+            max: prop.prop.max.to_array(),
+        });
     }
+    Kits(kits)
 }
 
 #[cfg(test)]

@@ -110,7 +110,8 @@ fn bake_tree(
         walk(&node, root, &mut ctx);
     }
 
-    let bsn = bsn::scene(stem, Vec::new(), core::mem::take(&mut ctx.entities));
+    let root = ctx.aabb.map(|(mn, mx)| vec![bsn::prop(mn, mx)]).unwrap_or_default();
+    let bsn = bsn::scene(stem, root, core::mem::take(&mut ctx.entities));
     fs::write(cfg.out_dir.join(format!("{stem}.bsn")), bsn).expect("write .bsn");
     let height = ctx.aabb.map(|(mn, mx)| mx[1] - mn[1]).unwrap_or(0.0);
     println!("  {stem}: {} entities, ~{height:.2}m tall", ctx.emitted,);
@@ -165,7 +166,15 @@ fn bake_clump(tree: &str, ctx: &Tree, cfg: &SpeedTreeConfig) {
         emitted += 1;
     }
     let name = format!("{tree}_clump{k}");
-    let bsn = bsn::scene(&name, Vec::new(), entities);
+    // The trees spread up to the clump radius about the origin.
+    let root = ctx
+        .aabb
+        .map(|(mn, mx)| {
+            let r = cfg.clump_radius + (mx[0] - mn[0]).max(mx[2] - mn[2]) * 0.5;
+            vec![bsn::prop([-r, mn[1], -r], [r, mx[1], r])]
+        })
+        .unwrap_or_default();
+    let bsn = bsn::scene(&name, root, entities);
     fs::write(cfg.out_dir.join(format!("{name}.bsn")), bsn).expect("write clump .bsn");
     println!("  {name}: {emitted} entities ({k} trees merged)");
 }

@@ -1,5 +1,5 @@
-# `scene_editor` — build a world out of baked `.bsn` props. R0 is the palette: find every kit
-# manifest under the asset root and list what it holds.
+# `scene_editor` — build a world out of baked `.bsn` props. R0 is the palette: find every prop
+# under the asset root and list it.
 [package]
 name = "scene_editor"
 version = "0.1.0"
@@ -26,9 +26,5 @@ bevy = { workspace = true, features = [
     "debug",
 ] }
 bevy_aurora = { workspace = true, features = ["dev"] }
-# The kit manifest is RON, the same as every other hand-readable asset here.
-ron = "0.10"
-serde = { version = "1", features = ["derive"] }
-thiserror = "2"
 clap.workspace = true
 util = { path = "../util" }

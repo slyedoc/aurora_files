@@ -219,6 +219,12 @@ pub fn collider(asset_prefix: &str, stem: &str) -> Value {
     )
 }
 
+/// A placeable prop's bounds in its own space (`bevy_aurora::prop::Prop`), for a scene's root:
+/// what a palette or placement tool needs before the prop has loaded.
+pub fn prop(min: [f32; 3], max: [f32; 3]) -> Value {
+    Value::Struct("bevy_aurora::prop::Prop", vec![("min", vec3(min)), ("max", vec3(max))])
+}
+
 /// A separately baked scene, instanced here.
 pub fn scene_ref(bsn_path: &str) -> Value {
     Value::Tuple(

@@ -1,17 +1,16 @@
 //! `scene_editor` — build a world out of baked `.bsn` props.
 //!
-//! **R0, the palette listing.** Find every kit manifest under the asset root, load it, and show
-//! what it holds: one selectable row per placeable prop, with the size it was baked at, over a
+//! **R0, the palette listing.** Find every prop under the asset root and show what there is: one selectable row per placeable prop, with the size it was baked at, over a
 //! search box.
 //!
 //! ```text
-//! cargo run --release -p scene_editor            # every kit under $BEVY_ASSET_ROOT
-//! scene_editor --kit fantasy_props               # just one
+//! cargo run --release -p scene_editor            # every prop under $BEVY_ASSET_ROOT
+//! scene_editor --kit props                       # one folder's
 //! ```
 //!
 //! The listing exists because a bevy `AssetServer` cannot enumerate — see `kit.rs`. Everything
 //! later in the ladder (a shelf of live instances, click-to-place, saving the result back out as
-//! a `.bsn`) reads the same manifest, so this rung is the foundation rather than a browser bolted
+//! a `.bsn`) reads the same listing, so this rung is the foundation rather than a browser bolted
 //! on the side.
 //!
 //! The UI is feathers widgets, not hand-built ones. `FeathersListView` brings the scroll area,
@@ -39,12 +38,12 @@ use bevy::{
 use bevy_aurora::prelude::*;
 use clap::Parser;
 
-use kit::{Kit, KitLoader, Kits};
+use kit::Kits;
 
 #[derive(Parser, Resource, Clone)]
 #[command(name = "scene_editor", about = "Build a world out of baked .bsn props")]
 struct Args {
-    /// Show only the kit with this manifest stem (`fantasy_props`). Default is every kit found.
+    /// Show only the props in this top-level asset folder (`props`). Default is every one.
     #[arg(long)]
     kit: Option<String>,
 
@@ -89,7 +88,6 @@ fn main() {
         DevUIPlugin,
         FreeCameraPlugin::default(),
     ));
-    app.init_asset::<Kit>().register_asset_loader(KitLoader);
     app.add_screenshot(KeyCode::F12);
     app.add_timeout_exit(args.timeout);
     app.init_resource::<Filter>();
@@ -117,7 +115,7 @@ struct PaletteHeader;
 #[derive(Component, Clone, Default)]
 struct PaletteSearch;
 
-/// A row's prop: the manifest entry whole, not a copy of some of its fields.
+/// A row's prop: the catalog entry whole, not a copy of some of its fields.
 ///
 /// The bounds are the reason. Scale, shelf placement and camera framing all come off the baked
 /// AABB, and an origin that is not centred in its own box (the blacksmith station runs -2.5 to
@@ -139,22 +137,21 @@ struct Selection(Option<kit::KitProp>);
 #[derive(Resource, Default)]
 struct Shelf(Vec<kit::KitProp>);
 
-/// Set when the rows need respawning — the search changed, or a manifest finished loading.
+/// Set when the rows need respawning: the search changed.
 #[derive(Resource, Default)]
 struct PaletteDirty(bool);
 
 fn setup(
     mut commands: Commands,
-    assets: Res<AssetServer>,
     mut meshes: ResMut<Assets<AuroraMesh>>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<AuroraMaterial>>,
 ) {
     let root = std::path::PathBuf::from(std::env::var_os("BEVY_ASSET_ROOT").expect("set in main"))
         .join("assets");
-    let kits = kit::discover(&assets, &root);
+    let kits = kit::discover(&root);
     info!(
-        "palette: {} kit manifest(s) under {}",
+        "palette: {} prop set(s) under {}",
         kits.0.len(),
         root.display()
     );
@@ -343,7 +340,7 @@ struct ShelfItem {
 /// shared-BLAS instances, so a few hundred props are nothing, and every prop that shares geometry
 /// with another shares its BLAS too.
 ///
-/// The manifest is what makes the layout possible in one pass. Scale and offset come from the
+/// The baked bounds are what make the layout possible in one pass. Scale and offset come from the
 /// baked AABB, so each prop is placed correctly on the frame it is requested; measuring the
 /// spawned scenes instead would mean laying out only after 297 assets had finished streaming,
 /// and re-laying out as each one arrived.
@@ -448,30 +445,22 @@ fn show_selection(selection: Res<Selection>, mut items: Query<(&ShelfItem, &mut 
     }
 }
 
-/// Respawn the list whenever the search changes or a manifest finishes loading.
+/// Respawn the list whenever the search changes.
 fn rebuild_palette(
     mut commands: Commands,
     mut dirty: ResMut<PaletteDirty>,
-    mut loaded: Local<usize>,
+    mut built: Local<bool>,
     mut selected_once: Local<bool>,
     args: Res<Args>,
     kits: Res<Kits>,
-    manifests: Res<Assets<Kit>>,
     filter: Res<Filter>,
     mut selection: ResMut<Selection>,
     mut shelf: ResMut<Shelf>,
     body: Single<(Entity, Option<&Children>), With<PaletteBody>>,
     mut header: Single<&mut Text, With<PaletteHeader>>,
 ) {
-    // A manifest arriving is the other reason to rebuild, and there is no change signal for
-    // "this handle resolved" — counting the ones that have is cheap and says exactly that.
-    let ready = kits
-        .0
-        .iter()
-        .filter(|entry| manifests.get(&entry.handle).is_some())
-        .count();
-    if ready != *loaded {
-        *loaded = ready;
+    if !*built {
+        *built = true;
         dirty.0 = true;
     }
     if !dirty.0 {
@@ -495,11 +484,8 @@ fn rebuild_palette(
         if args.kit.as_deref().is_some_and(|want| want != entry.name) {
             continue;
         }
-        let Some(manifest) = manifests.get(&entry.handle) else {
-            continue;
-        };
-        total += manifest.props.len();
-        for prop in &manifest.props {
+        total += entry.props.len();
+        for prop in &entry.props {
             let short = prop.short_name();
             if !needle.is_empty() && !short.to_lowercase().contains(&needle) {
                 continue;
@@ -522,7 +508,7 @@ fn rebuild_palette(
         }
     }
 
-    // `--select` applies once, as soon as the manifest it names has actually loaded.
+    // `--select` applies once, on the first build of the list.
     //
     // Gated on its own flag, NOT on the selection being empty: the list box picks a row of its
     // own accord as the rows spawn, in the same frame, so "nothing is selected yet" is false by
@@ -571,9 +557,9 @@ fn rebuild_palette(
     commands.entity(body).add_child(list);
 
     header.0 = if kits.0.is_empty() {
-        "no .kit.ron manifests found -- bake one with `prop_import --per-group`".to_string()
+        "no props found -- bake some with `prop_import --per-group`".to_string()
     } else if filter.0.is_empty() {
-        format!("{shown} props in {} kit(s)", kits.0.len())
+        format!("{shown} props in {} set(s)", kits.0.len())
     } else {
         format!("{shown}/{total} props")
     };
