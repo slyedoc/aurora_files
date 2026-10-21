@@ -1,5 +1,5 @@
 # `scene_editor` — build a world out of baked `.bsn` props. R0 is the palette: find every kit
-# manifest under the asset root and list what it holds. Ladder in scene_editor.md.
+# manifest under the asset root and list what it holds.
 [package]
 name = "scene_editor"
 version = "0.1.0"

@@ -12,7 +12,7 @@
 //! The listing exists because a bevy `AssetServer` cannot enumerate — see `kit.rs`. Everything
 //! later in the ladder (a shelf of live instances, click-to-place, saving the result back out as
 //! a `.bsn`) reads the same manifest, so this rung is the foundation rather than a browser bolted
-//! on the side. Ladder in `scene_editor.md`.
+//! on the side.
 //!
 //! The UI is feathers widgets, not hand-built ones. `FeathersListView` brings the scroll area,
 //! the scrollbar, mutually-exclusive selection and keyboard navigation; `FeathersTextInput`
