@@ -34,7 +34,7 @@ import bpy
 import sys
 import os
 import argparse
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 CHANNELS = ("Base Color", "Metallic", "Roughness")
 
@@ -56,6 +56,11 @@ def parse_args():
     p.add_argument("--verify-flat", action="store_true",
                    help="bake even when flat_* props exist, and print both for comparison")
     p.add_argument("--keep-lights", action="store_true", help="export lights/cameras too")
+    p.add_argument("--apply", action="store_true",
+                   help="bake every mesh's world transform into its vertices and drop the empties: "
+                        "the normalization survives an importer that keeps no root transform "
+                        "(prop_import --per-group centres each group on its own origin)")
+    p.add_argument("--name", help="with --apply: the one mesh left is named this (the prop's .bsn)")
     p.add_argument("--retex", metavar="DIR", nargs="?", const="", default=None,
                    help="relink broken image paths and REWIRE materials from texture filenames. "
                         "For purchased assets whose DCC exporter guessed the wrong sockets. "
@@ -637,6 +642,28 @@ def collection_roots(parent):
 
 # ---------------- export ----------------
 
+def apply_transforms(name):
+    """World transforms into the vertices; every mesh a root at identity, empties gone."""
+    meshes = mesh_objects()
+    for ob in meshes:
+        world = ob.matrix_world.copy()
+        if ob.data.users > 1:
+            ob.data = ob.data.copy()
+        ob.parent = None
+        ob.data.transform(world)
+        ob.matrix_world = Matrix.Identity(4)
+    for ob in list(bpy.data.objects):
+        if ob not in meshes:
+            bpy.data.objects.remove(ob, do_unlink=True)
+    bpy.context.view_layer.update()
+    if name:
+        if len(meshes) != 1:
+            raise SystemExit(f"--name wants one mesh, found {len(meshes)}")
+        meshes[0].name = name
+    print(f"  applied transforms on {len(meshes)} meshes")
+    report_bbox("applied")
+
+
 def main():
     args = parse_args()
     if args.input:
@@ -662,6 +689,8 @@ def main():
 
     convert_non_meshes()
     normalize(args)
+    if args.apply:
+        apply_transforms(args.name)
 
     dropped = 0
     for ob in mesh_objects():
