@@ -61,6 +61,8 @@ def parse_args():
                         "the normalization survives an importer that keeps no root transform "
                         "(prop_import --per-group centres each group on its own origin)")
     p.add_argument("--name", help="with --apply: the one mesh left is named this (the prop's .bsn)")
+    p.add_argument("--decimate", type=int, metavar="FACES",
+                   help="collapse each mesh down to at most this many triangles (UVs kept)")
     p.add_argument("--retex", metavar="DIR", nargs="?", const="", default=None,
                    help="relink broken image paths and REWIRE materials from texture filenames. "
                         "For purchased assets whose DCC exporter guessed the wrong sockets. "
@@ -664,6 +666,19 @@ def apply_transforms(name):
     report_bbox("applied")
 
 
+def decimate(faces):
+    for ob in mesh_objects():
+        have = sum(len(p.vertices) - 2 for p in ob.data.polygons)
+        if have <= faces:
+            continue
+        mod = ob.modifiers.new("decimate", "DECIMATE")
+        mod.ratio = faces / have
+        mod.use_collapse_triangulate = True
+        bpy.context.view_layer.objects.active = ob
+        bpy.ops.object.modifier_apply(modifier=mod.name)
+        print(f"  decimated {ob.name}: {have} -> {len(ob.data.polygons)} faces")
+
+
 def main():
     args = parse_args()
     if args.input:
@@ -691,6 +706,8 @@ def main():
     normalize(args)
     if args.apply:
         apply_transforms(args.name)
+    if args.decimate:
+        decimate(args.decimate)
 
     dropped = 0
     for ob in mesh_objects():
