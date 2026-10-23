@@ -409,6 +409,50 @@ a character. The Quaternius packs that DO ship characters (Modular Outfits, Base
 use this same rig and naming, so they drop into the same two commands.
 
 
+# KitBash3D kits (Atlantis, Enchanted Interiors)
+
+KitBash3D's native `.blend`s (bought, under `raw/<kit>/` with their texture folders; hard-linked
+from `/mnt/code/p/assets/kitbash3d/`, so the scripts never save the `.blend`). Each top-level
+object is one prop: a `_grp` empty per piece (Enchanted Interiors: 291 props + 5 whole interiors)
+or one joined mesh per piece (Atlantis: 79). Lights and cameras are dropped.
+
+Stage A (`scripts/kitbash3d_to_gltf.py`) exports one glTF per prop, moved so its footprint centre
+at floor height is the origin (the catalog stands props on that), plus `<Prop>.json` with where
+the kit's showcase put it. Per prop, not per kit: Atlantis is 101 M triangles, past one GLB's
+4 GB, and per-prop files run as parallel Blender shards. Two material repairs, in memory: emission
+strength x `--emissive-nits` (default 1000: the kits author 1 = white, aurora is physical), and a
+Round node before an opacity map wired into Alpha, so the exporter writes MASK (BLEND traces
+opaque).
+
+Stage B (`kitbash3d_import`) bakes each glTF with `aurora_bsn::bake_gltf_prop` into a shared
+`meshes/` (stems prefixed by the prop) and `textures/` (KTX2/BC, native resolution: Atlantis 2K
+JPEG, Enchanted Interiors 4K PNG), a `.collider` per mesh, and `<kit>.bsn`: the showcase layout
+as `ScenePatchInstance`s of the props.
+
+Blender's exporter is the memory hog: a 10 M-triangle Atlantis building peaks at 24 GB, the
+King's Hall interior at 17 GB, so each shard runs in a scope capped at 3/4 of free memory over the
+shard count (four uncapped shards once took the machine down). A capped-out shard fails the run;
+rerun with fewer shards and it resumes, keeping every glTF already written. What was run:
+
+```sh
+# the big pieces alone (one Blender each), then the rest in shards + stage B
+systemd-run --user --scope -p MemoryMax=40G blender -b raw/atlantis/Atlantis.blend \
+  --python scripts/kitbash3d_to_gltf.py -- --out raw/atlantis/_gltf/shard0 --only 'KB3D_ATL_Bldg*' --skip-existing
+scripts/kitbash3d.sh atlantis raw/atlantis/Atlantis.blend 3
+systemd-run --user --scope -p MemoryMax=30G blender -b raw/enchanted_interiors/kb3d_enchantedinteriors-native.blend \
+  --python scripts/kitbash3d_to_gltf.py -- --out raw/enchanted_interiors/_gltf/shard0 --only 'KB3D_ECI_Int*' --skip-existing
+scripts/kitbash3d.sh enchanted_interiors raw/enchanted_interiors/kb3d_enchantedinteriors-native.blend 3
+for k in atlantis enchanted_interiors; do
+  rsync -a --delete --exclude '*.png' --exclude '*.jpg' assets/$k/ /mnt/code/p/zero/assets/$k/
+done
+```
+
+Expect `wrote 79 props` (atlantis: 1055 meshes + colliders, 251 KTX2; 5.0 GB without the source
+images) and `wrote 296 props` (enchanted_interiors: 3722 meshes + colliders, 248 KTX2; 5.1 GB).
+Stage A leaves 4.6 GB / 15 GB of glTF under `raw/<kit>/_gltf`; the glTF folders and the
+`.png`/`.jpg` beside the KTX2s can go once the bake is copied.
+
+
 # Viewer
 
 Run from the repo root, passing a tab-completed path (add `--features dlss` for DLSS):

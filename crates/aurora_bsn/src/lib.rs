@@ -26,7 +26,7 @@ pub mod mesh;
 pub mod omm;
 pub mod speedtree;
 
-pub use gltf::{GltfConfig, bake_gltf_hierarchy, bake_gltf_per_group, bake_gltf_scene};
+pub use gltf::{GltfConfig, bake_gltf_hierarchy, bake_gltf_per_group, bake_gltf_prop, bake_gltf_scene};
 pub use speedtree::{SpeedTreeConfig, bake_speedtree};
 
 /// Per-submesh facts a [`SubmeshFilter`] can decide on (e.g. keep only floor surfaces, or only

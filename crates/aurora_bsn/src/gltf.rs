@@ -156,6 +156,7 @@ pub fn bake_gltf_scene(cfg: &GltfConfig) {
         meshes_dir: &meshes_dir,
         textures_dir: &textures_dir,
         asset_prefix: &cfg.asset_prefix,
+        mesh_prefix: "",
         emissive_nits: cfg.emissive_nits,
         fixups: &cfg.fixups,
         colliders: cfg.colliders,
@@ -199,6 +200,73 @@ pub fn bake_gltf_scene(cfg: &GltfConfig) {
     }
     println!("wrote {} entities -> {}", ctx.emitted, bsn_path.display());
     crate::finish_textures(&cfg.out_dir, &cfg.asset_prefix);
+}
+
+/// One source = one prop, into a kit dir many sources share: `<scene_name>.bsn` with `Prop`
+/// bounds on its root, meshes named `<scene_name>_mesh<i>_<p>`. Textures are extracted but not
+/// converted: call [`crate::finish_textures`] once after the last prop. Returns the bounds.
+pub fn bake_gltf_prop(cfg: &GltfConfig) -> Option<(Vec3, Vec3)> {
+    let meshes_dir = cfg.out_dir.join("meshes");
+    let textures_dir = cfg.out_dir.join("textures");
+    fs::create_dir_all(&meshes_dir).expect("create meshes dir");
+    fs::create_dir_all(&textures_dir).expect("create textures dir");
+
+    let bytes = fs::read(&cfg.gltf_path).expect("read gltf");
+    let gltf = gltf::Gltf::from_slice(&bytes).expect("parse gltf");
+    let base = cfg.gltf_path.parent();
+    let doc: &gltf::Document = &gltf;
+    let buffers = gltf::import_buffers(doc, base, gltf.blob.clone()).expect("import buffers");
+    lint_materials(doc, cfg.emissive_nits).print();
+    let image_files = extract_images(
+        doc,
+        &buffers,
+        base,
+        &textures_dir,
+        cfg.textures.as_deref(),
+        &cfg.fixups,
+    );
+
+    let mesh_prefix = format!("{}_", cfg.scene_name);
+    let mut ctx = Ctx {
+        root_yaw: Quat::IDENTITY,
+        buffers: &buffers,
+        scale: cfg.scale,
+        image_files: &image_files,
+        meshes_dir: &meshes_dir,
+        textures_dir: &textures_dir,
+        asset_prefix: &cfg.asset_prefix,
+        mesh_prefix: &mesh_prefix,
+        emissive_nits: cfg.emissive_nits,
+        fixups: &cfg.fixups,
+        colliders: cfg.colliders,
+        baked: HashMap::new(),
+        entities: Vec::new(),
+        emitted: 0,
+        baked_count: 0,
+        proxies: 0,
+        collider_count: 0,
+        collided: HashMap::new(),
+        failed_count: 0,
+        bounds: None,
+        repairs: Default::default(),
+    };
+    let scene = doc
+        .default_scene()
+        .or_else(|| doc.scenes().next())
+        .expect("gltf has no scene");
+    for node in scene.nodes() {
+        walk(&node, Mat4::IDENTITY, &mut ctx);
+    }
+    ctx.report_repairs();
+    let bounds = ctx.bounds?;
+    let root = vec![bsn::prop(bounds.0.to_array(), bounds.1.to_array())];
+    let bsn = bsn::scene(&cfg.scene_name, root, core::mem::take(&mut ctx.entities));
+    fs::write(cfg.out_dir.join(format!("{}.bsn", cfg.scene_name)), bsn).expect("write .bsn");
+    println!(
+        "{}: {} entities, {} meshes ({} failed), {} colliders",
+        cfg.scene_name, ctx.emitted, ctx.baked_count, ctx.failed_count, ctx.collider_count
+    );
+    Some(bounds)
 }
 
 /// Bake the glTF as **one `.bsn` per top-level scene node** PLUS a flat master layout scene — for a
@@ -251,6 +319,7 @@ pub fn bake_gltf_per_group(cfg: &GltfConfig) {
         meshes_dir: &meshes_dir,
         textures_dir: &textures_dir,
         asset_prefix: &cfg.asset_prefix,
+        mesh_prefix: "",
         emissive_nits: cfg.emissive_nits,
         fixups: &cfg.fixups,
         colliders: cfg.colliders,
@@ -488,6 +557,8 @@ struct Ctx<'a> {
     meshes_dir: &'a Path,
     textures_dir: &'a Path,
     asset_prefix: &'a str,
+    /// Prepended to every baked mesh stem, so several sources can share one `meshes/`.
+    mesh_prefix: &'a str,
     emissive_nits: Option<fn(&str) -> f32>,
     fixups: &'a Fixups,
     colliders: bool,
@@ -663,6 +734,7 @@ pub fn bake_gltf_hierarchy(cfg: &GltfConfig) {
         meshes_dir: &meshes_dir,
         textures_dir: &textures_dir,
         asset_prefix: &cfg.asset_prefix,
+        mesh_prefix: "",
         emissive_nits: cfg.emissive_nits,
         fixups: &cfg.fixups,
         colliders: cfg.colliders,
@@ -838,7 +910,7 @@ fn ensure_collider(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> 
     if let Some(cached) = ctx.collided.get(&key) {
         return cached.clone();
     }
-    let stem = format!("mesh{}_{}", mesh.index(), prim.index());
+    let stem = format!("{}mesh{}_{}", ctx.mesh_prefix, mesh.index(), prim.index());
     let file = ctx.meshes_dir.join(format!("{stem}.collider"));
     let result = if build_primitive_mesh(prim, ctx.buffers, ctx.scale)
         .and_then(|m| write_collider(&m, &file))
@@ -978,7 +1050,7 @@ fn emit_node(node: &gltf::Node, ctx: &mut Ctx, out: &mut Vec<bsn::Entity>) {
 /// Bake one primitive into a `.aurora_mesh`. Returns the owner stem, or `None` if the mesh has no
 /// positions or the bake fails.
 fn bake_primitive(mesh: &gltf::Mesh, prim: &gltf::Primitive, ctx: &mut Ctx) -> Option<String> {
-    let stem = format!("mesh{}_{}", mesh.index(), prim.index());
+    let stem = format!("{}mesh{}_{}", ctx.mesh_prefix, mesh.index(), prim.index());
     let mesh_file = ctx.meshes_dir.join(format!("{stem}.aurora_mesh"));
 
     let bevy_mesh = build_primitive_mesh(prim, ctx.buffers, ctx.scale)?;

@@ -14,6 +14,7 @@ members = [
   "importers/bistro",
   "importers/hoverboard",
   "importers/kenney",
+  "importers/kitbash3d",
   "importers/lunarbase",
   "importers/namaqualand_boulder",
   "importers/polyhaven",

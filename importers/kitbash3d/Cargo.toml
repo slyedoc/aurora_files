@@ -1,0 +1,20 @@
+# KitBash3D kit importer: the per-prop glTFs `scripts/kitbash3d_to_gltf.py` exports from a kit's
+# native .blend -> one `.bsn` prop each into a shared `meshes/`/`textures/`, plus `<kit>.bsn`, the
+# kit's showcase layout as instances of those props.
+#
+#   cargo run --release -p kitbash3d_import -- raw/atlantis/_gltf assets/atlantis
+[package]
+name = "kitbash3d_import"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "kitbash3d_import"
+path = "src/main.rs"
+
+[dependencies]
+aurora_bsn = { path = "../../crates/aurora_bsn" }
+clap.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

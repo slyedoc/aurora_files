@@ -16,6 +16,6 @@ kinds=(3dobjs mesh_metadata targets skins hair clothes eyes eyebrows eyelashes t
 
 mkdir -p "$dest"
 for kind in "${kinds[@]}"; do
-  rsync -a --delete --exclude '_images/' --exclude '*.meta' "$src/$kind/" "$dest/$kind/"
+  rsync -a --delete --exclude '_images/' --exclude '*.meta' --exclude '*.blend' "$src/$kind/" "$dest/$kind/"
 done
 echo "$(du -sh "$dest" | cut -f1) of MakeHuman library in $dest"
